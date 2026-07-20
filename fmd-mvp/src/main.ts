@@ -25,6 +25,7 @@ type QueueItem = {
   id: number;
   manga_title: string;
   root_url: string;
+  module_id: string;
   chapter_index: number;
   chapter_name: string;
   chapter_link: string;
@@ -33,6 +34,13 @@ type QueueItem = {
   error: string;
   created_at: string;
   updated_at: string;
+};
+
+type ModuleMeta = {
+  id: string;
+  name: string;
+  root_url: string;
+  category: string;
 };
 
 type Favorite = {
@@ -83,7 +91,7 @@ const app = document.querySelector("#app")!;
 
 app.innerHTML = `
   <h1>FMD MVP</h1>
-  <p class="sub">Cola + favoritos mínimos · Lua LeerCapitulo</p>
+  <p class="sub">Cola + favoritos · multi-módulo Lua (Auto / selector)</p>
 
   <div class="tabs">
     <button type="button" class="tab active" data-tab="manga">Manga</button>
@@ -96,6 +104,12 @@ app.innerHTML = `
     <div class="row">
       <input id="url" type="text" placeholder="https://www.leercapitulo.co/manga/..." />
       <button id="load" type="button">Cargar</button>
+    </div>
+    <div class="row">
+      <label for="module-sel">Módulo:</label>
+      <select id="module-sel">
+        <option value="">Auto</option>
+      </select>
     </div>
 
     <div id="info" class="panel" hidden>
@@ -167,6 +181,7 @@ app.innerHTML = `
 
 const urlInput = document.querySelector<HTMLInputElement>("#url")!;
 const loadBtn = document.querySelector<HTMLButtonElement>("#load")!;
+const moduleSel = document.querySelector<HTMLSelectElement>("#module-sel")!;
 const busyEl = document.querySelector<HTMLElement>("#busy")!;
 const infoPanel = document.querySelector<HTMLDivElement>("#info")!;
 const titleEl = document.querySelector<HTMLElement>("#title")!;
@@ -290,6 +305,32 @@ async function initSettings() {
   }
 }
 
+async function loadModules() {
+  try {
+    const mods = await invoke<ModuleMeta[]>("modules_list_cmd");
+    const current = moduleSel.value;
+    moduleSel.innerHTML = `<option value="">Auto</option>`;
+    const sorted = [...mods].sort((a, b) => a.name.localeCompare(b.name));
+    for (const m of sorted) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = `${m.name} (${m.root_url.replace(/^https?:\/\//, "")})`;
+      moduleSel.appendChild(opt);
+    }
+    if (current && [...moduleSel.options].some((o) => o.value === current)) {
+      moduleSel.value = current;
+    }
+    log(`Módulos cargados: ${mods.length}`, "ok");
+  } catch (e) {
+    log(`No se pudo listar módulos: ${e}`, "err");
+  }
+}
+
+function selectedModuleId(): string | null {
+  const v = moduleSel.value.trim();
+  return v || null;
+}
+
 loadBtn.addEventListener("click", async () => {
   clearLog();
   setBusy(true, "Cargando GetInfo…");
@@ -297,7 +338,11 @@ loadBtn.addEventListener("click", async () => {
   log("Cargando info vía Lua GetInfo…");
   try {
     mangaUrl = urlInput.value.trim();
-    const result = await invoke<MangaInfoResult>("get_manga_info", { url: mangaUrl });
+    const moduleId = selectedModuleId();
+    const result = await invoke<MangaInfoResult>("get_manga_info", {
+      url: mangaUrl,
+      moduleId,
+    });
     manga = result;
     selected = new Set();
     visibleCount = PAGE_SIZE;
@@ -305,9 +350,12 @@ loadBtn.addEventListener("click", async () => {
     titleEl.textContent = result.title || "(sin título)";
     authorsEl.textContent = result.authors ? `Autor: ${result.authors}` : "";
     statusEl.textContent = `Módulo: ${result.module_name} · Capítulos: ${result.chapters.length}`;
+    if (result.module_id && [...moduleSel.options].some((o) => o.value === result.module_id)) {
+      moduleSel.value = result.module_id;
+    }
     infoPanel.hidden = false;
     renderChapters();
-    log(`OK: ${result.chapters.length} capítulos`, "ok");
+    log(`OK: ${result.chapters.length} capítulos (${result.module_name})`, "ok");
   } catch (e) {
     manga = null;
     infoPanel.hidden = true;
@@ -369,6 +417,7 @@ document.querySelector("#enqueue")!.addEventListener("click", async () => {
       req: {
         manga_title: manga.title || "manga",
         root_url: manga.root_url,
+        module_id: manga.module_id,
         output_dir: dir,
         chapters,
       },
@@ -783,4 +832,6 @@ void listen("queue-changed", () => {
   busyEl.hidden = true;
 });
 
-void initSettings().then(() => log("DB lista (favoritos/cola en AppData/fmd-mvp).", "ok"));
+void initSettings()
+  .then(() => loadModules())
+  .then(() => log("DB lista (favoritos/cola en AppData/fmd-mvp).", "ok"));

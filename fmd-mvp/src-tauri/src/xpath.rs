@@ -59,6 +59,12 @@ impl TxQuery {
     }
 
     pub fn xpath_nodes(&self, expr: &str) -> Vec<DomNode> {
+        if let Some(nodes) = eval_paren_last(&self.roots, expr, |r, e| {
+            let (path, _terminal) = split_terminal(e);
+            eval(r, &path)
+        }) {
+            return nodes;
+        }
         let (path, terminal) = split_terminal(expr);
         let nodes = eval(&self.roots, &path);
         match terminal {
@@ -68,6 +74,14 @@ impl TxQuery {
     }
 
     pub fn xpath_string(&self, expr: &str) -> String {
+        if let Some(s) = eval_paren_last(&self.roots, expr, |r, e| {
+            let q = TxQuery {
+                roots: r.to_vec(),
+            };
+            q.xpath_string(e)
+        }) {
+            return s;
+        }
         if let Some(s) = eval_following_sibling_text(&self.roots, expr) {
             return s;
         }
@@ -86,21 +100,120 @@ impl TxQuery {
     }
 
     pub fn xpath_string_all(&self, expr: &str) -> String {
+        self.xpath_string_all_values(expr).join(", ")
+    }
+
+    pub fn xpath_string_all_values(&self, expr: &str) -> Vec<String> {
+        self.xpath_string_all_values_on(&self.roots, expr)
+    }
+
+    pub fn xpath_string_ctx(&self, expr: &str, ctx: &DomNode) -> String {
+        let roots = [ctx.clone()];
+        if let Some(s) = eval_following_sibling_text(&roots, expr) {
+            return s;
+        }
         let (path, terminal) = split_terminal(expr);
-        let nodes = eval(&self.roots, &path);
+        let nodes = eval(&roots, &path);
+        match terminal {
+            Terminal::Attr(name) => nodes
+                .first()
+                .and_then(|n| n.attr(&name).map(|s| s.to_string()))
+                .unwrap_or_default(),
+            Terminal::Text | Terminal::None => nodes
+                .first()
+                .map(|n| n.all_text())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn xpath_nodes_ctx(&self, expr: &str, ctx: &DomNode) -> Vec<DomNode> {
+        let roots = [ctx.clone()];
+        let (path, _terminal) = split_terminal(expr);
+        eval(&roots, &path)
+    }
+
+    pub fn xpath_string_all_values_on(&self, roots: &[DomNode], expr: &str) -> Vec<String> {
+        if let Some(vals) = eval_paren_last(roots, expr, |r, e| {
+            Self::xpath_string_all_values_on_inner(r, e)
+        }) {
+            return vals;
+        }
+        Self::xpath_string_all_values_on_inner(roots, expr)
+    }
+
+    fn xpath_string_all_values_on_inner(roots: &[DomNode], expr: &str) -> Vec<String> {
+        let (path, terminal) = split_terminal(expr);
+        let nodes = eval(roots, &path);
         match terminal {
             Terminal::Attr(name) => nodes
                 .iter()
                 .filter_map(|n| n.attr(&name).map(|s| s.to_string()))
-                .collect::<Vec<_>>()
-                .join(", "),
+                .collect(),
             Terminal::Text | Terminal::None => nodes
                 .iter()
                 .map(|n| n.all_text())
                 .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join(", "),
+                .collect(),
         }
+    }
+
+    /// Collect (href, text) for each node matching `expr` (typically `//…/a`).
+    pub fn xpath_href_all(&self, expr: &str) -> Vec<(String, String)> {
+        let nodes = self.xpath_nodes(expr);
+        nodes
+            .into_iter()
+            .filter_map(|n| {
+                let href = n.attr("href")?.to_string();
+                let name = n.all_text();
+                Some((href, name))
+            })
+            .collect()
+    }
+}
+
+impl DomNode {
+    pub fn to_string_value(&self) -> String {
+        match self {
+            DomNode::Text(t) => collapse_ws(t),
+            DomNode::Elem { .. } => self.all_text(),
+        }
+    }
+}
+
+/// Handle `(//…path…)[last()]/rest` used by NiAdd PageContainerLinks.
+fn eval_paren_last<R>(
+    roots: &[DomNode],
+    expr: &str,
+    then: impl FnOnce(&[DomNode], &str) -> R,
+) -> Option<R> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r#"^\((.+)\)\[last\(\)\]/(.*)$"#).unwrap());
+    let caps = re.captures(expr.trim())?;
+    let inner = caps.get(1)?.as_str();
+    let rest = caps.get(2)?.as_str();
+    let nodes = eval(roots, inner);
+    let last = nodes.last()?.clone();
+    Some(then(&[last], rest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paren_last_option_values() {
+        let html = r#"
+        <select class="sl-page"><option value="/a/1">1</option></select>
+        <select class="sl-page">
+          <option value="/b/1">1</option>
+          <option value="/b/2">2</option>
+        </select>
+        "#;
+        let q = TxQuery::parse(html);
+        let vals = q.xpath_string_all_values(
+            "(//select[@class=\"sl-page\"])[last()]/option/@value",
+        );
+        assert_eq!(vals, vec!["/b/1".to_string(), "/b/2".to_string()]);
     }
 }
 

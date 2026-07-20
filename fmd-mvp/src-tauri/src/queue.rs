@@ -1,6 +1,6 @@
 use crate::db::{self, Db, QueueItem};
 use crate::download::download_pages_with_progress;
-use crate::lua_host::get_page_links;
+use crate::lua_host::get_page_links_warmed;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,7 +168,14 @@ fn process_item(
     }
 
     let url = chapter_url(&item.root_url, &item.chapter_link);
-    let pages = get_page_links(&url)?;
+    let module_id = if item.module_id.is_empty() {
+        None
+    } else {
+        Some(item.module_id.as_str())
+    };
+    let page_result = get_page_links_warmed(&url, module_id, Some(item.root_url.as_str()))?;
+    let pages = page_result.pages;
+    let referer = page_result.referer;
     if cancel.load(Ordering::SeqCst) {
         let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
         return Ok(());
@@ -217,6 +224,7 @@ fn process_item(
         &item.chapter_name,
         &pages,
         Some(&mut on_progress),
+        Some(referer.as_str()),
     );
 
     if cancel.load(Ordering::SeqCst) {

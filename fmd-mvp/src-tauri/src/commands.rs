@@ -1,18 +1,44 @@
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
-use crate::lua_host::{get_info, ChapterInfo, MangaInfoResult};
+use crate::lua_host::{
+    get_info, modules_list, modules_match_url, modules_refresh, ChapterInfo, MangaInfoResult,
+    ModuleMeta,
+};
 use crate::queue::{self, QueueState};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
-pub async fn get_manga_info(url: String) -> Result<MangaInfoResult, String> {
+pub async fn get_manga_info(
+    url: String,
+    module_id: Option<String>,
+) -> Result<MangaInfoResult, String> {
     let url = url.trim().to_string();
     if url.is_empty() {
         return Err("URL vacía".into());
     }
-    tauri::async_runtime::spawn_blocking(move || get_info(&url))
+    let module_id = module_id.filter(|s| !s.is_empty());
+    tauri::async_runtime::spawn_blocking(move || get_info(&url, module_id.as_deref()))
         .await
         .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub async fn modules_list_cmd() -> Result<Vec<ModuleMeta>, String> {
+    tauri::async_runtime::spawn_blocking(modules_list)
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))
+}
+
+#[tauri::command]
+pub async fn modules_refresh_cmd() -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(modules_refresh)
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))
+}
+
+#[tauri::command]
+pub fn modules_match_url_cmd(url: String) -> Result<Vec<ModuleMeta>, String> {
+    Ok(modules_match_url(&url))
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -26,6 +52,7 @@ pub struct DownloadChapterInput {
 pub struct QueueAddRequest {
     pub manga_title: String,
     pub root_url: String,
+    pub module_id: String,
     pub output_dir: String,
     pub chapters: Vec<DownloadChapterInput>,
 }
@@ -95,7 +122,6 @@ fn chapters_from_info(info: &MangaInfoResult) -> Vec<ChapterInfo> {
 }
 
 fn find_new_chapters(fav: &Favorite, chapters: &[ChapterInfo]) -> (Vec<ChapterInfo>, bool) {
-    // returns (new_chapters, matched_last)
     if fav.last_chapter_link.is_empty() {
         return (vec![], true);
     }
@@ -150,10 +176,13 @@ async fn check_favorite_inner(
     let db = state.db.clone();
     let fav = db::favorites_get(&db, id)?;
     let manga_url = fav.manga_url.clone();
+    let module_id = fav.module_id.clone();
 
-    let info = tauri::async_runtime::spawn_blocking(move || get_info(&manga_url))
-        .await
-        .map_err(|e| format!("tarea cancelada: {e}"))??;
+    let info = tauri::async_runtime::spawn_blocking(move || {
+        get_info(&manga_url, Some(module_id.as_str()))
+    })
+    .await
+    .map_err(|e| format!("tarea cancelada: {e}"))??;
 
     let chapters = chapters_from_info(&info);
     let (new_chapters, matched) = find_new_chapters(&fav, &chapters);
@@ -169,6 +198,7 @@ async fn check_favorite_inner(
             .map(|c| NewQueueItem {
                 manga_title: info.title.clone(),
                 root_url: info.root_url.clone(),
+                module_id: info.module_id.clone(),
                 chapter_index: c.index as i64,
                 chapter_name: c.name.clone(),
                 chapter_link: c.link.clone(),
@@ -200,7 +230,11 @@ pub fn queue_list(state: State<QueueState>) -> Result<Vec<QueueItem>, String> {
 }
 
 #[tauri::command]
-pub fn queue_add(app: AppHandle, state: State<QueueState>, req: QueueAddRequest) -> Result<usize, String> {
+pub fn queue_add(
+    app: AppHandle,
+    state: State<QueueState>,
+    req: QueueAddRequest,
+) -> Result<usize, String> {
     if req.chapters.is_empty() {
         return Err("No hay capítulos".into());
     }
@@ -214,6 +248,7 @@ pub fn queue_add(app: AppHandle, state: State<QueueState>, req: QueueAddRequest)
         .map(|c| NewQueueItem {
             manga_title: req.manga_title.clone(),
             root_url: req.root_url.clone(),
+            module_id: req.module_id.clone(),
             chapter_index: c.index as i64,
             chapter_name: c.name.clone(),
             chapter_link: c.link.clone(),

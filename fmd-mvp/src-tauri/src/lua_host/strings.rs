@@ -15,6 +15,30 @@ impl LuaStringList {
     pub fn values(&self) -> Vec<String> {
         self.inner.lock().clone()
     }
+
+    pub fn set(&self, index_0: usize, value: String) {
+        let mut list = self.inner.lock();
+        if index_0 >= list.len() {
+            list.resize(index_0 + 1, String::new());
+        }
+        list[index_0] = value;
+    }
+
+    pub fn get(&self, index_0: usize) -> Option<String> {
+        self.inner.lock().get(index_0).cloned()
+    }
+
+    pub fn push(&self, value: String) {
+        self.inner.lock().push(value);
+    }
+
+    pub fn clear(&self) {
+        self.inner.lock().clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.lock().len()
+    }
 }
 
 impl UserData for LuaStringList {
@@ -27,7 +51,7 @@ impl UserData for LuaStringList {
                         "Add" => {
                             let this = this.clone();
                             let f = lua.create_function(move |_, value: String| {
-                                this.inner.lock().push(value);
+                                this.push(value);
                                 Ok(())
                             })?;
                             Ok(Value::Function(f))
@@ -43,20 +67,28 @@ impl UserData for LuaStringList {
                         "Clear" => {
                             let this = this.clone();
                             let f = lua.create_function(move |_, ()| {
-                                this.inner.lock().clear();
+                                this.clear();
                                 Ok(())
                             })?;
                             Ok(Value::Function(f))
                         }
-                        "Count" => Ok(Value::Integer(this.inner.lock().len() as i64)),
+                        "Count" => Ok(Value::Integer(this.len() as i64)),
                         _ => Ok(Value::Nil),
                     }
                 }
-                Value::Integer(i) if i >= 1 => {
-                    let list = this.inner.lock();
-                    let idx = (i as usize).saturating_sub(1);
-                    if let Some(s) = list.get(idx) {
-                        Ok(Value::String(lua.create_string(s)?))
+                // FMD uses 0-based indexing for PageLinks[WORKID]
+                Value::Integer(i) if i >= 0 => {
+                    let idx = i as usize;
+                    if let Some(s) = this.get(idx) {
+                        Ok(Value::String(lua.create_string(&s)?))
+                    } else {
+                        Ok(Value::Nil)
+                    }
+                }
+                Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => {
+                    let idx = n as usize;
+                    if let Some(s) = this.get(idx) {
+                        Ok(Value::String(lua.create_string(&s)?))
                     } else {
                         Ok(Value::Nil)
                     }
@@ -64,9 +96,26 @@ impl UserData for LuaStringList {
                 _ => Ok(Value::Nil),
             }
         });
-        methods.add_meta_method(mlua::MetaMethod::Len, |_, this, ()| {
-            Ok(this.inner.lock().len())
-        });
+        methods.add_meta_method_mut(
+            mlua::MetaMethod::NewIndex,
+            |_, this, (key, value): (Value, Value)| {
+                let idx = match key {
+                    Value::Integer(i) if i >= 0 => i as usize,
+                    Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => n as usize,
+                    _ => return Ok(()),
+                };
+                let s = match value {
+                    Value::String(s) => s.to_string_lossy(),
+                    Value::Integer(i) => i.to_string(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Boolean(b) => b.to_string(),
+                    _ => String::new(),
+                };
+                this.set(idx, s);
+                Ok(())
+            },
+        );
+        methods.add_meta_method(mlua::MetaMethod::Len, |_, this, ()| Ok(this.len()));
     }
 }
 
@@ -118,28 +167,35 @@ pub fn manga_info_status_if_pos(
     }
 }
 
+fn opt_str(v: Option<Value>) -> String {
+    match v {
+        Some(Value::String(s)) => s.to_string_lossy(),
+        Some(Value::Integer(i)) => i.to_string(),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::Boolean(b)) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
 pub fn register_helpers(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
     globals.set(
         "MaybeFillHost",
         lua.create_function(|_, (host, url): (String, String)| Ok(maybe_fill_host(&host, &url)))?,
     )?;
+    // FMD allows 3–5 args: (search, ongoing, completed[, hiatus[, cancelled]])
     globals.set(
         "MangaInfoStatusIfPos",
-        lua.create_function(
-            |_,
-             (search, ongoing, completed, hiatus, cancelled): (
-                String,
-                String,
-                String,
-                String,
-                String,
-            )| {
-                Ok(manga_info_status_if_pos(
-                    &search, &ongoing, &completed, &hiatus, &cancelled,
-                ))
-            },
-        )?,
+        lua.create_function(|_, args: mlua::Variadic<Value>| {
+            let search = opt_str(args.get(0).cloned());
+            let ongoing = opt_str(args.get(1).cloned());
+            let completed = opt_str(args.get(2).cloned());
+            let hiatus = opt_str(args.get(3).cloned());
+            let cancelled = opt_str(args.get(4).cloned());
+            Ok(manga_info_status_if_pos(
+                &search, &ongoing, &completed, &hiatus, &cancelled,
+            ))
+        })?,
     )?;
     globals.set("no_error", 0)?;
     globals.set("net_problem", 1)?;

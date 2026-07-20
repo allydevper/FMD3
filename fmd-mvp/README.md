@@ -1,15 +1,16 @@
 # FMD MVP (Rust + Tauri + Lua)
 
-Host mínimo que **reutiliza** los módulos Lua de FMD2 (piloto: `LeerCapitulo.lua`) sin compilar Lazarus.
+Host mínimo que **reutiliza** los módulos Lua de FMD2 sin compilar Lazarus.
 
-Flujo MVP:
+**Pilotos:** LeerCapitulo, MangaOni, NiAddES (`es.niadd.com`). Auto-match por host + selector manual de módulo.
 
-1. Pegar URL de un manga en leercapitulo.co  
-2. `GetInfo` (Lua) → título + capítulos  
-3. Encolar selección → worker descarga un capítulo a la vez  
-4. Favoritos + Check (capítulos nuevos) → opcional encolar  
+Flujo:
 
-Datos en `%AppData%/fmd-mvp/fmd-mvp.db` (SQLite).
+1. Pegar URL → Auto elige módulo (o selector) → `GetInfo`  
+2. Encolar selección → worker descarga un capítulo a la vez (`GetPageNumber` / `GetImageURL`)  
+3. Favoritos + Check usan `module_id` del favorito  
+
+Datos en `%AppData%/fmd-mvp/fmd-mvp.db` (SQLite). **No** hay catálogo `.db` por sitio ni FMD2-DB en este MVP.
 
 ## Setup (Windows)
 
@@ -21,11 +22,7 @@ winget install Rustlang.Rustup
 rustc --version
 ```
 
-Asegúrate de tener el target MSVC (lo instala rustup por defecto en Windows).
-
 ### 2. Node.js LTS
-
-Ya puedes usar npm. Verifica:
 
 ```powershell
 node --version
@@ -50,11 +47,9 @@ cd fmd-mvp
 npm install
 ```
 
-> **XPath:** este MVP usa un motor HTML/XPath **puro en Rust** (crate `scraper`) para el subset que usa LeerCapitulo. No hace falta instalar libxml2. Más adelante se puede ampliar o sustituir por libxml si se necesitan XPath más exóticos.
-
 ### Variable opcional
 
-Por defecto los Lua se leen desde `../lua/modules` (relativo al crate `src-tauri`).
+Por defecto los Lua se leen desde `../lua` (modules + templates).
 
 ```powershell
 $env:FMD_LUA_ROOT = "C:\ruta\a\FMD3\lua"
@@ -72,10 +67,24 @@ npm run tauri dev
 Desde `fmd-mvp/src-tauri`:
 
 ```powershell
-cargo run --example smoke_info -- "https://www.leercapitulo.co/manga/one-piece/"
-cargo run --example smoke_pages -- "https://www.leercapitulo.co/leer/f8nq66m5nm/one-piece/1/" "$env:TEMP\fmd-mvp-smoke"
+# Regresión LeerCapitulo
+cargo run --example smoke_info -- --module LeerCapitulo "https://www.leercapitulo.co/manga/one-piece/"
+cargo run --example smoke_pages -- --module LeerCapitulo "https://www.leercapitulo.co/leer/f8nq66m5nm/one-piece/1/" "$env:TEMP\fmd-mvp-smoke"
+
+# MangaOni
+cargo run --example smoke_info -- --module MangaOni "https://manga-oni.com/manga/one-piece/"
+cargo run --example smoke_pages -- --module MangaOni "<chapter_url>" "$env:TEMP\fmd-mvp-oni"
+
+# NiAddES (es.niadd.com) — GetInfo + template NiAdd; capítulos en CDN ninemanga
+cargo run --example smoke_info -- --module NiAddES "https://es.niadd.com/manga/One_Piece.html"
+cargo run --example smoke_niadd -- "https://es.niadd.com/manga/One_Piece.html"
+
+> **Nota NiAdd:** `GetInfo` está validado (título + capítulos, `module_id=482deba…`). El lector de páginas vive en `es.ninemanga.com` y puede devolver **403/Cloudflare** desde algunos entornos; el bridge (`PageContainerLinks` / `GetImageURL` / `WORKID` / Referer) está implementado y se ejercita cuando el CDN responde. Cloudflare/FlareSolverr queda fuera de este sprint.
+
 cargo run --example smoke_queue
 ```
+
+Sin `--module`, el host hace auto-match por host de la URL.
 
 ## Build / “deploy dist”
 
@@ -84,29 +93,29 @@ cd fmd-mvp
 npm run tauri build
 ```
 
+El instalador empaqueta `lua/modules` y `lua/templates` como resources del exe.
+
 Salida típica:
 
 - Exe: `src-tauri/target/release/fmd-mvp.exe`  
 - Instalador NSIS: `src-tauri/target/release/bundle/nsis/`
 
-No usa Lazarus ni `make_release_win.bat`.
-
-> Nota: en algunos entornos el `target/` de Cargo puede estar en otra ruta (caché). Lo importante es que el binario principal sea **`fmd-mvp.exe`**, no los ejemplos smoke.
-
 ## Fuera de este MVP
 
-- Catálogo / `GetNameAndLink` / DB FMD2-DB  
-- Favoritos, PDF/EPUB, proxy UI, updater de módulos  
+- Catálogo / `GetNameAndLink` / DB FMD2-DB por sitio  
+- Madara masivo y otros templates (salvo NiAdd)  
+- Cloudflare / FlareSolverr  
 
 ## Estructura
 
 ```
 fmd-mvp/
-  src/                 UI
+  src/                 UI (Auto + selector de módulo)
   src-tauri/src/
-    lua_host/          bridge mlua (HTTP, MANGAINFO, TASK, crypto…)
-    xpath.rs           CreateTXQuery (subset)
-    download.rs        guardado de imágenes
-    commands.rs        get_manga_info / download_chapters
-../lua/modules/        módulos FMD originales (sin copiar)
+    lua_host/          registry + bridge mlua
+    xpath.rs           CreateTXQuery (subset + contexto)
+    download.rs        imágenes (+ Referer)
+    queue.rs / db.rs   cola con module_id
+../lua/modules/        módulos FMD
+../lua/templates/      plantillas (NiAdd, …)
 ```

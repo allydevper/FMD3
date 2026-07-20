@@ -35,7 +35,15 @@ pub fn download_pages(
     chapter_name: &str,
     pages: &[String],
 ) -> DownloadResult {
-    download_pages_with_progress(output_dir, manga_title, chapter_index, chapter_name, pages, None)
+    download_pages_with_progress(
+        output_dir,
+        manga_title,
+        chapter_index,
+        chapter_name,
+        pages,
+        None,
+        None,
+    )
 }
 
 pub fn download_pages_with_progress(
@@ -45,6 +53,7 @@ pub fn download_pages_with_progress(
     chapter_name: &str,
     pages: &[String],
     mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
+    referer: Option<&str>,
 ) -> DownloadResult {
     let client = Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) FMD-MVP/0.1")
@@ -87,7 +96,11 @@ pub fn download_pages_with_progress(
         }
         let ext = extension_from_url(page_url);
         let file_path: PathBuf = chapter_dir.join(format!("{:03}.{}", i + 1, ext));
-        match client.get(page_url).send() {
+        let mut req = client.get(page_url);
+        if let Some(r) = referer.filter(|s| !s.is_empty()) {
+            req = req.header("Referer", r);
+        }
+        match req.send() {
             Ok(resp) if resp.status().is_success() => match resp.bytes() {
                 Ok(bytes) => {
                     if let Err(e) = fs::write(&file_path, &bytes) {

@@ -18,6 +18,25 @@ pub fn download_pages_for_test(
     download::download_pages(output_dir, manga_title, chapter_index, chapter_name, pages)
 }
 
+pub fn download_pages_with_referer_for_test(
+    output_dir: &std::path::Path,
+    manga_title: &str,
+    chapter_index: usize,
+    chapter_name: &str,
+    pages: &[String],
+    referer: Option<&str>,
+) -> download::DownloadResult {
+    download::download_pages_with_progress(
+        output_dir,
+        manga_title,
+        chapter_index,
+        chapter_name,
+        pages,
+        None,
+        referer,
+    )
+}
+
 pub fn open_db_for_test() -> Result<db::Db, String> {
     db::open_db()
 }
@@ -45,11 +64,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(queue_state)
         .setup(|app| {
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                crate::lua_host::ensure_loaded();
+                let _ = handle;
+            });
             queue::ensure_started(&app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_manga_info,
+            commands::modules_list_cmd,
+            commands::modules_refresh_cmd,
+            commands::modules_match_url_cmd,
             commands::download_chapters,
             commands::settings_get,
             commands::settings_set,

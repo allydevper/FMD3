@@ -1,8 +1,10 @@
 use super::crypto::register_fmd_crypto;
 use super::http::HttpClient;
+use super::paths::{modules_dir, package_path};
+use super::registry;
 use super::strings::{register_helpers, LuaStringList};
 use crate::xpath::{DomNode, TxQuery};
-use mlua::{Lua, UserData, UserDataMethods, Value};
+use mlua::{Lua, ObjectLike, UserData, UserDataMethods, Value};
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -28,17 +30,26 @@ pub struct MangaInfoResult {
     pub root_url: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PageLinksResult {
+    pub pages: Vec<String>,
+    pub referer: String,
+    pub module_id: String,
+}
+
 #[derive(Clone, Default)]
-struct ModuleState {
-    id: String,
-    name: String,
-    root_url: String,
-    category: String,
-    on_get_info: String,
-    on_get_page_number: String,
-    on_get_name_and_link: String,
-    total_directory: i64,
-    current_directory_index: i64,
+pub struct ModuleState {
+    pub id: String,
+    pub name: String,
+    pub root_url: String,
+    pub category: String,
+    pub on_get_info: String,
+    pub on_get_page_number: String,
+    pub on_get_name_and_link: String,
+    pub on_get_image_url: String,
+    pub on_before_download_image: String,
+    pub total_directory: i64,
+    pub current_directory_index: i64,
 }
 
 #[derive(Clone, Default)]
@@ -58,6 +69,10 @@ impl UserData for ModuleHandle {
                 "OnGetInfo" => Value::String(lua.create_string(&s.on_get_info)?),
                 "OnGetPageNumber" => Value::String(lua.create_string(&s.on_get_page_number)?),
                 "OnGetNameAndLink" => Value::String(lua.create_string(&s.on_get_name_and_link)?),
+                "OnGetImageURL" => Value::String(lua.create_string(&s.on_get_image_url)?),
+                "OnBeforeDownloadImage" => {
+                    Value::String(lua.create_string(&s.on_before_download_image)?)
+                }
                 "TotalDirectory" => Value::Integer(s.total_directory),
                 "CurrentDirectoryIndex" => Value::Integer(s.current_directory_index),
                 _ => Value::Nil,
@@ -76,6 +91,8 @@ impl UserData for ModuleHandle {
                     "OnGetInfo" => s.on_get_info = value_to_string(value),
                     "OnGetPageNumber" => s.on_get_page_number = value_to_string(value),
                     "OnGetNameAndLink" => s.on_get_name_and_link = value_to_string(value),
+                    "OnGetImageURL" => s.on_get_image_url = value_to_string(value),
+                    "OnBeforeDownloadImage" => s.on_before_download_image = value_to_string(value),
                     "TotalDirectory" => {
                         s.total_directory = match value {
                             Value::Integer(i) => i,
@@ -110,6 +127,7 @@ fn value_to_string(value: Value) -> String {
 
 #[derive(Clone)]
 struct MangaInfoHandle {
+    url: Arc<Mutex<String>>,
     title: Arc<Mutex<String>>,
     alt_titles: Arc<Mutex<String>>,
     cover: Arc<Mutex<String>>,
@@ -125,6 +143,7 @@ struct MangaInfoHandle {
 impl MangaInfoHandle {
     fn new() -> Self {
         Self {
+            url: Arc::new(Mutex::new(String::new())),
             title: Arc::new(Mutex::new(String::new())),
             alt_titles: Arc::new(Mutex::new(String::new())),
             cover: Arc::new(Mutex::new(String::new())),
@@ -143,6 +162,7 @@ impl UserData for MangaInfoHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
             let val = match key.as_str() {
+                "URL" => Value::String(lua.create_string(this.url.lock().as_str())?),
                 "Title" => Value::String(lua.create_string(this.title.lock().as_str())?),
                 "AltTitles" => Value::String(lua.create_string(this.alt_titles.lock().as_str())?),
                 "CoverLink" => Value::String(lua.create_string(this.cover.lock().as_str())?),
@@ -166,6 +186,7 @@ impl UserData for MangaInfoHandle {
             |_, this, (key, value): (String, Value)| {
                 let s = value_to_string(value);
                 match key.as_str() {
+                    "URL" => *this.url.lock() = s,
                     "Title" => *this.title.lock() = s,
                     "AltTitles" => *this.alt_titles.lock() = s,
                     "CoverLink" => *this.cover.lock() = s,
@@ -185,12 +206,16 @@ impl UserData for MangaInfoHandle {
 #[derive(Clone)]
 struct TaskHandle {
     page_links: LuaStringList,
+    page_container_links: LuaStringList,
+    page_number: Arc<Mutex<i64>>,
 }
 
 impl TaskHandle {
     fn new() -> Self {
         Self {
             page_links: LuaStringList::new(),
+            page_container_links: LuaStringList::new(),
+            page_number: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -198,14 +223,30 @@ impl TaskHandle {
 impl UserData for TaskHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
-            if key == "PageLinks" {
-                Ok(Value::UserData(
+            match key.as_str() {
+                "PageLinks" => Ok(Value::UserData(
                     lua.create_userdata(this.page_links.clone())?,
-                ))
-            } else {
-                Ok(Value::Nil)
+                )),
+                "PageContainerLinks" => Ok(Value::UserData(
+                    lua.create_userdata(this.page_container_links.clone())?,
+                )),
+                "PageNumber" => Ok(Value::Integer(*this.page_number.lock())),
+                _ => Ok(Value::Nil),
             }
         });
+        methods.add_meta_method_mut(
+            mlua::MetaMethod::NewIndex,
+            |_, this, (key, value): (String, Value)| {
+                if key == "PageNumber" {
+                    *this.page_number.lock() = match value {
+                        Value::Integer(i) => i,
+                        Value::Number(n) => n as i64,
+                        _ => 0,
+                    };
+                }
+                Ok(())
+            },
+        );
     }
 }
 
@@ -214,32 +255,97 @@ struct TxQueryHandle {
     inner: Arc<TxQuery>,
 }
 
+fn ctx_from_value(ctx: Option<Value>) -> Option<DomNode> {
+    let Value::UserData(ud) = ctx? else {
+        return None;
+    };
+    if let Ok(node) = ud.borrow::<XPathNode>() {
+        return Some(node.node.clone());
+    }
+    None
+}
+
 impl UserData for TxQueryHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
             match key.as_str() {
                 "XPathString" => {
                     let this = this.clone();
-                    let f = lua.create_function(move |_, expr: String| {
-                        Ok(this.inner.xpath_string(&expr))
+                    let f = lua.create_function(move |_, args: mlua::Variadic<Value>| {
+                        let expr = match args.get(0) {
+                            Some(Value::String(s)) => s.to_string_lossy(),
+                            _ => return Ok(String::new()),
+                        };
+                        if let Some(ctx) = ctx_from_value(args.get(1).cloned()) {
+                            Ok(this.inner.xpath_string_ctx(&expr, &ctx))
+                        } else {
+                            Ok(this.inner.xpath_string(&expr))
+                        }
                     })?;
                     Ok(Value::Function(f))
                 }
                 "XPathStringAll" => {
                     let this = this.clone();
-                    let f = lua.create_function(move |_, expr: String| {
-                        Ok(this.inner.xpath_string_all(&expr))
+                    let f = lua.create_function(move |lua, args: mlua::Variadic<Value>| {
+                        let expr = match args.get(0) {
+                            Some(Value::String(s)) => s.to_string_lossy(),
+                            _ => return Ok(Value::String(lua.create_string("")?)),
+                        };
+                        // Optional 2nd arg: string list to fill (FMD style)
+                        if let Some(Value::UserData(ud)) = args.get(1) {
+                            if let Ok(list) = ud.borrow::<LuaStringList>() {
+                                for v in this.inner.xpath_string_all_values(&expr) {
+                                    list.push(v);
+                                }
+                                return Ok(Value::Nil);
+                            }
+                        }
+                        Ok(Value::String(
+                            lua.create_string(&this.inner.xpath_string_all(&expr))?,
+                        ))
                     })?;
+                    Ok(Value::Function(f))
+                }
+                "XPathHREFAll" => {
+                    let this = this.clone();
+                    let f = lua.create_function(
+                        move |_, (expr, links, names): (String, Value, Value)| {
+                            let pairs = this.inner.xpath_href_all(&expr);
+                            if let Value::UserData(ud) = links {
+                                if let Ok(list) = ud.borrow::<LuaStringList>() {
+                                    for (href, _) in &pairs {
+                                        list.push(href.clone());
+                                    }
+                                }
+                            }
+                            if let Value::UserData(ud) = names {
+                                if let Ok(list) = ud.borrow::<LuaStringList>() {
+                                    for (_, name) in &pairs {
+                                        list.push(name.clone());
+                                    }
+                                }
+                            }
+                            Ok(())
+                        },
+                    )?;
                     Ok(Value::Function(f))
                 }
                 "XPath" => {
                     let this = this.clone();
-                    let f = lua.create_function(move |lua, expr: String| {
-                        let nodes = this.inner.xpath_nodes(&expr);
+                    let f = lua.create_function(move |lua, args: mlua::Variadic<Value>| {
+                        let expr = match args.get(0) {
+                            Some(Value::String(s)) => s.to_string_lossy(),
+                            _ => return Ok(Value::Nil),
+                        };
+                        let nodes = if let Some(ctx) = ctx_from_value(args.get(1).cloned()) {
+                            this.inner.xpath_nodes_ctx(&expr, &ctx)
+                        } else {
+                            this.inner.xpath_nodes(&expr)
+                        };
                         let result = XPathResult {
                             nodes: Arc::new(nodes),
                         };
-                        Ok(lua.create_userdata(result)?)
+                        Ok(Value::UserData(lua.create_userdata(result)?))
                     })?;
                     Ok(Value::Function(f))
                 }
@@ -298,52 +404,18 @@ impl UserData for XPathNode {
                     })?;
                     Ok(Value::Function(f))
                 }
-                "InnerText" => {
+                "InnerText" | "ToString" => {
                     let this = this.clone();
-                    let f = lua.create_function(move |_, ()| Ok(this.node.all_text()))?;
+                    let f = lua.create_function(move |_, ()| Ok(this.node.to_string_value()))?;
                     Ok(Value::Function(f))
                 }
                 _ => Ok(Value::Nil),
             }
         });
+        methods.add_meta_method(mlua::MetaMethod::ToString, |_, this, ()| {
+            Ok(this.node.to_string_value())
+        });
     }
-}
-
-fn lua_modules_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("FMD_LUA_ROOT") {
-        return PathBuf::from(p).join("modules");
-    }
-
-    let candidates = [
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lua/modules"),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("../../../lua/modules")))
-            .unwrap_or_default(),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("lua/modules")))
-            .unwrap_or_default(),
-        std::env::current_dir()
-            .map(|d| d.join("../lua/modules"))
-            .unwrap_or_default(),
-    ];
-
-    for c in candidates {
-        if c.is_dir() {
-            return c;
-        }
-    }
-
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lua/modules")
-}
-
-fn module_path(name: &str) -> PathBuf {
-    let mut p = lua_modules_dir().join(name);
-    if p.extension().is_none() {
-        p.set_extension("lua");
-    }
-    p
 }
 
 fn relative_url(root: &str, full: &str) -> String {
@@ -355,73 +427,49 @@ fn relative_url(root: &str, full: &str) -> String {
         }
         return rest.to_string();
     }
-    // try without www
+    // try without www on either side
+    let full_no_www = full.replacen("://www.", "://", 1);
+    let root_no_www = root.replacen("://www.", "://", 1);
+    if let Some(rest) = full_no_www.strip_prefix(&root_no_www) {
+        if rest.is_empty() {
+            return "/".into();
+        }
+        return rest.to_string();
+    }
     full.to_string()
 }
 
-fn prepare_lua(module_file: &Path) -> mlua::Result<(Lua, ModuleHandle, MangaInfoHandle, TaskHandle, HttpClient)> {
-    let lua = Lua::new();
-    register_helpers(&lua)?;
-    register_fmd_crypto(&lua)?;
+fn absolute_url(root: &str, url: &str) -> String {
+    super::strings::maybe_fill_host(root, url)
+}
 
-    let http = HttpClient::new()?;
-    let module = ModuleHandle::default();
-    let mangainfo = MangaInfoHandle::new();
-    let task = TaskHandle::new();
+fn setup_package_path(lua: &Lua) -> mlua::Result<()> {
+    let path = package_path();
+    let package: mlua::Table = lua.globals().get("package")?;
+    package.set("path", path)?;
+    Ok(())
+}
 
+fn register_create_txquery(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
-    globals.set("HTTP", http.clone())?;
-    globals.set("MODULE", module.clone())?;
-    globals.set("MANGAINFO", mangainfo.clone())?;
-    globals.set("TASK", task.clone())?;
-    globals.set("URL", "")?;
-
-    {
-        let module_slot = Arc::new(Mutex::new(ModuleHandle::default()));
-        let module_slot2 = module_slot.clone();
-        globals.set(
-            "NewWebsiteModule",
-            lua.create_function(move |_, ()| {
-                let m = ModuleHandle::default();
-                *module_slot.lock() = m.clone();
-                Ok(m)
-            })?,
-        )?;
-
-        let source = std::fs::read_to_string(module_file).map_err(mlua::Error::external)?;
-        lua.load(&source)
-            .set_name(module_file.to_string_lossy())
-            .exec()?;
-
-        // Init() creates module via NewWebsiteModule and sets fields on local `m`,
-        // but LeerCapitulo assigns to `m` without returning / storing globally.
-        // FMD's NewWebsiteModule registers into a container. We capture last created.
-        let init: mlua::Function = globals.get("Init")?;
-        init.call::<()>(())?;
-
-        let created = module_slot2.lock().clone();
-        // Copy into our MODULE global handle
-        {
-            let src = created.inner.lock().clone();
-            *module.inner.lock() = src;
-        }
-        // Also ensure MODULE global points to same data — re-set
-        globals.set("MODULE", module.clone())?;
-        let _ = module_slot2;
-    }
-
-    // CreateTXQuery
     globals.set(
         "CreateTXQuery",
         lua.create_function(|lua, doc: Value| {
             let html = match doc {
                 Value::String(s) => s.to_string_lossy(),
                 Value::UserData(ud) => {
-                    // allow passing HTTP-like; fallback empty
-                    if let Ok(s) = ud.borrow::<HttpClient>() {
-                        s.document()
+                    if let Ok(http) = ud.borrow::<HttpClient>() {
+                        http.document()
                     } else {
-                        String::new()
+                        // DocumentHandle: try ToString via metamethod by reading as string-like
+                        // Fallback: empty — Document is separate userdata in http.rs
+                        // We expose document via calling ToString if available
+                        let to_string: Result<mlua::Function, _> = ud.get("ToString");
+                        if let Ok(f) = to_string {
+                            f.call::<String>(()).unwrap_or_default()
+                        } else {
+                            String::new()
+                        }
                     }
                 }
                 _ => String::new(),
@@ -432,26 +480,200 @@ fn prepare_lua(module_file: &Path) -> mlua::Result<(Lua, ModuleHandle, MangaInfo
             Ok(lua.create_userdata(q)?)
         })?,
     )?;
-
-    Ok((lua, module, mangainfo, task, http))
+    Ok(())
 }
 
-pub fn get_info(manga_url: &str) -> Result<MangaInfoResult, String> {
-    let path = module_path("LeerCapitulo.lua");
-    if !path.exists() {
-        return Err(format!(
-            "No se encontró el módulo Lua en {}. Define FMD_LUA_ROOT si hace falta.",
-            path.display()
-        ));
+/// Load module file, run Init, return all ModuleStates created via NewWebsiteModule.
+pub fn prepare_lua_scan(module_file: &Path) -> mlua::Result<(Lua, Vec<ModuleState>)> {
+    let lua = Lua::new();
+    register_helpers(&lua)?;
+    register_fmd_crypto(&lua)?;
+    setup_package_path(&lua)?;
+
+    let http = HttpClient::new()?;
+    let mangainfo = MangaInfoHandle::new();
+    let task = TaskHandle::new();
+    let globals = lua.globals();
+    globals.set("HTTP", http)?;
+    globals.set("MANGAINFO", mangainfo)?;
+    globals.set("TASK", task)?;
+    globals.set("URL", "")?;
+    globals.set("WORKID", 0)?;
+    // Stub lists for directory scan hooks that some Inits reference indirectly
+    globals.set("LINKS", LuaStringList::new())?;
+    globals.set("NAMES", LuaStringList::new())?;
+
+    let created: Arc<Mutex<Vec<ModuleHandle>>> = Arc::new(Mutex::new(Vec::new()));
+    let created2 = created.clone();
+    globals.set(
+        "NewWebsiteModule",
+        lua.create_function(move |_, ()| {
+            let m = ModuleHandle::default();
+            created.lock().push(m.clone());
+            Ok(m)
+        })?,
+    )?;
+
+    register_create_txquery(&lua)?;
+
+    let source = std::fs::read_to_string(module_file).map_err(mlua::Error::external)?;
+    lua.load(&source)
+        .set_name(module_file.to_string_lossy())
+        .exec()?;
+
+    if let Ok(init) = globals.get::<mlua::Function>("Init") {
+        let _ = init.call::<()>(());
     }
 
-    let (lua, module, mangainfo, _task, _http) =
-        prepare_lua(&path).map_err(|e| e.to_string())?;
+    let states: Vec<ModuleState> = created2
+        .lock()
+        .iter()
+        .map(|h| h.inner.lock().clone())
+        .collect();
+    Ok((lua, states))
+}
+
+struct Prepared {
+    lua: Lua,
+    module: ModuleHandle,
+    mangainfo: MangaInfoHandle,
+    task: TaskHandle,
+    http: HttpClient,
+}
+
+fn prepare_lua_for_meta(
+    file_path: &Path,
+    prefer_id: Option<&str>,
+) -> Result<Prepared, String> {
+    let lua = Lua::new();
+    register_helpers(&lua).map_err(|e| e.to_string())?;
+    register_fmd_crypto(&lua).map_err(|e| e.to_string())?;
+    setup_package_path(&lua).map_err(|e| e.to_string())?;
+
+    let http = HttpClient::new().map_err(|e| e.to_string())?;
+    let module = ModuleHandle::default();
+    let mangainfo = MangaInfoHandle::new();
+    let task = TaskHandle::new();
+
+    let globals = lua.globals();
+    globals.set("HTTP", http.clone()).map_err(|e| e.to_string())?;
+    globals
+        .set("MODULE", module.clone())
+        .map_err(|e| e.to_string())?;
+    globals
+        .set("MANGAINFO", mangainfo.clone())
+        .map_err(|e| e.to_string())?;
+    globals.set("TASK", task.clone()).map_err(|e| e.to_string())?;
+    globals.set("URL", "").map_err(|e| e.to_string())?;
+    globals.set("WORKID", 0).map_err(|e| e.to_string())?;
+    globals
+        .set("LINKS", LuaStringList::new())
+        .map_err(|e| e.to_string())?;
+    globals
+        .set("NAMES", LuaStringList::new())
+        .map_err(|e| e.to_string())?;
+
+    let created: Arc<Mutex<Vec<ModuleHandle>>> = Arc::new(Mutex::new(Vec::new()));
+    let created2 = created.clone();
+    globals
+        .set(
+            "NewWebsiteModule",
+            lua.create_function(move |_, ()| {
+                let m = ModuleHandle::default();
+                created.lock().push(m.clone());
+                Ok(m)
+            })
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+
+    register_create_txquery(&lua).map_err(|e| e.to_string())?;
+
+    let source = std::fs::read_to_string(file_path).map_err(|e| e.to_string())?;
+    lua.load(&source)
+        .set_name(file_path.to_string_lossy())
+        .exec()
+        .map_err(|e| e.to_string())?;
+
+    let init: mlua::Function = globals.get("Init").map_err(|e| e.to_string())?;
+    init.call::<()>(()).map_err(|e| e.to_string())?;
+
+    let handles = created2.lock().clone();
+    let chosen = if let Some(id) = prefer_id {
+        handles
+            .iter()
+            .find(|h| h.inner.lock().id == id)
+            .cloned()
+            .or_else(|| handles.last().cloned())
+    } else {
+        handles.last().cloned()
+    };
+    let Some(chosen) = chosen else {
+        return Err("Init no creó ningún NewWebsiteModule".into());
+    };
+    {
+        let src = chosen.inner.lock().clone();
+        *module.inner.lock() = src;
+    }
+    globals
+        .set("MODULE", module.clone())
+        .map_err(|e| e.to_string())?;
+
+    Ok(Prepared {
+        lua,
+        module,
+        mangainfo,
+        task,
+        http,
+    })
+}
+
+fn lua_status_ok(v: Value) -> bool {
+    match v {
+        Value::Boolean(b) => b,
+        Value::Integer(i) => i == 0, // no_error
+        Value::Number(n) => n == 0.0,
+        Value::Nil => false,
+        _ => true,
+    }
+}
+
+pub fn get_info(manga_url: &str, module_id: Option<&str>) -> Result<MangaInfoResult, String> {
+    let meta = registry::resolve_for_url(manga_url, module_id)?;
+    let path = PathBuf::from(&meta.file_path);
+    if !path.exists() {
+        // fallback by name in modules dir
+        let alt = modules_dir().join(
+            Path::new(&meta.file_path)
+                .file_name()
+                .unwrap_or_default(),
+        );
+        if !alt.exists() {
+            return Err(format!("No se encontró el módulo Lua: {}", meta.file_path));
+        }
+        return get_info_with_path(manga_url, &alt, Some(&meta.id));
+    }
+    get_info_with_path(manga_url, &path, Some(&meta.id))
+}
+
+fn get_info_with_path(
+    manga_url: &str,
+    path: &Path,
+    prefer_id: Option<&str>,
+) -> Result<MangaInfoResult, String> {
+    let Prepared {
+        lua,
+        module,
+        mangainfo,
+        ..
+    } = prepare_lua_for_meta(path, prefer_id)?;
 
     let root = module.inner.lock().root_url.clone();
-    let rel = relative_url(&root, manga_url);
+    let abs = absolute_url(&root, manga_url);
+    let rel = relative_url(&root, &abs);
     let globals = lua.globals();
     globals.set("URL", rel).map_err(|e| e.to_string())?;
+    *mangainfo.url.lock() = abs;
 
     let on_get_info = module.inner.lock().on_get_info.clone();
     let fn_name = if on_get_info.is_empty() {
@@ -460,10 +682,15 @@ pub fn get_info(manga_url: &str) -> Result<MangaInfoResult, String> {
         on_get_info
     };
     let get_info: mlua::Function = globals.get(fn_name.as_str()).map_err(|e| e.to_string())?;
-    let status: i64 = get_info.call(()).map_err(|e| e.to_string())?;
-    if status != 0 {
+    let status: Value = get_info.call(()).map_err(|e| e.to_string())?;
+    if !lua_status_ok(status.clone()) {
+        let code = match status {
+            Value::Integer(i) => i.to_string(),
+            Value::Boolean(false) => "false".into(),
+            _ => "?".into(),
+        };
         return Err(format!(
-            "GetInfo devolvió código {status} (1=net_problem). ¿URL válida / sitio accesible?"
+            "GetInfo devolvió código {code} (1=net_problem). ¿URL válida / sitio accesible?"
         ));
     }
 
@@ -473,7 +700,10 @@ pub fn get_info(manga_url: &str) -> Result<MangaInfoResult, String> {
     for (i, link) in links.iter().enumerate() {
         chapters.push(ChapterInfo {
             index: i,
-            name: names.get(i).cloned().unwrap_or_else(|| format!("Chapter {}", i + 1)),
+            name: names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("Chapter {}", i + 1)),
             link: link.clone(),
         });
     }
@@ -497,14 +727,75 @@ pub fn get_info(manga_url: &str) -> Result<MangaInfoResult, String> {
     })
 }
 
-pub fn get_page_links(chapter_url: &str) -> Result<Vec<String>, String> {
-    let path = module_path("LeerCapitulo.lua");
-    let (lua, module, _mangainfo, task, _http) =
-        prepare_lua(&path).map_err(|e| e.to_string())?;
+pub fn get_page_links(
+    chapter_url: &str,
+    module_id: Option<&str>,
+) -> Result<PageLinksResult, String> {
+    get_page_links_inner(chapter_url, module_id, None)
+}
+
+/// Same Lua/HTTP session: optional manga URL warm-up (NiAdd Referer + cookies).
+pub fn get_page_links_warmed(
+    chapter_url: &str,
+    module_id: Option<&str>,
+    manga_url: Option<&str>,
+) -> Result<PageLinksResult, String> {
+    get_page_links_inner(chapter_url, module_id, manga_url)
+}
+
+fn get_page_links_inner(
+    chapter_url: &str,
+    module_id: Option<&str>,
+    manga_url: Option<&str>,
+) -> Result<PageLinksResult, String> {
+    let meta = registry::resolve_for_url(
+        manga_url.unwrap_or(chapter_url),
+        module_id,
+    )?;
+    // If chapter host differs from module, still use module_id when provided
+    let meta = if module_id.is_some() {
+        meta
+    } else if let Ok(m) = registry::resolve_for_url(chapter_url, module_id) {
+        m
+    } else {
+        meta
+    };
+    let path = PathBuf::from(&meta.file_path);
+    let path = if path.exists() {
+        path
+    } else {
+        modules_dir().join(
+            Path::new(&meta.file_path)
+                .file_name()
+                .unwrap_or_default(),
+        )
+    };
+    if !path.exists() {
+        return Err(format!("No se encontró el módulo Lua: {}", meta.file_path));
+    }
+
+    let Prepared {
+        lua,
+        module,
+        task,
+        http,
+        ..
+    } = prepare_lua_for_meta(&path, Some(&meta.id))?;
 
     let root = module.inner.lock().root_url.clone();
-    let rel = relative_url(&root, chapter_url);
     let globals = lua.globals();
+
+    // Warm cookies + Referer (NiAdd chapter CDN often requires prior site visit)
+    let referer_seed = manga_url
+        .map(|m| absolute_url(&root, m))
+        .unwrap_or_else(|| root.clone());
+    http.set_header("Referer", &referer_seed);
+    let _ = http.get_url(&referer_seed);
+    http.set_header("Referer", &referer_seed);
+
+    let abs = absolute_url(&root, chapter_url);
+    // Keep absolute chapter URL when host differs — MaybeFillHost preserves it
+    let rel = abs.clone();
     globals.set("URL", rel).map_err(|e| e.to_string())?;
 
     let on_page = module.inner.lock().on_get_page_number.clone();
@@ -514,9 +805,61 @@ pub fn get_page_links(chapter_url: &str) -> Result<Vec<String>, String> {
         on_page
     };
     let get_pages: mlua::Function = globals.get(fn_name.as_str()).map_err(|e| e.to_string())?;
-    let ok: bool = get_pages.call(()).map_err(|e| e.to_string())?;
-    if !ok {
+    let status: Value = get_pages.call(()).map_err(|e| e.to_string())?;
+    if !lua_status_ok(status) {
         return Err("GetPageNumber falló (red o parseo)".into());
     }
-    Ok(task.page_links.values())
+
+    let mut pages = task.page_links.values();
+    let on_image = module.inner.lock().on_get_image_url.clone();
+    let page_number = *task.page_number.lock();
+    let containers = task.page_container_links.len();
+
+    if pages.iter().all(|p| p.is_empty()) && !on_image.is_empty() {
+        let n = if page_number > 0 {
+            page_number as usize
+        } else {
+            containers
+        };
+        if n == 0 {
+            return Err("GetPageNumber no produjo PageLinks ni PageContainerLinks".into());
+        }
+        let image_fn: mlua::Function = globals.get(on_image.as_str()).map_err(|e| e.to_string())?;
+        for i in 0..n {
+            globals.set("WORKID", i as i64).map_err(|e| e.to_string())?;
+            let st: Value = image_fn.call(()).map_err(|e| e.to_string())?;
+            if !lua_status_ok(st) {
+                return Err(format!("GetImageURL falló en WORKID={i}"));
+            }
+        }
+        pages = task.page_links.values();
+    }
+
+    while pages.last().is_some_and(|p| p.is_empty()) {
+        pages.pop();
+    }
+    if pages.is_empty() {
+        return Err("No se obtuvieron URLs de imagen".into());
+    }
+
+    let on_before = module.inner.lock().on_before_download_image.clone();
+    if !on_before.is_empty() {
+        if let Ok(f) = globals.get::<mlua::Function>(on_before.as_str()) {
+            let _ = f.call::<Value>(());
+        }
+    }
+
+    let referer = http
+        .headers_map()
+        .get("Referer")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| root.clone());
+
+    let module_id = module.inner.lock().id.clone();
+    Ok(PageLinksResult {
+        pages,
+        referer,
+        module_id,
+    })
 }

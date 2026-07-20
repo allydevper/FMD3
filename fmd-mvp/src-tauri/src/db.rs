@@ -26,6 +26,7 @@ pub struct QueueItem {
     pub id: i64,
     pub manga_title: String,
     pub root_url: String,
+    pub module_id: String,
     pub chapter_index: i64,
     pub chapter_name: String,
     pub chapter_link: String,
@@ -40,6 +41,7 @@ pub struct QueueItem {
 pub struct NewQueueItem {
     pub manga_title: String,
     pub root_url: String,
+    pub module_id: String,
     pub chapter_index: i64,
     pub chapter_name: String,
     pub chapter_link: String,
@@ -83,6 +85,7 @@ pub fn open_db() -> Result<Db, String> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             manga_title TEXT NOT NULL,
             root_url TEXT NOT NULL,
+            module_id TEXT NOT NULL DEFAULT '',
             chapter_index INTEGER NOT NULL,
             chapter_name TEXT NOT NULL,
             chapter_link TEXT NOT NULL,
@@ -96,6 +99,11 @@ pub fn open_db() -> Result<Db, String> {
         "#,
     )
     .map_err(|e| e.to_string())?;
+    // Migration: module_id on queue_items
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN module_id TEXT NOT NULL DEFAULT ''",
+        [],
+    );
     Ok(Arc::new(Mutex::new(conn)))
 }
 
@@ -270,7 +278,7 @@ pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
     let conn = db.lock();
     let mut stmt = conn
         .prepare(
-            "SELECT id, manga_title, root_url, chapter_index, chapter_name, chapter_link,
+            "SELECT id, manga_title, root_url, COALESCE(module_id,''), chapter_index, chapter_name, chapter_link,
                     output_dir, status, error, created_at, updated_at
              FROM queue_items
              ORDER BY
@@ -289,14 +297,15 @@ pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
                 id: r.get(0)?,
                 manga_title: r.get(1)?,
                 root_url: r.get(2)?,
-                chapter_index: r.get(3)?,
-                chapter_name: r.get(4)?,
-                chapter_link: r.get(5)?,
-                output_dir: r.get(6)?,
-                status: r.get(7)?,
-                error: r.get(8)?,
-                created_at: r.get(9)?,
-                updated_at: r.get(10)?,
+                module_id: r.get(3)?,
+                chapter_index: r.get(4)?,
+                chapter_name: r.get(5)?,
+                chapter_link: r.get(6)?,
+                output_dir: r.get(7)?,
+                status: r.get(8)?,
+                error: r.get(9)?,
+                created_at: r.get(10)?,
+                updated_at: r.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -328,12 +337,13 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
         }
         conn.execute(
             "INSERT INTO queue_items(
-                manga_title, root_url, chapter_index, chapter_name, chapter_link,
+                manga_title, root_url, module_id, chapter_index, chapter_name, chapter_link,
                 output_dir, status, error, created_at, updated_at
-             ) VALUES(?1,?2,?3,?4,?5,?6,'pending','',?7,?7)",
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,'pending','',?8,?8)",
             params![
                 item.manga_title,
                 item.root_url,
+                item.module_id,
                 item.chapter_index,
                 item.chapter_name,
                 item.chapter_link,
@@ -373,7 +383,7 @@ pub fn queue_take_next_pending(db: &Db) -> Result<Option<QueueItem>, String> {
 pub fn queue_get(db: &Db, id: i64) -> Result<QueueItem, String> {
     let conn = db.lock();
     conn.query_row(
-        "SELECT id, manga_title, root_url, chapter_index, chapter_name, chapter_link,
+        "SELECT id, manga_title, root_url, COALESCE(module_id,''), chapter_index, chapter_name, chapter_link,
                 output_dir, status, error, created_at, updated_at
          FROM queue_items WHERE id = ?1",
         params![id],
@@ -382,14 +392,15 @@ pub fn queue_get(db: &Db, id: i64) -> Result<QueueItem, String> {
                 id: r.get(0)?,
                 manga_title: r.get(1)?,
                 root_url: r.get(2)?,
-                chapter_index: r.get(3)?,
-                chapter_name: r.get(4)?,
-                chapter_link: r.get(5)?,
-                output_dir: r.get(6)?,
-                status: r.get(7)?,
-                error: r.get(8)?,
-                created_at: r.get(9)?,
-                updated_at: r.get(10)?,
+                module_id: r.get(3)?,
+                chapter_index: r.get(4)?,
+                chapter_name: r.get(5)?,
+                chapter_link: r.get(6)?,
+                output_dir: r.get(7)?,
+                status: r.get(8)?,
+                error: r.get(9)?,
+                created_at: r.get(10)?,
+                updated_at: r.get(11)?,
             })
         },
     )
