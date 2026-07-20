@@ -6,7 +6,10 @@ Flujo MVP:
 
 1. Pegar URL de un manga en leercapitulo.co  
 2. `GetInfo` (Lua) → título + capítulos  
-3. Elegir capítulos → `GetPageNumber` (Lua) → descargar imágenes a disco  
+3. Encolar selección → worker descarga un capítulo a la vez  
+4. Favoritos + Check (capítulos nuevos) → opcional encolar  
+
+Datos en `%AppData%/fmd-mvp/fmd-mvp.db` (SQLite).
 
 ## Setup (Windows)
 
@@ -71,6 +74,7 @@ Desde `fmd-mvp/src-tauri`:
 ```powershell
 cargo run --example smoke_info -- "https://www.leercapitulo.co/manga/one-piece/"
 cargo run --example smoke_pages -- "https://www.leercapitulo.co/leer/f8nq66m5nm/one-piece/1/" "$env:TEMP\fmd-mvp-smoke"
+cargo run --example smoke_queue
 ```
 
 ## Build / “deploy dist”

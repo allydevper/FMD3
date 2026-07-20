@@ -1,8 +1,8 @@
-use crate::download::{download_pages, DownloadResult};
-use crate::lua_host::{get_info, get_page_links, MangaInfoResult};
-use serde::Deserialize;
-use std::path::PathBuf;
-use tauri::{AppHandle, Emitter};
+use crate::db::{self, Favorite, NewQueueItem, QueueItem};
+use crate::lua_host::{get_info, ChapterInfo, MangaInfoResult};
+use crate::queue::{self, QueueState};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
 pub async fn get_manga_info(url: String) -> Result<MangaInfoResult, String> {
@@ -23,99 +23,239 @@ pub struct DownloadChapterInput {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct DownloadRequest {
+pub struct QueueAddRequest {
     pub manga_title: String,
     pub root_url: String,
     pub output_dir: String,
     pub chapters: Vec<DownloadChapterInput>,
 }
 
-#[derive(Clone, serde::Serialize)]
-struct DownloadProgressEvent {
-    current: usize,
-    total: usize,
-    chapter_name: String,
-    message: String,
+#[tauri::command]
+pub fn settings_get(state: State<QueueState>, key: String) -> Result<Option<String>, String> {
+    db::settings_get(&state.db, &key)
 }
 
 #[tauri::command]
-pub async fn download_chapters(
+pub fn settings_set(state: State<QueueState>, key: String, value: String) -> Result<(), String> {
+    db::settings_set(&state.db, &key, &value)
+}
+
+#[tauri::command]
+pub fn favorites_list(state: State<QueueState>) -> Result<Vec<Favorite>, String> {
+    db::favorites_list(&state.db)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FavoriteAddRequest {
+    pub module_id: String,
+    pub module_name: String,
+    pub root_url: String,
+    pub manga_url: String,
+    pub title: String,
+    pub chapters: Vec<DownloadChapterInput>,
+}
+
+#[tauri::command]
+pub fn favorites_add(
+    state: State<QueueState>,
+    req: FavoriteAddRequest,
+) -> Result<Favorite, String> {
+    let (last_link, last_name, count) = if let Some(last) = req.chapters.last() {
+        (last.link.clone(), last.name.clone(), req.chapters.len() as i64)
+    } else {
+        (String::new(), String::new(), 0)
+    };
+    db::favorites_add(
+        &state.db,
+        &req.module_id,
+        &req.module_name,
+        &req.root_url,
+        &req.manga_url,
+        &req.title,
+        &last_link,
+        &last_name,
+        count,
+    )
+}
+
+#[tauri::command]
+pub fn favorites_remove(state: State<QueueState>, id: i64) -> Result<(), String> {
+    db::favorites_remove(&state.db, id)
+}
+
+#[derive(Debug, Serialize)]
+pub struct FavoriteCheckResult {
+    pub favorite: Favorite,
+    pub new_chapters: Vec<ChapterInfo>,
+    pub enqueued: usize,
+}
+
+fn chapters_from_info(info: &MangaInfoResult) -> Vec<ChapterInfo> {
+    info.chapters.clone()
+}
+
+fn find_new_chapters(fav: &Favorite, chapters: &[ChapterInfo]) -> (Vec<ChapterInfo>, bool) {
+    // returns (new_chapters, matched_last)
+    if fav.last_chapter_link.is_empty() {
+        return (vec![], true);
+    }
+    if let Some(pos) = chapters
+        .iter()
+        .position(|c| c.link == fav.last_chapter_link)
+    {
+        (chapters[pos + 1..].to_vec(), true)
+    } else {
+        (vec![], false)
+    }
+}
+
+#[tauri::command]
+pub async fn favorites_check(
     app: AppHandle,
-    req: DownloadRequest,
-) -> Result<Vec<DownloadResult>, String> {
+    state: State<'_, QueueState>,
+    id: i64,
+    enqueue: bool,
+) -> Result<FavoriteCheckResult, String> {
+    check_favorite_inner(&app, state.inner(), id, enqueue).await
+}
+
+#[tauri::command]
+pub async fn favorites_check_all(
+    app: AppHandle,
+    state: State<'_, QueueState>,
+    enqueue: bool,
+) -> Result<Vec<FavoriteCheckResult>, String> {
+    let ids: Vec<i64> = db::favorites_list(&state.db)?
+        .into_iter()
+        .map(|f| f.id)
+        .collect();
+    drop(state);
+    let mut out = Vec::new();
+    for id in ids {
+        let st = app.state::<QueueState>();
+        match check_favorite_inner(&app, &st, id, enqueue).await {
+            Ok(r) => out.push(r),
+            Err(e) => eprintln!("favorites_check {id}: {e}"),
+        }
+    }
+    Ok(out)
+}
+
+async fn check_favorite_inner(
+    app: &AppHandle,
+    state: &QueueState,
+    id: i64,
+    enqueue: bool,
+) -> Result<FavoriteCheckResult, String> {
+    let db = state.db.clone();
+    let fav = db::favorites_get(&db, id)?;
+    let manga_url = fav.manga_url.clone();
+
+    let info = tauri::async_runtime::spawn_blocking(move || get_info(&manga_url))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))??;
+
+    let chapters = chapters_from_info(&info);
+    let (new_chapters, matched) = find_new_chapters(&fav, &chapters);
+
+    let mut enqueued = 0usize;
+    if enqueue && matched && !new_chapters.is_empty() {
+        let output = db::settings_get(&db, "default_output_dir")?.unwrap_or_default();
+        if output.trim().is_empty() {
+            return Err("Configura carpeta de salida por defecto antes de encolar".into());
+        }
+        let items: Vec<NewQueueItem> = new_chapters
+            .iter()
+            .map(|c| NewQueueItem {
+                manga_title: info.title.clone(),
+                root_url: info.root_url.clone(),
+                chapter_index: c.index as i64,
+                chapter_name: c.name.clone(),
+                chapter_link: c.link.clone(),
+                output_dir: output.clone(),
+            })
+            .collect();
+        let ids = db::queue_add_many(&db, &items)?;
+        enqueued = ids.len();
+        queue::ensure_started(app);
+    }
+
+    let (last_link, last_name) = if let Some(last) = chapters.last() {
+        (last.link.as_str(), last.name.as_str())
+    } else {
+        ("", "")
+    };
+    db::favorites_update_progress(&db, id, last_link, last_name, chapters.len() as i64)?;
+    let favorite = db::favorites_get(&db, id)?;
+    Ok(FavoriteCheckResult {
+        favorite,
+        new_chapters,
+        enqueued,
+    })
+}
+
+#[tauri::command]
+pub fn queue_list(state: State<QueueState>) -> Result<Vec<QueueItem>, String> {
+    db::queue_list(&state.db)
+}
+
+#[tauri::command]
+pub fn queue_add(app: AppHandle, state: State<QueueState>, req: QueueAddRequest) -> Result<usize, String> {
     if req.chapters.is_empty() {
-        return Err("No hay capítulos seleccionados".into());
+        return Err("No hay capítulos".into());
     }
     if req.output_dir.trim().is_empty() {
         return Err("Carpeta de salida vacía".into());
     }
+    let _ = db::settings_set(&state.db, "default_output_dir", &req.output_dir);
+    let items: Vec<NewQueueItem> = req
+        .chapters
+        .iter()
+        .map(|c| NewQueueItem {
+            manga_title: req.manga_title.clone(),
+            root_url: req.root_url.clone(),
+            chapter_index: c.index as i64,
+            chapter_name: c.name.clone(),
+            chapter_link: c.link.clone(),
+            output_dir: req.output_dir.clone(),
+        })
+        .collect();
+    let ids = db::queue_add_many(&state.db, &items)?;
+    queue::ensure_started(&app);
+    Ok(ids.len())
+}
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let output = PathBuf::from(&req.output_dir);
-        let total = req.chapters.len();
-        let mut results = Vec::new();
+#[tauri::command]
+pub fn queue_start(app: AppHandle) -> Result<(), String> {
+    queue::start_worker(app);
+    Ok(())
+}
 
-        for (i, ch) in req.chapters.iter().enumerate() {
-            let _ = app.emit(
-                "download-progress",
-                DownloadProgressEvent {
-                    current: i + 1,
-                    total,
-                    chapter_name: ch.name.clone(),
-                    message: format!("Obteniendo páginas: {}", ch.name),
-                },
-            );
+#[tauri::command]
+pub fn queue_cancel(state: State<QueueState>, id: i64) -> Result<(), String> {
+    let item = db::queue_get(&state.db, id)?;
+    if item.status == "running" {
+        queue::request_cancel_current(&state);
+    }
+    db::queue_cancel(&state.db, id)
+}
 
-            let chapter_url = if ch.link.starts_with("http://") || ch.link.starts_with("https://") {
-                ch.link.clone()
-            } else {
-                let root = req.root_url.trim_end_matches('/');
-                if ch.link.starts_with('/') {
-                    format!("{root}{}", ch.link)
-                } else {
-                    format!("{root}/{}", ch.link)
-                }
-            };
+#[tauri::command]
+pub fn queue_remove(state: State<QueueState>, id: i64) -> Result<(), String> {
+    db::queue_remove(&state.db, id)
+}
 
-            let pages = match get_page_links(&chapter_url) {
-                Ok(p) => p,
-                Err(e) => {
-                    results.push(DownloadResult {
-                        chapter_index: ch.index,
-                        chapter_name: ch.name.clone(),
-                        files: vec![],
-                        errors: vec![e],
-                    });
-                    continue;
-                }
-            };
+#[tauri::command]
+pub fn queue_clear_finished(state: State<QueueState>) -> Result<usize, String> {
+    db::queue_clear_finished(&state.db)
+}
 
-            if pages.is_empty() {
-                results.push(DownloadResult {
-                    chapter_index: ch.index,
-                    chapter_name: ch.name.clone(),
-                    files: vec![],
-                    errors: vec!["GetPageNumber no devolvió imágenes".into()],
-                });
-                continue;
-            }
-
-            let _ = app.emit(
-                "download-progress",
-                DownloadProgressEvent {
-                    current: i + 1,
-                    total,
-                    chapter_name: ch.name.clone(),
-                    message: format!("Descargando {} imgs…", pages.len()),
-                },
-            );
-
-            let result = download_pages(&output, &req.manga_title, ch.index, &ch.name, &pages);
-            results.push(result);
-        }
-
-        Ok(results)
-    })
-    .await
-    .map_err(|e| format!("tarea cancelada: {e}"))?
+/// Atajo: encola y arranca (misma ruta que la cola).
+#[tauri::command]
+pub fn download_chapters(
+    app: AppHandle,
+    state: State<QueueState>,
+    req: QueueAddRequest,
+) -> Result<usize, String> {
+    queue_add(app, state, req)
 }

@@ -169,3 +169,239 @@ button:disabled {
   background: var(--accent);
   transition: width 0.2s ease;
 }
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.tab {
+  background: #e8e0d2;
+  color: var(--ink);
+}
+
+.tab.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.list-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.list-main {
+  flex: 1;
+  min-width: 200px;
+}
+
+.list-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.list-actions button {
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  text-align: center;
+}
+
+.badge {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #ddd4c4;
+}
+
+.badge.pending {
+  background: #f0e2a8;
+}
+
+.badge.running {
+  background: #b8e0d4;
+}
+
+.badge.done {
+  background: #c6e6cf;
+}
+
+.badge.failed {
+  background: #f0c4c4;
+}
+
+.badge.cancelled {
+  background: #ddd;
+}
+
+/* FMD-style downloads table */
+.dl-table-wrap {
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: auto;
+  background: var(--card);
+  max-height: 420px;
+}
+
+.dl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  table-layout: fixed;
+}
+
+.dl-table thead th {
+  position: sticky;
+  top: 0;
+  background: #ebe4d6;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-weight: 600;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+
+.dl-row td {
+  border-bottom: 1px solid #efe8da;
+  padding: 3px 8px;
+  vertical-align: middle;
+  height: 26px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dl-row:hover td {
+  background: #f7f2e8;
+}
+
+.dl-sub td {
+  background: #faf7f0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.dl-sub .sub-title {
+  padding-left: 18px;
+}
+
+.col-exp {
+  width: 28px;
+}
+
+.col-manga {
+  width: 22%;
+}
+
+.col-status {
+  width: 28%;
+}
+
+.col-progress {
+  width: 18%;
+}
+
+.col-save {
+  width: 22%;
+}
+
+.col-actions {
+  width: 70px;
+  text-align: right;
+}
+
+.exp-btn,
+.row-btn {
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  background: #d9d0c0;
+  color: var(--ink);
+  border-radius: 4px;
+}
+
+.exp-btn {
+  min-width: 22px;
+  padding: 0 4px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.dl-progress {
+  position: relative;
+  height: 18px;
+  border: 1px solid #b0a898;
+  border-radius: 2px;
+  background: #f4efe6;
+  overflow: hidden;
+}
+
+.dl-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  transition: width 0.15s linear;
+}
+
+.dl-progress.running .dl-progress-fill {
+  background: #4a90d9;
+}
+
+.dl-progress.done .dl-progress-fill {
+  background: #3fa66b;
+}
+
+.dl-progress.failed .dl-progress-fill {
+  background: #c44;
+}
+
+.dl-progress.stopped .dl-progress-fill {
+  background: #c44;
+}
+
+.dl-progress.waiting .dl-progress-fill {
+  background: #c9a227;
+}
+
+.dl-progress-text {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: #1a1a1a;
+  text-shadow: 0 0 2px #fff;
+}

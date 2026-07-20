@@ -21,62 +21,144 @@ type MangaInfoResult = {
   root_url: string;
 };
 
-type DownloadResult = {
+type QueueItem = {
+  id: number;
+  manga_title: string;
+  root_url: string;
   chapter_index: number;
   chapter_name: string;
-  files: string[];
-  errors: string[];
+  chapter_link: string;
+  output_dir: string;
+  status: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
 };
 
-type DownloadProgressEvent = {
-  current: number;
-  total: number;
+type Favorite = {
+  id: number;
+  module_id: string;
+  module_name: string;
+  root_url: string;
+  manga_url: string;
+  title: string;
+  last_chapter_link: string;
+  last_chapter_name: string;
+  chapter_count: number;
+  updated_at: string;
+};
+
+type FavoriteCheckResult = {
+  favorite: Favorite;
+  new_chapters: ChapterInfo[];
+  enqueued: number;
+};
+
+type QueueProgressEvent = {
+  item_id: number;
+  manga_title: string;
   chapter_name: string;
   message: string;
+  pending_left: number;
+  page_current: number;
+  page_total: number;
 };
 
 const PAGE_SIZE = 80;
 
 let manga: MangaInfoResult | null = null;
+let mangaUrl = "";
 let outputDir = "";
 let visibleCount = PAGE_SIZE;
 let selected = new Set<number>();
+let activeTab: "manga" | "queue" | "favorites" = "manga";
+let expandedGroups = new Set<string>();
+let liveProgress = new Map<
+  number,
+  { page_current: number; page_total: number; message: string; chapter_name: string }
+>();
+let lastQueueItems: QueueItem[] = [];
 
 const app = document.querySelector("#app")!;
 
 app.innerHTML = `
   <h1>FMD MVP</h1>
-  <p class="sub">Host Rust/Tauri + módulo Lua LeerCapitulo. Pega una URL de manga, elige capítulos y descarga imágenes.</p>
+  <p class="sub">Cola + favoritos mínimos · Lua LeerCapitulo</p>
 
-  <div class="row">
-    <input id="url" type="text" placeholder="https://www.leercapitulo.co/manga/..." />
-    <button id="load" type="button">Cargar</button>
+  <div class="tabs">
+    <button type="button" class="tab active" data-tab="manga">Manga</button>
+    <button type="button" class="tab" data-tab="queue">Cola</button>
+    <button type="button" class="tab" data-tab="favorites">Favoritos</button>
   </div>
-  <p id="busy" class="sub" hidden>Trabajando en segundo plano… la ventana no debería congelarse.</p>
+  <p id="busy" class="sub" hidden></p>
 
-  <div id="info" class="panel" hidden>
-    <div class="meta">
-      <strong id="title"></strong>
-      <div id="authors"></div>
-      <div id="status"></div>
+  <section id="tab-manga">
+    <div class="row">
+      <input id="url" type="text" placeholder="https://www.leercapitulo.co/manga/..." />
+      <button id="load" type="button">Cargar</button>
     </div>
+
+    <div id="info" class="panel" hidden>
+      <div class="meta">
+        <strong id="title"></strong>
+        <div id="authors"></div>
+        <div id="status"></div>
+      </div>
+      <div class="toolbar">
+        <button id="sel-visible" class="secondary" type="button">Sel. visibles</button>
+        <button id="sel-none" class="secondary" type="button">Ninguno</button>
+        <button id="sel-last10" class="secondary" type="button">Últimos 10</button>
+        <span id="count"></span>
+      </div>
+      <div id="chapters" class="chapters"></div>
+      <div class="toolbar">
+        <button id="more" class="secondary" type="button" hidden>Mostrar más</button>
+      </div>
+      <div class="toolbar">
+        <button id="pick" class="secondary" type="button">Carpeta…</button>
+        <span id="path" class="path">Sin carpeta de salida</span>
+      </div>
+      <div class="toolbar">
+        <button id="enqueue" type="button">Encolar selección</button>
+        <button id="fav-add" class="secondary" type="button">Añadir a favoritos</button>
+      </div>
+      <div class="progress"><span id="bar"></span></div>
+    </div>
+  </section>
+
+  <section id="tab-queue" hidden>
     <div class="toolbar">
-      <button id="sel-visible" class="secondary" type="button">Sel. visibles</button>
-      <button id="sel-none" class="secondary" type="button">Ninguno</button>
-      <button id="sel-last10" class="secondary" type="button">Últimos 10</button>
-      <span id="count"></span>
+      <button id="queue-refresh" class="secondary" type="button">Actualizar</button>
+      <button id="queue-clear" class="secondary" type="button">Limpiar terminados</button>
+      <button id="queue-start" class="secondary" type="button">Reanudar cola</button>
+      <span id="queue-status" class="path"></span>
     </div>
-    <div id="chapters" class="chapters"></div>
+    <div class="dl-table-wrap">
+      <table class="dl-table" id="queue-table">
+        <thead>
+          <tr>
+            <th class="col-exp"></th>
+            <th class="col-manga">Manga</th>
+            <th class="col-status">Status</th>
+            <th class="col-progress">Progress</th>
+            <th class="col-save">Save to</th>
+            <th class="col-actions"></th>
+          </tr>
+        </thead>
+        <tbody id="queue-list"></tbody>
+      </table>
+      <div id="queue-empty" class="empty" hidden>Cola vacía</div>
+    </div>
+  </section>
+
+  <section id="tab-favorites" hidden>
     <div class="toolbar">
-      <button id="more" class="secondary" type="button" hidden>Mostrar más</button>
+      <button id="fav-refresh" class="secondary" type="button">Actualizar</button>
+      <button id="fav-check-all" class="secondary" type="button">Check todos</button>
+      <button id="fav-check-enqueue-all" type="button">Check + encolar</button>
     </div>
-    <div class="toolbar">
-      <button id="pick" class="secondary" type="button">Carpeta…</button>
-      <span id="path" class="path">Sin carpeta de salida</span>
-      <button id="download" type="button">Descargar</button>
-    </div>
-    <div class="progress"><span id="bar"></span></div>
-  </div>
+    <div id="fav-list" class="list"></div>
+  </section>
 
   <div class="panel">
     <pre id="log" class="log">Listo.</pre>
@@ -95,14 +177,16 @@ const countEl = document.querySelector<HTMLElement>("#count")!;
 const pathEl = document.querySelector<HTMLElement>("#path")!;
 const logEl = document.querySelector<HTMLElement>("#log")!;
 const barEl = document.querySelector<HTMLElement>("#bar")!;
-const downloadBtn = document.querySelector<HTMLButtonElement>("#download")!;
 const moreBtn = document.querySelector<HTMLButtonElement>("#more")!;
+const queueListEl = document.querySelector<HTMLTableSectionElement>("#queue-list")!;
+const queueEmptyEl = document.querySelector<HTMLElement>("#queue-empty")!;
+const queueTableEl = document.querySelector<HTMLTableElement>("#queue-table")!;
+const favListEl = document.querySelector<HTMLDivElement>("#fav-list")!;
+const queueStatusEl = document.querySelector<HTMLElement>("#queue-status")!;
 
 function setBusy(on: boolean, text?: string) {
   busyEl.hidden = !on;
   if (text) busyEl.textContent = text;
-  loadBtn.disabled = on;
-  downloadBtn.disabled = on;
 }
 
 function log(msg: string, kind: "ok" | "err" | "" = "") {
@@ -117,16 +201,33 @@ function clearLog() {
   logEl.textContent = "";
 }
 
+function switchTab(tab: "manga" | "queue" | "favorites") {
+  activeTab = tab;
+  document.querySelectorAll(".tab").forEach((el) => {
+    el.classList.toggle("active", (el as HTMLElement).dataset.tab === tab);
+  });
+  document.querySelector<HTMLElement>("#tab-manga")!.hidden = tab !== "manga";
+  document.querySelector<HTMLElement>("#tab-queue")!.hidden = tab !== "queue";
+  document.querySelector<HTMLElement>("#tab-favorites")!.hidden = tab !== "favorites";
+  if (tab === "queue") void refreshQueue();
+  if (tab === "favorites") void refreshFavorites();
+}
+
+document.querySelectorAll(".tab").forEach((el) => {
+  el.addEventListener("click", () => {
+    const tab = (el as HTMLElement).dataset.tab as typeof activeTab;
+    switchTab(tab);
+  });
+});
+
 function refreshCount() {
   countEl.textContent = `${selected.size} seleccionados / ${manga?.chapters.length ?? 0} total`;
 }
 
-/** Muestra los capítulos más recientes primero (cola de la lista). */
 function visibleSlice(): ChapterInfo[] {
   if (!manga) return [];
   const total = manga.chapters.length;
   const start = Math.max(0, total - visibleCount);
-  // más nuevo arriba
   return manga.chapters.slice(start).reverse();
 }
 
@@ -135,13 +236,11 @@ function renderChapters() {
   const slice = visibleSlice();
   const frag = document.createDocumentFragment();
   chaptersEl.innerHTML = "";
-
   for (const c of slice) {
     const label = document.createElement("label");
     label.className = "chapter";
     const input = document.createElement("input");
     input.type = "checkbox";
-    input.dataset.index = String(c.index);
     input.checked = selected.has(c.index);
     input.addEventListener("change", () => {
       if (input.checked) selected.add(c.index);
@@ -153,7 +252,6 @@ function renderChapters() {
     label.append(input, span);
     frag.appendChild(label);
   }
-
   chaptersEl.appendChild(frag);
   moreBtn.hidden = visibleCount >= manga.chapters.length;
   const remaining = Math.max(0, manga.chapters.length - visibleCount);
@@ -166,34 +264,57 @@ function selectedChapters(): ChapterInfo[] {
   return manga.chapters.filter((c) => selected.has(c.index));
 }
 
+async function ensureOutputDir(): Promise<string | null> {
+  if (outputDir) return outputDir;
+  const saved = await invoke<string | null>("settings_get", { key: "default_output_dir" });
+  if (saved) {
+    outputDir = saved;
+    pathEl.textContent = saved;
+    return saved;
+  }
+  const dir = await open({ directory: true, multiple: false });
+  if (typeof dir === "string") {
+    outputDir = dir;
+    pathEl.textContent = dir;
+    await invoke("settings_set", { key: "default_output_dir", value: dir });
+    return dir;
+  }
+  return null;
+}
+
+async function initSettings() {
+  const saved = await invoke<string | null>("settings_get", { key: "default_output_dir" });
+  if (saved) {
+    outputDir = saved;
+    pathEl.textContent = saved;
+  }
+}
+
 loadBtn.addEventListener("click", async () => {
   clearLog();
-  setBusy(true, "Cargando GetInfo en segundo plano…");
+  setBusy(true, "Cargando GetInfo…");
+  loadBtn.disabled = true;
   log("Cargando info vía Lua GetInfo…");
   try {
-    const result = await invoke<MangaInfoResult>("get_manga_info", {
-      url: urlInput.value,
-    });
+    mangaUrl = urlInput.value.trim();
+    const result = await invoke<MangaInfoResult>("get_manga_info", { url: mangaUrl });
     manga = result;
     selected = new Set();
     visibleCount = PAGE_SIZE;
-
-    // Por defecto solo los últimos 10 (suele ser lo útil; evita marcar 1000+)
-    const last = result.chapters.slice(-10);
-    for (const c of last) selected.add(c.index);
-
+    for (const c of result.chapters.slice(-10)) selected.add(c.index);
     titleEl.textContent = result.title || "(sin título)";
     authorsEl.textContent = result.authors ? `Autor: ${result.authors}` : "";
     statusEl.textContent = `Módulo: ${result.module_name} · Capítulos: ${result.chapters.length}`;
     infoPanel.hidden = false;
     renderChapters();
-    log(`OK: ${result.chapters.length} capítulos (mostrando ${Math.min(PAGE_SIZE, result.chapters.length)}; sel. últimos 10)`, "ok");
+    log(`OK: ${result.chapters.length} capítulos`, "ok");
   } catch (e) {
     manga = null;
     infoPanel.hidden = true;
     log(String(e), "err");
   } finally {
     setBusy(false);
+    loadBtn.disabled = false;
   }
 });
 
@@ -226,64 +347,440 @@ document.querySelector("#pick")!.addEventListener("click", async () => {
   if (typeof dir === "string") {
     outputDir = dir;
     pathEl.textContent = dir;
+    await invoke("settings_set", { key: "default_output_dir", value: dir });
+    log(`Carpeta por defecto: ${dir}`, "ok");
   }
 });
 
-void listen<DownloadProgressEvent>("download-progress", (ev) => {
-  const p = ev.payload;
-  const pct = Math.round((p.current / Math.max(p.total, 1)) * 100);
-  barEl.style.width = `${pct}%`;
-  busyEl.textContent = `${p.message} (${p.current}/${p.total})`;
-});
-
-downloadBtn.addEventListener("click", async () => {
+document.querySelector("#enqueue")!.addEventListener("click", async () => {
   if (!manga) return;
   const chapters = selectedChapters();
-  if (!outputDir) {
-    log("Elige una carpeta de salida.", "err");
-    return;
-  }
   if (!chapters.length) {
     log("Selecciona al menos un capítulo.", "err");
     return;
   }
-  if (chapters.length > 30) {
-    const ok = confirm(
-      `Vas a descargar ${chapters.length} capítulos. ¿Continuar? (recomendado: pocos a la vez)`
-    );
-    if (!ok) return;
+  const dir = await ensureOutputDir();
+  if (!dir) {
+    log("Elige una carpeta de salida.", "err");
+    return;
   }
-
-  setBusy(true, "Descargando en segundo plano…");
-  barEl.style.width = "0%";
-  log(`Descargando ${chapters.length} capítulo(s)…`);
   try {
-    const results = await invoke<DownloadResult[]>("download_chapters", {
+    const n = await invoke<number>("queue_add", {
       req: {
         manga_title: manga.title || "manga",
         root_url: manga.root_url,
-        output_dir: outputDir,
+        output_dir: dir,
         chapters,
       },
     });
+    log(`Encolados ${n} capítulo(s). Ve a la pestaña Cola.`, "ok");
+    barEl.style.width = "0%";
+  } catch (e) {
+    log(String(e), "err");
+  }
+});
 
-    let okFiles = 0;
-    for (const r of results) {
-      okFiles += r.files.length;
-      if (r.errors.length) {
-        log(
-          `${r.chapter_name}: ${r.files.length} imgs, errores: ${r.errors.join("; ")}`,
-          "err"
-        );
-      } else {
-        log(`${r.chapter_name}: ${r.files.length} imágenes`, "ok");
+document.querySelector("#fav-add")!.addEventListener("click", async () => {
+  if (!manga || !mangaUrl) {
+    log("Carga un manga primero.", "err");
+    return;
+  }
+  try {
+    const fav = await invoke<Favorite>("favorites_add", {
+      req: {
+        module_id: manga.module_id,
+        module_name: manga.module_name,
+        root_url: manga.root_url,
+        manga_url: mangaUrl,
+        title: manga.title || mangaUrl,
+        chapters: manga.chapters,
+      },
+    });
+    log(`Favorito guardado: ${fav.title} (último: ${fav.last_chapter_name || "—"})`, "ok");
+  } catch (e) {
+    log(String(e), "err");
+  }
+});
+
+function statusBadge(status: string): string {
+  const map: Record<string, string> = {
+    pending: "badge pending",
+    running: "badge running",
+    done: "badge done",
+    failed: "badge failed",
+    cancelled: "badge cancelled",
+  };
+  return map[status] || "badge";
+}
+
+function groupKey(item: QueueItem): string {
+  return `${item.manga_title}||${item.output_dir}`;
+}
+
+type MangaGroup = {
+  key: string;
+  manga_title: string;
+  output_dir: string;
+  items: QueueItem[];
+};
+
+function groupQueueItems(items: QueueItem[]): MangaGroup[] {
+  const map = new Map<string, MangaGroup>();
+  for (const item of items) {
+    const key = groupKey(item);
+    let g = map.get(key);
+    if (!g) {
+      g = {
+        key,
+        manga_title: item.manga_title,
+        output_dir: item.output_dir,
+        items: [],
+      };
+      map.set(key, g);
+    }
+    g.items.push(item);
+  }
+  return [...map.values()];
+}
+
+function groupStatus(items: QueueItem[]): string {
+  if (items.some((i) => i.status === "running")) return "Downloading";
+  if (items.some((i) => i.status === "pending")) return "Waiting…";
+  if (items.every((i) => i.status === "done")) return "Completed";
+  if (items.some((i) => i.status === "failed")) return "Failed";
+  if (items.every((i) => i.status === "cancelled")) return "Stopped";
+  return "Mixed";
+}
+
+function groupProgressClass(status: string): string {
+  if (status === "Downloading") return "dl-bar running";
+  if (status === "Completed") return "dl-bar done";
+  if (status === "Failed") return "dl-bar failed";
+  if (status === "Stopped") return "dl-bar stopped";
+  return "dl-bar waiting";
+}
+
+function renderQueueTable(items: QueueItem[]) {
+  lastQueueItems = items;
+  const pending = items.filter((i) => i.status === "pending" || i.status === "running").length;
+  queueStatusEl.textContent = `${pending} activos · ${items.length} caps`;
+  queueListEl.innerHTML = "";
+
+  if (!items.length) {
+    queueTableEl.hidden = true;
+    queueEmptyEl.hidden = false;
+    return;
+  }
+  queueTableEl.hidden = false;
+  queueEmptyEl.hidden = true;
+
+  const groups = groupQueueItems(items);
+  for (const g of groups) {
+    const done = g.items.filter((i) => i.status === "done").length;
+    const total = g.items.length;
+    const status = groupStatus(g.items);
+    const running = g.items.find((i) => i.status === "running");
+    const live = running ? liveProgress.get(running.id) : undefined;
+
+    let pct = total ? Math.round((done / total) * 100) : 0;
+    let progressLabel = `${done}/${total}`;
+    if (live && live.page_total > 0) {
+      // blend chapter progress with page progress of current chapter
+      const chapterFrac = done / total;
+      const pageFrac = live.page_current / live.page_total / total;
+      pct = Math.min(100, Math.round((chapterFrac + pageFrac) * 100));
+      progressLabel = `${done}/${total} · ${live.page_current}/${live.page_total}`;
+    } else if (status === "Completed") {
+      pct = 100;
+    }
+
+    const statusText = running
+      ? `[${done + 1}/${total}] ${live?.message || running.chapter_name}`
+      : status === "Waiting…"
+        ? `[${done}/${total}] Waiting…`
+        : `[${done}/${total}] ${status}`;
+
+    const expanded = expandedGroups.has(g.key);
+    const tr = document.createElement("tr");
+    tr.className = `dl-row ${status.toLowerCase()}`;
+    tr.innerHTML = `
+      <td class="col-exp"><button type="button" class="exp-btn" title="Desglose">${expanded ? "▾" : "▸"}</button></td>
+      <td class="col-manga" title="${g.manga_title}">${g.manga_title}</td>
+      <td class="col-status">${statusText}</td>
+      <td class="col-progress">
+        <div class="dl-progress ${groupProgressClass(status)}">
+          <div class="dl-progress-fill" style="width:${pct}%"></div>
+          <span class="dl-progress-text">${progressLabel}</span>
+        </div>
+      </td>
+      <td class="col-save" title="${g.output_dir}">${g.output_dir}</td>
+      <td class="col-actions"></td>
+    `;
+
+    const expBtn = tr.querySelector<HTMLButtonElement>(".exp-btn")!;
+    expBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (expandedGroups.has(g.key)) expandedGroups.delete(g.key);
+      else expandedGroups.add(g.key);
+      renderQueueTable(lastQueueItems);
+    });
+
+    const actions = tr.querySelector(".col-actions")!;
+    const activeItems = g.items.filter((i) => i.status === "pending" || i.status === "running");
+    if (activeItems.length) {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "row-btn";
+      cancel.textContent = "Stop";
+      cancel.addEventListener("click", async () => {
+        for (const it of activeItems) {
+          await invoke("queue_cancel", { id: it.id });
+        }
+        await refreshQueue();
+      });
+      actions.appendChild(cancel);
+    }
+    const finished = g.items.filter((i) => i.status !== "running");
+    if (finished.length === g.items.length) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "row-btn";
+      remove.textContent = "Del";
+      remove.addEventListener("click", async () => {
+        for (const it of g.items) {
+          await invoke("queue_remove", { id: it.id });
+        }
+        await refreshQueue();
+      });
+      actions.appendChild(remove);
+    }
+
+    queueListEl.appendChild(tr);
+
+    if (expanded) {
+      for (const item of g.items) {
+        const liveItem = liveProgress.get(item.id);
+        let subPct = 0;
+        let subLabel = item.status;
+        if (item.status === "done") {
+          subPct = 100;
+          subLabel = "Completed";
+        } else if (item.status === "running" && liveItem && liveItem.page_total > 0) {
+          subPct = Math.round((liveItem.page_current / liveItem.page_total) * 100);
+          subLabel = `${liveItem.page_current}/${liveItem.page_total}`;
+        } else if (item.status === "pending") {
+          subLabel = "Waiting…";
+        }
+
+        const sub = document.createElement("tr");
+        sub.className = "dl-row dl-sub";
+        sub.innerHTML = `
+          <td></td>
+          <td class="col-manga sub-title">${item.chapter_name}</td>
+          <td class="col-status"><span class="${statusBadge(item.status)}">${item.status}</span></td>
+          <td class="col-progress">
+            <div class="dl-progress ${groupProgressClass(
+              item.status === "running"
+                ? "Downloading"
+                : item.status === "done"
+                  ? "Completed"
+                  : item.status === "failed"
+                    ? "Failed"
+                    : "Waiting…"
+            )}">
+              <div class="dl-progress-fill" style="width:${subPct}%"></div>
+              <span class="dl-progress-text">${subLabel}</span>
+            </div>
+          </td>
+          <td class="col-save muted">${item.error || ""}</td>
+          <td class="col-actions"></td>
+        `;
+        const subActions = sub.querySelector(".col-actions")!;
+        if (item.status === "pending" || item.status === "running") {
+          const c = document.createElement("button");
+          c.type = "button";
+          c.className = "row-btn";
+          c.textContent = "Stop";
+          c.addEventListener("click", async () => {
+            await invoke("queue_cancel", { id: item.id });
+            await refreshQueue();
+          });
+          subActions.appendChild(c);
+        } else {
+          const r = document.createElement("button");
+          r.type = "button";
+          r.className = "row-btn";
+          r.textContent = "Del";
+          r.addEventListener("click", async () => {
+            await invoke("queue_remove", { id: item.id });
+            await refreshQueue();
+          });
+          subActions.appendChild(r);
+        }
+        queueListEl.appendChild(sub);
       }
     }
-    barEl.style.width = "100%";
-    log(`Listo. Archivos guardados: ${okFiles}`, "ok");
+  }
+}
+
+async function refreshQueue() {
+  try {
+    const items = await invoke<QueueItem[]>("queue_list");
+    renderQueueTable(items);
+  } catch (e) {
+    log(String(e), "err");
+  }
+}
+
+document.querySelector("#queue-refresh")!.addEventListener("click", () => void refreshQueue());
+document.querySelector("#queue-clear")!.addEventListener("click", async () => {
+  const n = await invoke<number>("queue_clear_finished");
+  log(`Eliminados ${n} terminados`, "ok");
+  await refreshQueue();
+});
+document.querySelector("#queue-start")!.addEventListener("click", async () => {
+  await invoke("queue_start");
+  log("Cola reanudada", "ok");
+  await refreshQueue();
+});
+
+async function refreshFavorites() {
+  try {
+    const favs = await invoke<Favorite[]>("favorites_list");
+    favListEl.innerHTML = "";
+    if (!favs.length) {
+      favListEl.innerHTML = `<div class="empty">Sin favoritos</div>`;
+      return;
+    }
+    for (const fav of favs) {
+      const row = document.createElement("div");
+      row.className = "list-row";
+      row.innerHTML = `
+        <div class="list-main">
+          <div><strong>${fav.title}</strong></div>
+          <div class="muted">${fav.module_name} · ${fav.chapter_count} caps · último: ${fav.last_chapter_name || "—"}</div>
+        </div>
+        <div class="list-actions"></div>
+      `;
+      const actions = row.querySelector(".list-actions")!;
+
+      const checkBtn = document.createElement("button");
+      checkBtn.type = "button";
+      checkBtn.className = "secondary";
+      checkBtn.textContent = "Check";
+      checkBtn.addEventListener("click", () => void runFavCheck(fav.id, false));
+
+      const checkEnq = document.createElement("button");
+      checkEnq.type = "button";
+      checkEnq.textContent = "Check+cola";
+      checkEnq.addEventListener("click", () => void runFavCheck(fav.id, true));
+
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "secondary";
+      openBtn.textContent = "Abrir";
+      openBtn.addEventListener("click", () => {
+        urlInput.value = fav.manga_url;
+        switchTab("manga");
+        loadBtn.click();
+      });
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "secondary";
+      del.textContent = "Quitar";
+      del.addEventListener("click", async () => {
+        await invoke("favorites_remove", { id: fav.id });
+        await refreshFavorites();
+      });
+
+      actions.append(checkBtn, checkEnq, openBtn, del);
+      favListEl.appendChild(row);
+    }
+  } catch (e) {
+    log(String(e), "err");
+  }
+}
+
+async function runFavCheck(id: number, enqueue: boolean) {
+  setBusy(true, enqueue ? "Check + encolar…" : "Check favorito…");
+  try {
+    const r = await invoke<FavoriteCheckResult>("favorites_check", { id, enqueue });
+    if (r.new_chapters.length) {
+      log(
+        `${r.favorite.title}: ${r.new_chapters.length} nuevos` +
+          (enqueue ? `, encolados ${r.enqueued}` : ""),
+        "ok"
+      );
+    } else {
+      log(`${r.favorite.title}: sin capítulos nuevos`, "ok");
+    }
+    await refreshFavorites();
+    if (enqueue && r.enqueued) await refreshQueue();
+  } catch (e) {
+    log(String(e), "err");
+  } finally {
+    setBusy(false);
+  }
+}
+
+document.querySelector("#fav-refresh")!.addEventListener("click", () => void refreshFavorites());
+document.querySelector("#fav-check-all")!.addEventListener("click", async () => {
+  setBusy(true, "Check todos…");
+  try {
+    const results = await invoke<FavoriteCheckResult[]>("favorites_check_all", {
+      enqueue: false,
+    });
+    const news = results.reduce((a, r) => a + r.new_chapters.length, 0);
+    log(`Check todos: ${news} capítulos nuevos en ${results.length} favoritos`, "ok");
+    await refreshFavorites();
   } catch (e) {
     log(String(e), "err");
   } finally {
     setBusy(false);
   }
 });
+document.querySelector("#fav-check-enqueue-all")!.addEventListener("click", async () => {
+  const dir = await ensureOutputDir();
+  if (!dir) {
+    log("Elige carpeta de salida primero.", "err");
+    return;
+  }
+  setBusy(true, "Check + encolar todos…");
+  try {
+    const results = await invoke<FavoriteCheckResult[]>("favorites_check_all", {
+      enqueue: true,
+    });
+    const enq = results.reduce((a, r) => a + r.enqueued, 0);
+    log(`Encolados ${enq} capítulos nuevos`, "ok");
+    await refreshFavorites();
+    await refreshQueue();
+  } catch (e) {
+    log(String(e), "err");
+  } finally {
+    setBusy(false);
+  }
+});
+
+void listen<QueueProgressEvent>("queue-progress", (ev) => {
+  const p = ev.payload;
+  liveProgress.set(p.item_id, {
+    page_current: p.page_current,
+    page_total: p.page_total,
+    message: p.message,
+    chapter_name: p.chapter_name,
+  });
+  busyEl.hidden = false;
+  busyEl.textContent = p.message;
+  if (activeTab === "queue") {
+    renderQueueTable(lastQueueItems);
+  }
+});
+
+void listen("queue-changed", () => {
+  if (activeTab === "queue") void refreshQueue();
+  // clear finished live entries on full refresh
+  busyEl.hidden = true;
+});
+
+void initSettings().then(() => log("DB lista (favoritos/cola en AppData/fmd-mvp).", "ok"));
