@@ -46,6 +46,7 @@ pub struct ModuleState {
     pub on_get_info: String,
     pub on_get_page_number: String,
     pub on_get_name_and_link: String,
+    pub on_get_directory_page_number: String,
     pub on_get_image_url: String,
     pub on_before_download_image: String,
     pub total_directory: i64,
@@ -69,6 +70,9 @@ impl UserData for ModuleHandle {
                 "OnGetInfo" => Value::String(lua.create_string(&s.on_get_info)?),
                 "OnGetPageNumber" => Value::String(lua.create_string(&s.on_get_page_number)?),
                 "OnGetNameAndLink" => Value::String(lua.create_string(&s.on_get_name_and_link)?),
+                "OnGetDirectoryPageNumber" => {
+                    Value::String(lua.create_string(&s.on_get_directory_page_number)?)
+                }
                 "OnGetImageURL" => Value::String(lua.create_string(&s.on_get_image_url)?),
                 "OnBeforeDownloadImage" => {
                     Value::String(lua.create_string(&s.on_before_download_image)?)
@@ -91,6 +95,9 @@ impl UserData for ModuleHandle {
                     "OnGetInfo" => s.on_get_info = value_to_string(value),
                     "OnGetPageNumber" => s.on_get_page_number = value_to_string(value),
                     "OnGetNameAndLink" => s.on_get_name_and_link = value_to_string(value),
+                    "OnGetDirectoryPageNumber" => {
+                        s.on_get_directory_page_number = value_to_string(value)
+                    }
                     "OnGetImageURL" => s.on_get_image_url = value_to_string(value),
                     "OnBeforeDownloadImage" => s.on_before_download_image = value_to_string(value),
                     "TotalDirectory" => {
@@ -250,6 +257,36 @@ impl UserData for TaskHandle {
     }
 }
 
+#[derive(Clone, Default)]
+struct UpdateListHandle {
+    current_directory_page_number: Arc<Mutex<i64>>,
+}
+
+impl UserData for UpdateListHandle {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_meta_method(mlua::MetaMethod::Index, |_, this, key: String| {
+            if key == "CurrentDirectoryPageNumber" {
+                Ok(Value::Integer(*this.current_directory_page_number.lock()))
+            } else {
+                Ok(Value::Nil)
+            }
+        });
+        methods.add_meta_method_mut(
+            mlua::MetaMethod::NewIndex,
+            |_, this, (key, value): (String, Value)| {
+                if key == "CurrentDirectoryPageNumber" {
+                    *this.current_directory_page_number.lock() = match value {
+                        Value::Integer(i) => i,
+                        Value::Number(n) => n as i64,
+                        _ => 1,
+                    };
+                }
+                Ok(())
+            },
+        );
+    }
+}
+
 #[derive(Clone)]
 struct TxQueryHandle {
     inner: Arc<TxQuery>,
@@ -311,6 +348,30 @@ impl UserData for TxQueryHandle {
                     let f = lua.create_function(
                         move |_, (expr, links, names): (String, Value, Value)| {
                             let pairs = this.inner.xpath_href_all(&expr);
+                            if let Value::UserData(ud) = links {
+                                if let Ok(list) = ud.borrow::<LuaStringList>() {
+                                    for (href, _) in &pairs {
+                                        list.push(href.clone());
+                                    }
+                                }
+                            }
+                            if let Value::UserData(ud) = names {
+                                if let Ok(list) = ud.borrow::<LuaStringList>() {
+                                    for (_, name) in &pairs {
+                                        list.push(name.clone());
+                                    }
+                                }
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    Ok(Value::Function(f))
+                }
+                "XPathHREFTitleAll" => {
+                    let this = this.clone();
+                    let f = lua.create_function(
+                        move |_, (expr, links, names): (String, Value, Value)| {
+                            let pairs = this.inner.xpath_href_title_all(&expr);
                             if let Value::UserData(ud) = links {
                                 if let Ok(list) = ud.borrow::<LuaStringList>() {
                                     for (href, _) in &pairs {
@@ -499,9 +560,11 @@ pub fn prepare_lua_scan(module_file: &Path) -> mlua::Result<(Lua, Vec<ModuleStat
     globals.set("TASK", task)?;
     globals.set("URL", "")?;
     globals.set("WORKID", 0)?;
+    globals.set("PAGENUMBER", 1)?;
     // Stub lists for directory scan hooks that some Inits reference indirectly
     globals.set("LINKS", LuaStringList::new())?;
     globals.set("NAMES", LuaStringList::new())?;
+    globals.set("UPDATELIST", UpdateListHandle::default())?;
 
     let created: Arc<Mutex<Vec<ModuleHandle>>> = Arc::new(Mutex::new(Vec::new()));
     let created2 = created.clone();
@@ -566,11 +629,15 @@ fn prepare_lua_for_meta(
     globals.set("TASK", task.clone()).map_err(|e| e.to_string())?;
     globals.set("URL", "").map_err(|e| e.to_string())?;
     globals.set("WORKID", 0).map_err(|e| e.to_string())?;
+    globals.set("PAGENUMBER", 1).map_err(|e| e.to_string())?;
     globals
         .set("LINKS", LuaStringList::new())
         .map_err(|e| e.to_string())?;
     globals
         .set("NAMES", LuaStringList::new())
+        .map_err(|e| e.to_string())?;
+    globals
+        .set("UPDATELIST", UpdateListHandle::default())
         .map_err(|e| e.to_string())?;
 
     let created: Arc<Mutex<Vec<ModuleHandle>>> = Arc::new(Mutex::new(Vec::new()));
@@ -861,5 +928,170 @@ fn get_page_links_inner(
         pages,
         referer,
         module_id,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateListProgress {
+    pub module_id: String,
+    pub directory_index: i64,
+    pub page: i64,
+    pub page_total: i64,
+    pub batch_rows: usize,
+    pub inserted_total: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateListStats {
+    pub module_id: String,
+    pub inserted: usize,
+    pub total_in_db: i64,
+    pub pages_fetched: usize,
+}
+
+fn read_pagenumber(globals: &mlua::Table) -> i64 {
+    match globals.get::<Value>("PAGENUMBER") {
+        Ok(Value::Integer(i)) if i > 0 => i,
+        Ok(Value::Number(n)) if n > 0.0 => n as i64,
+        _ => 1,
+    }
+}
+
+/// Scrape directory via GetNameAndLink and write `data/<module_id>.db`.
+pub fn update_list(
+    module_id: &str,
+    mut on_progress: Option<&mut dyn FnMut(UpdateListProgress)>,
+) -> Result<UpdateListStats, String> {
+    let meta = registry::find_by_id(module_id)
+        .ok_or_else(|| format!("Módulo desconocido: {module_id}"))?;
+    let path = PathBuf::from(&meta.file_path);
+    let path = if path.exists() {
+        path
+    } else {
+        modules_dir().join(
+            Path::new(&meta.file_path)
+                .file_name()
+                .unwrap_or_default(),
+        )
+    };
+    if !path.exists() {
+        return Err(format!("No se encontró el módulo Lua: {}", meta.file_path));
+    }
+
+    let Prepared {
+        lua,
+        module,
+        ..
+    } = prepare_lua_for_meta(&path, Some(&meta.id))?;
+
+    let globals = lua.globals();
+    let links_ud: mlua::AnyUserData = globals.get("LINKS").map_err(|e| e.to_string())?;
+    let names_ud: mlua::AnyUserData = globals.get("NAMES").map_err(|e| e.to_string())?;
+    let links = links_ud
+        .borrow::<LuaStringList>()
+        .map_err(|e| e.to_string())?
+        .clone();
+    let names = names_ud
+        .borrow::<LuaStringList>()
+        .map_err(|e| e.to_string())?
+        .clone();
+
+    let on_dir = module.inner.lock().on_get_directory_page_number.clone();
+    let on_name = module.inner.lock().on_get_name_and_link.clone();
+    if on_name.is_empty() {
+        return Err("El módulo no define OnGetNameAndLink".into());
+    }
+
+    let mut total_dirs = module.inner.lock().total_directory;
+    if total_dirs <= 0 {
+        total_dirs = 1;
+    }
+
+    let mut inserted_total = 0usize;
+    let mut pages_fetched = 0usize;
+
+    for dir_idx in 0..total_dirs {
+        {
+            let mut s = module.inner.lock();
+            s.current_directory_index = dir_idx;
+        }
+
+        let mut page_total: i64 = 1;
+        if !on_dir.is_empty() {
+            globals.set("PAGENUMBER", 1).map_err(|e| e.to_string())?;
+            globals.set("URL", "").map_err(|e| e.to_string())?;
+            let f: mlua::Function = globals.get(on_dir.as_str()).map_err(|e| e.to_string())?;
+            let st: Value = f.call(()).map_err(|e| e.to_string())?;
+            if !lua_status_ok(st) {
+                return Err(format!(
+                    "GetDirectoryPageNumber falló (dir={dir_idx})"
+                ));
+            }
+            page_total = read_pagenumber(&globals).max(1);
+        }
+
+        let name_fn: mlua::Function = globals.get(on_name.as_str()).map_err(|e| e.to_string())?;
+
+        let mut page: i64 = 0;
+        while page < page_total {
+            // FMD passes 0-based page index; FoOlSlide uses (URL + 1)
+            globals
+                .set("URL", page)
+                .map_err(|e| e.to_string())?;
+            links.clear();
+            names.clear();
+
+            let st: Value = name_fn.call(()).map_err(|e| e.to_string())?;
+            if !lua_status_ok(st) {
+                return Err(format!(
+                    "GetNameAndLink falló (dir={dir_idx} page={page})"
+                ));
+            }
+
+            // LeerCapitulo may raise CurrentDirectoryPageNumber mid-flight
+            if let Ok(ud) = globals.get::<mlua::AnyUserData>("UPDATELIST") {
+                if let Ok(ul) = ud.borrow::<UpdateListHandle>() {
+                    let n = *ul.current_directory_page_number.lock();
+                    if n > page_total {
+                        page_total = n;
+                    }
+                }
+            }
+
+            let link_vals = links.values();
+            let name_vals = names.values();
+            let mut pairs = Vec::new();
+            for (i, link) in link_vals.iter().enumerate() {
+                let title = name_vals
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| link.clone());
+                pairs.push((link.clone(), title));
+            }
+            let batch = pairs.len();
+            let n = crate::catalog::upsert_links(&meta.id, &pairs)?;
+            inserted_total += n;
+            pages_fetched += 1;
+
+            if let Some(cb) = on_progress.as_mut() {
+                cb(UpdateListProgress {
+                    module_id: meta.id.clone(),
+                    directory_index: dir_idx,
+                    page,
+                    page_total,
+                    batch_rows: batch,
+                    inserted_total,
+                });
+            }
+            page += 1;
+        }
+    }
+
+    let st = crate::catalog::stats(&meta.id)?;
+    Ok(UpdateListStats {
+        module_id: meta.id,
+        inserted: inserted_total,
+        total_in_db: st.count,
+        pages_fetched,
     })
 }

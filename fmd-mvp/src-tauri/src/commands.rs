@@ -1,11 +1,12 @@
+use crate::catalog::{self, CatalogEntry, CatalogStats};
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
-    get_info, modules_list, modules_match_url, modules_refresh, ChapterInfo, MangaInfoResult,
-    ModuleMeta,
+    get_info, modules_list, modules_match_url, modules_refresh, update_list, ChapterInfo,
+    MangaInfoResult, ModuleMeta, UpdateListProgress, UpdateListStats,
 };
 use crate::queue::{self, QueueState};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
 pub async fn get_manga_info(
@@ -39,6 +40,43 @@ pub async fn modules_refresh_cmd() -> Result<usize, String> {
 #[tauri::command]
 pub fn modules_match_url_cmd(url: String) -> Result<Vec<ModuleMeta>, String> {
     Ok(modules_match_url(&url))
+}
+
+#[tauri::command]
+pub fn catalog_stats(module_id: String) -> Result<CatalogStats, String> {
+    catalog::stats(&module_id)
+}
+
+#[tauri::command]
+pub fn catalog_search(
+    module_id: String,
+    query: String,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<CatalogEntry>, String> {
+    catalog::search(&module_id, &query, limit.unwrap_or(100), offset.unwrap_or(0))
+}
+
+#[tauri::command]
+pub fn catalog_import(module_id: String, path: String) -> Result<CatalogStats, String> {
+    catalog::import_file(&module_id, std::path::Path::new(&path))
+}
+
+#[tauri::command]
+pub async fn catalog_update(
+    app: AppHandle,
+    module_id: String,
+) -> Result<UpdateListStats, String> {
+    let id = module_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let app2 = app.clone();
+        let mut progress = |p: UpdateListProgress| {
+            let _ = app2.emit("catalog-progress", &p);
+        };
+        update_list(&id, Some(&mut progress))
+    })
+    .await
+    .map_err(|e| format!("tarea cancelada: {e}"))?
 }
 
 #[derive(Debug, Deserialize, Clone)]

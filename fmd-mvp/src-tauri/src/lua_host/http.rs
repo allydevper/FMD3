@@ -93,7 +93,7 @@ impl HttpClient {
         }
     }
 
-    fn post(&self, url: &str) -> bool {
+    fn post(&self, url: &str, body: Option<&str>) -> bool {
         let (client, headers) = {
             let inner = self.inner.lock();
             (inner.client.clone(), inner.headers.clone())
@@ -102,13 +102,18 @@ impl HttpClient {
         for (k, v) in &headers {
             req = req.header(k.as_str(), v.as_str());
         }
+        if let Some(b) = body {
+            req = req
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(b.to_string());
+        }
         match req.send() {
             Ok(resp) => {
                 let ok = resp.status().is_success();
                 let text = resp.text().unwrap_or_default();
                 let mut inner = self.inner.lock();
                 inner.document = text;
-                ok
+                ok || !inner.document.is_empty()
             }
             Err(_) => {
                 self.inner.lock().document.clear();
@@ -197,7 +202,23 @@ impl UserData for HttpClient {
                 }
                 "POST" => {
                     let this = this.clone();
-                    let f = lua.create_function(move |_, url: String| Ok(this.post(&url)))?;
+                    let f = lua.create_function(move |_, args: mlua::Variadic<Value>| {
+                        let url = match args.get(0) {
+                            Some(Value::String(s)) => s.to_string_lossy(),
+                            _ => return Ok(false),
+                        };
+                        let body = match args.get(1) {
+                            Some(Value::String(s)) => Some(s.to_string_lossy()),
+                            Some(Value::Nil) | None => None,
+                            Some(other) => Some(match other {
+                                Value::Integer(i) => i.to_string(),
+                                Value::Number(n) => n.to_string(),
+                                Value::Boolean(b) => b.to_string(),
+                                _ => String::new(),
+                            }),
+                        };
+                        Ok(this.post(&url, body.as_deref()))
+                    })?;
                     Ok(Value::Function(f))
                 }
                 "Reset" => {

@@ -169,6 +169,23 @@ impl TxQuery {
             })
             .collect()
     }
+
+    /// Like HREFAll but names come from `@title` (fallback to text).
+    pub fn xpath_href_title_all(&self, expr: &str) -> Vec<(String, String)> {
+        let nodes = self.xpath_nodes(expr);
+        nodes
+            .into_iter()
+            .filter_map(|n| {
+                let href = n.attr("href")?.to_string();
+                let name = n
+                    .attr("title")
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| n.all_text());
+                Some((href, name))
+            })
+            .collect()
+    }
 }
 
 impl DomNode {

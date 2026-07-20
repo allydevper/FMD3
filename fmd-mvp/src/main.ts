@@ -72,29 +72,55 @@ type QueueProgressEvent = {
   page_total: number;
 };
 
+type CatalogEntry = {
+  link: string;
+  title: string;
+  alttitles: string;
+  authors: string;
+};
+
+type CatalogStats = {
+  module_id: string;
+  path: string;
+  count: number;
+};
+
+type UpdateListStats = {
+  module_id: string;
+  inserted: number;
+  total_in_db: number;
+  pages_fetched: number;
+};
+
 const PAGE_SIZE = 80;
+const CATALOG_PAGE = 80;
+const LOLI_VAULT_ID = "218b722b1eb34f2aa3863f84538c5b08";
 
 let manga: MangaInfoResult | null = null;
 let mangaUrl = "";
 let outputDir = "";
 let visibleCount = PAGE_SIZE;
 let selected = new Set<number>();
-let activeTab: "manga" | "queue" | "favorites" = "manga";
+let activeTab: "manga" | "catalog" | "queue" | "favorites" = "manga";
 let expandedGroups = new Set<string>();
 let liveProgress = new Map<
   number,
   { page_current: number; page_total: number; message: string; chapter_name: string }
 >();
 let lastQueueItems: QueueItem[] = [];
+let catalogEntries: CatalogEntry[] = [];
+let catalogOffset = 0;
+let catalogQuery = "";
 
 const app = document.querySelector("#app")!;
 
 app.innerHTML = `
-  <h1>FMD MVP</h1>
-  <p class="sub">Cola + favoritos · multi-módulo Lua (Auto / selector)</p>
+  <h1>FMD Host</h1>
+  <p class="sub">Catálogo · cola · favoritos · multi-módulo Lua</p>
 
   <div class="tabs">
     <button type="button" class="tab active" data-tab="manga">Manga</button>
+    <button type="button" class="tab" data-tab="catalog">Catálogo</button>
     <button type="button" class="tab" data-tab="queue">Cola</button>
     <button type="button" class="tab" data-tab="favorites">Favoritos</button>
   </div>
@@ -140,6 +166,24 @@ app.innerHTML = `
     </div>
   </section>
 
+  <section id="tab-catalog" hidden>
+    <div class="row">
+      <label for="catalog-module">Sitio:</label>
+      <select id="catalog-module"></select>
+      <button id="catalog-update" type="button">Actualizar lista</button>
+      <button id="catalog-import" class="secondary" type="button">Importar .db…</button>
+    </div>
+    <div class="row">
+      <input id="catalog-q" type="text" placeholder="Buscar título…" />
+      <button id="catalog-search" class="secondary" type="button">Buscar</button>
+      <span id="catalog-stats" class="path"></span>
+    </div>
+    <div id="catalog-list" class="list"></div>
+    <div class="toolbar">
+      <button id="catalog-more" class="secondary" type="button" hidden>Mostrar más</button>
+    </div>
+  </section>
+
   <section id="tab-queue" hidden>
     <div class="toolbar">
       <button id="queue-refresh" class="secondary" type="button">Actualizar</button>
@@ -182,6 +226,11 @@ app.innerHTML = `
 const urlInput = document.querySelector<HTMLInputElement>("#url")!;
 const loadBtn = document.querySelector<HTMLButtonElement>("#load")!;
 const moduleSel = document.querySelector<HTMLSelectElement>("#module-sel")!;
+const catalogModuleSel = document.querySelector<HTMLSelectElement>("#catalog-module")!;
+const catalogListEl = document.querySelector<HTMLDivElement>("#catalog-list")!;
+const catalogStatsEl = document.querySelector<HTMLElement>("#catalog-stats")!;
+const catalogQ = document.querySelector<HTMLInputElement>("#catalog-q")!;
+const catalogMoreBtn = document.querySelector<HTMLButtonElement>("#catalog-more")!;
 const busyEl = document.querySelector<HTMLElement>("#busy")!;
 const infoPanel = document.querySelector<HTMLDivElement>("#info")!;
 const titleEl = document.querySelector<HTMLElement>("#title")!;
@@ -216,16 +265,18 @@ function clearLog() {
   logEl.textContent = "";
 }
 
-function switchTab(tab: "manga" | "queue" | "favorites") {
+function switchTab(tab: "manga" | "catalog" | "queue" | "favorites") {
   activeTab = tab;
   document.querySelectorAll(".tab").forEach((el) => {
     el.classList.toggle("active", (el as HTMLElement).dataset.tab === tab);
   });
   document.querySelector<HTMLElement>("#tab-manga")!.hidden = tab !== "manga";
+  document.querySelector<HTMLElement>("#tab-catalog")!.hidden = tab !== "catalog";
   document.querySelector<HTMLElement>("#tab-queue")!.hidden = tab !== "queue";
   document.querySelector<HTMLElement>("#tab-favorites")!.hidden = tab !== "favorites";
   if (tab === "queue") void refreshQueue();
   if (tab === "favorites") void refreshFavorites();
+  if (tab === "catalog") void refreshCatalogStats();
 }
 
 document.querySelectorAll(".tab").forEach((el) => {
@@ -310,20 +361,112 @@ async function loadModules() {
     const mods = await invoke<ModuleMeta[]>("modules_list_cmd");
     const current = moduleSel.value;
     moduleSel.innerHTML = `<option value="">Auto</option>`;
+    catalogModuleSel.innerHTML = "";
     const sorted = [...mods].sort((a, b) => a.name.localeCompare(b.name));
     for (const m of sorted) {
+      const label = `${m.name} (${m.root_url.replace(/^https?:\/\//, "")})`;
       const opt = document.createElement("option");
       opt.value = m.id;
-      opt.textContent = `${m.name} (${m.root_url.replace(/^https?:\/\//, "")})`;
+      opt.textContent = label;
       moduleSel.appendChild(opt);
+      const opt2 = document.createElement("option");
+      opt2.value = m.id;
+      opt2.textContent = label;
+      catalogModuleSel.appendChild(opt2);
     }
     if (current && [...moduleSel.options].some((o) => o.value === current)) {
       moduleSel.value = current;
+    }
+    if ([...catalogModuleSel.options].some((o) => o.value === LOLI_VAULT_ID)) {
+      catalogModuleSel.value = LOLI_VAULT_ID;
     }
     log(`Módulos cargados: ${mods.length}`, "ok");
   } catch (e) {
     log(`No se pudo listar módulos: ${e}`, "err");
   }
+}
+
+function maybeFillHost(root: string, link: string): string {
+  const l = link.trim();
+  if (!l) return root;
+  if (l.startsWith("http://") || l.startsWith("https://")) return l;
+  const r = root.replace(/\/$/, "");
+  return l.startsWith("/") ? `${r}${l}` : `${r}/${l}`;
+}
+
+async function refreshCatalogStats() {
+  const id = catalogModuleSel.value;
+  if (!id) {
+    catalogStatsEl.textContent = "";
+    return;
+  }
+  try {
+    const st = await invoke<CatalogStats>("catalog_stats", { moduleId: id });
+    catalogStatsEl.textContent = `${st.count} títulos · ${st.path}`;
+  } catch (e) {
+    catalogStatsEl.textContent = String(e);
+  }
+}
+
+function renderCatalogList(append: boolean) {
+  if (!append) catalogListEl.innerHTML = "";
+  if (!catalogEntries.length && !append) {
+    catalogListEl.innerHTML = `<div class="empty">Sin resultados. Actualiza la lista o importa un .db.</div>`;
+    catalogMoreBtn.hidden = true;
+    return;
+  }
+  for (const e of catalogEntries) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    row.innerHTML = `<strong>${e.title || e.link}</strong><div class="path">${e.link}</div>`;
+    row.addEventListener("click", () => void openCatalogEntry(e));
+    catalogListEl.appendChild(row);
+  }
+  catalogMoreBtn.hidden = catalogEntries.length < CATALOG_PAGE;
+}
+
+async function loadCatalog(reset: boolean) {
+  const id = catalogModuleSel.value;
+  if (!id) return;
+  if (reset) {
+    catalogOffset = 0;
+    catalogEntries = [];
+  }
+  setBusy(true, "Buscando catálogo…");
+  try {
+    const rows = await invoke<CatalogEntry[]>("catalog_search", {
+      moduleId: id,
+      query: catalogQuery,
+      limit: CATALOG_PAGE,
+      offset: catalogOffset,
+    });
+    if (reset) catalogEntries = rows;
+    else catalogEntries = catalogEntries.concat(rows);
+    catalogOffset = catalogEntries.length;
+    renderCatalogList(!reset);
+    await refreshCatalogStats();
+  } catch (e) {
+    log(String(e), "err");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function openCatalogEntry(e: CatalogEntry) {
+  const id = catalogModuleSel.value;
+  let root = "";
+  try {
+    const list = await invoke<ModuleMeta[]>("modules_list_cmd");
+    root = list.find((m) => m.id === id)?.root_url || "";
+  } catch {
+    /* ignore */
+  }
+  const url = maybeFillHost(root, e.link);
+  urlInput.value = url;
+  moduleSel.value = id;
+  switchTab("manga");
+  log(`Abriendo ${e.title || e.link}…`);
+  loadBtn.click();
 }
 
 function selectedModuleId(): string | null {
@@ -809,6 +952,77 @@ document.querySelector("#fav-check-enqueue-all")!.addEventListener("click", asyn
   } finally {
     setBusy(false);
   }
+});
+
+document.querySelector("#catalog-search")!.addEventListener("click", () => {
+  catalogQuery = catalogQ.value.trim();
+  void loadCatalog(true);
+});
+catalogQ.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    catalogQuery = catalogQ.value.trim();
+    void loadCatalog(true);
+  }
+});
+catalogMoreBtn.addEventListener("click", () => void loadCatalog(false));
+catalogModuleSel.addEventListener("change", () => {
+  void refreshCatalogStats();
+  void loadCatalog(true);
+});
+
+document.querySelector("#catalog-update")!.addEventListener("click", async () => {
+  const id = catalogModuleSel.value;
+  if (!id) return;
+  setBusy(true, "Actualizando lista (GetNameAndLink)…");
+  try {
+    const st = await invoke<UpdateListStats>("catalog_update", { moduleId: id });
+    log(
+      `Catálogo OK: +${st.inserted} nuevas · ${st.total_in_db} total · ${st.pages_fetched} páginas`,
+      "ok",
+    );
+    catalogQuery = "";
+    catalogQ.value = "";
+    await loadCatalog(true);
+  } catch (e) {
+    log(String(e), "err");
+  } finally {
+    setBusy(false);
+  }
+});
+
+document.querySelector("#catalog-import")!.addEventListener("click", async () => {
+  const id = catalogModuleSel.value;
+  if (!id) {
+    log("Elige un módulo antes de importar.", "err");
+    return;
+  }
+  const file = await open({
+    multiple: false,
+    filters: [{ name: "SQLite FMD", extensions: ["db"] }],
+  });
+  if (typeof file !== "string") return;
+  setBusy(true, "Importando .db…");
+  try {
+    const st = await invoke<CatalogStats>("catalog_import", { moduleId: id, path: file });
+    log(`Importado: ${st.count} títulos → ${st.path}`, "ok");
+    await loadCatalog(true);
+  } catch (e) {
+    log(String(e), "err");
+  } finally {
+    setBusy(false);
+  }
+});
+
+void listen<{
+  module_id: string;
+  page: number;
+  page_total: number;
+  inserted_total: number;
+  batch_rows: number;
+}>("catalog-progress", (ev) => {
+  const p = ev.payload;
+  busyEl.hidden = false;
+  busyEl.textContent = `Catálogo [${p.page + 1}/${p.page_total}] +${p.batch_rows} (acum ${p.inserted_total})`;
 });
 
 void listen<QueueProgressEvent>("queue-progress", (ev) => {

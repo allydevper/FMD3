@@ -1,3 +1,4 @@
+mod catalog;
 mod commands;
 mod db;
 mod download;
@@ -53,6 +54,26 @@ pub fn queue_list_for_test(db: &db::Db) -> Result<Vec<db::QueueItem>, String> {
     db::queue_list(db)
 }
 
+pub fn catalog_update_for_test(module_id: &str) -> Result<lua_host::UpdateListStats, String> {
+    lua_host::update_list(module_id, None)
+}
+
+pub fn catalog_import_for_test(
+    module_id: &str,
+    path: &str,
+) -> Result<catalog::CatalogStats, String> {
+    catalog::import_file(module_id, std::path::Path::new(path))
+}
+
+pub fn catalog_search_for_test(
+    module_id: &str,
+    query: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<catalog::CatalogEntry>, String> {
+    catalog::search(module_id, query, limit, offset)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let db = db::open_db().expect("no se pudo abrir la base de datos");
@@ -77,6 +98,10 @@ pub fn run() {
             commands::modules_list_cmd,
             commands::modules_refresh_cmd,
             commands::modules_match_url_cmd,
+            commands::catalog_stats,
+            commands::catalog_search,
+            commands::catalog_import,
+            commands::catalog_update,
             commands::download_chapters,
             commands::settings_get,
             commands::settings_set,

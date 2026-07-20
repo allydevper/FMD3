@@ -10,5 +10,6 @@ pub use registry::{
     refresh as modules_refresh, ModuleMeta,
 };
 pub use runtime::{
-    get_info, get_page_links, get_page_links_warmed, ChapterInfo, MangaInfoResult, PageLinksResult,
+    get_info, get_page_links, get_page_links_warmed, update_list, ChapterInfo, MangaInfoResult,
+    PageLinksResult, UpdateListProgress, UpdateListStats,
 };
