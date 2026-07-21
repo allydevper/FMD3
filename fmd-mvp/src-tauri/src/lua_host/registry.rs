@@ -17,6 +17,11 @@ pub struct ModuleMeta {
     pub on_get_page_number: String,
     pub on_get_image_url: String,
     pub on_before_download_image: String,
+    pub on_task_start: String,
+    pub on_download_image: String,
+    pub on_save_image: String,
+    pub on_after_image_saved: String,
+    pub dynamic_page_link: bool,
 }
 
 #[derive(Default)]
@@ -52,6 +57,11 @@ fn meta_from_state(state: &ModuleState, file_path: &PathBuf) -> ModuleMeta {
         on_get_page_number: state.on_get_page_number.clone(),
         on_get_image_url: state.on_get_image_url.clone(),
         on_before_download_image: state.on_before_download_image.clone(),
+        on_task_start: state.on_task_start.clone(),
+        on_download_image: state.on_download_image.clone(),
+        on_save_image: state.on_save_image.clone(),
+        on_after_image_saved: state.on_after_image_saved.clone(),
+        dynamic_page_link: state.dynamic_page_link,
     }
 }
 

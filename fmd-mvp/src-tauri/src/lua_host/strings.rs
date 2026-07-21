@@ -314,6 +314,17 @@ pub fn register_helpers(lua: &Lua) -> mlua::Result<()> {
             ))
         })?,
     )?;
+    globals.set(
+        "Trim",
+        lua.create_function(|_, s: String| Ok(s.trim().to_string()))?,
+    )?;
+    globals.set(
+        "sleep",
+        lua.create_function(|_, ms: u64| {
+            std::thread::sleep(std::time::Duration::from_millis(ms.min(60_000)));
+            Ok(())
+        })?,
+    )?;
     globals.set("no_error", 0)?;
     globals.set("net_problem", 1)?;
     globals.set("information_not_found", 2)?;

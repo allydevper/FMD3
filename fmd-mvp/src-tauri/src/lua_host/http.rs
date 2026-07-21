@@ -18,7 +18,8 @@ pub struct HttpClient {
 
 struct HttpInner {
     client: reqwest::blocking::Client,
-    document: String,
+    /// Response body as raw bytes (images must not go through UTF-8 text()).
+    document: Vec<u8>,
     /// Outgoing body written via Document.WriteString (FMD2).
     pending_body: String,
     /// Request headers (set by modules / bypass).
@@ -188,7 +189,7 @@ impl HttpClient {
         Ok(Self {
             inner: Arc::new(Mutex::new(HttpInner {
                 client,
-                document: String::new(),
+                document: Vec::new(),
                 pending_body: String::new(),
                 headers,
                 response_headers: HashMap::new(),
@@ -205,7 +206,13 @@ impl HttpClient {
         })
     }
 
+    /// UTF-8 lossy view of Document (HTML/XPath).
     pub fn document(&self) -> String {
+        String::from_utf8_lossy(&self.inner.lock().document).into_owned()
+    }
+
+    /// Raw Document bytes (image download / save).
+    pub fn document_bytes(&self) -> Vec<u8> {
         self.inner.lock().document.clone()
     }
 
@@ -220,8 +227,19 @@ impl HttpClient {
             .insert(key.to_string(), value.to_string());
     }
 
-    #[allow(dead_code)]
-    pub fn get_url(&self, url: &str) -> bool {
+    /// FMD2 THTTPSendThread.AcceptImage
+    pub fn accept_image(&self) {
+        self.inner
+            .lock()
+            .headers
+            .insert("Accept".into(), "image/webp,*/*".into());
+    }
+
+    pub fn reset_http(&self) {
+        self.reset();
+    }
+
+    pub fn get_public(&self, url: &str) -> bool {
         self.get(url)
     }
 
@@ -290,12 +308,12 @@ impl HttpClient {
         inner: &mut HttpInner,
         status: u16,
         headers: HashMap<String, String>,
-        text: String,
+        body: Vec<u8>,
         raw_headers: &reqwest::header::HeaderMap,
     ) {
         inner.result_code = status;
         inner.response_headers = headers;
-        inner.document = text;
+        inner.document = body;
         inner.pending_body.clear();
         if inner.enabled_cookies {
             merge_set_cookie(&mut inner.cookies, raw_headers);
@@ -328,8 +346,6 @@ impl HttpClient {
                 Self::cookie_header(&inner)
             };
 
-            eprintln!("HTTP {method_u} {current_url}");
-
             let mut req = match method_u.as_str() {
                 "POST" => client.post(&current_url),
                 "PUT" => client.put(&current_url),
@@ -359,8 +375,7 @@ impl HttpClient {
 
             let resp = match req.send() {
                 Ok(r) => r,
-                Err(e) => {
-                    eprintln!("HTTP error {current_url}: {e}");
+                Err(_e) => {
                     let mut inner = self.inner.lock();
                     inner.result_code = 0;
                     inner.document.clear();
@@ -386,9 +401,9 @@ impl HttpClient {
                     .unwrap_or("")
                     .to_string();
                 if loc.is_empty() {
-                    let text = resp.text().unwrap_or_default();
+                    let bytes = resp.bytes().map(|b| b.to_vec()).unwrap_or_default();
                     let mut inner = self.inner.lock();
-                    Self::apply_response(&mut inner, status, rh, text, &raw_headers);
+                    Self::apply_response(&mut inner, status, rh, bytes, &raw_headers);
                     return status > 0;
                 }
                 // Merge cookies from redirect response before following
@@ -400,14 +415,8 @@ impl HttpClient {
                     }
                 }
                 let next = resolve_redirect(&current_url, &loc);
-                eprintln!("HTTP redirect {status} → {next}");
                 // FMD2: add Referer = previous URL if missing
-                if !headers.keys().any(|k| k.eq_ignore_ascii_case("Referer")) {
-                    headers.insert("Referer".into(), current_url.clone());
-                } else {
-                    // Update Referer to last hop (closer to browser behaviour on cross-host)
-                    headers.insert("Referer".into(), current_url.clone());
-                }
+                headers.insert("Referer".into(), current_url.clone());
                 current_url = next;
                 method_u = "GET".into();
                 body_owned = None;
@@ -416,9 +425,9 @@ impl HttpClient {
                 continue;
             }
 
-            let text = resp.text().unwrap_or_default();
+            let bytes = resp.bytes().map(|b| b.to_vec()).unwrap_or_default();
             let mut inner = self.inner.lock();
-            Self::apply_response(&mut inner, status, rh, text, &raw_headers);
+            Self::apply_response(&mut inner, status, rh, bytes, &raw_headers);
             return status > 0;
         }
     }
@@ -439,48 +448,6 @@ impl HttpClient {
         self.send_raw(method, url, body_ref)
     }
 
-    fn apply_cookie_map(&self, cookies: &HashMap<String, String>) {
-        let mut inner = self.inner.lock();
-        for (k, v) in cookies {
-            if !k.is_empty() {
-                inner.cookies.insert(k.clone(), v.clone());
-            }
-        }
-        Self::sync_cookie_header(&mut inner);
-    }
-
-    fn try_firefox_cookie_retry(&self, method: &str, url: &str) -> bool {
-        let Some(host) = super::browser_cookies::host_from_url(url) else {
-            return false;
-        };
-        let cookies = super::browser_cookies::firefox_cookies_for_host(&host);
-        if cookies.is_empty() {
-            eprintln!("WebsiteBypass: sin cookies Firefox para {host}");
-            return false;
-        }
-        let has_cf = cookies.keys().any(|k| k == "cf_clearance" || k.starts_with("__cf"));
-        eprintln!(
-            "WebsiteBypass: reintento con cookies Firefox ({host}, {} cookies, cf={has_cf})",
-            cookies.len()
-        );
-        self.apply_cookie_map(&cookies);
-        if !self.request_nobypass(method, url) {
-            return false;
-        }
-        let (status, server, body) = {
-            let inner = self.inner.lock();
-            let server = header_get_ci(&inner.response_headers, "Server").unwrap_or_default();
-            (inner.result_code, server, inner.document.clone())
-        };
-        if looks_like_cloudflare(status, &server, &body) {
-            eprintln!("WebsiteBypass: cookies Firefox no bastaron (status={status})");
-            return false;
-        }
-        eprintln!("WebsiteBypass: OK con cookies Firefox");
-        self.persist_session();
-        true
-    }
-
     fn after_request(&self, method: &str, url: &str) {
         let depth = self.inner.lock().bypass_depth;
         if depth > 0 {
@@ -489,23 +456,17 @@ impl HttpClient {
         let (status, server, body_preview) = {
             let inner = self.inner.lock();
             let server = header_get_ci(&inner.response_headers, "Server").unwrap_or_default();
-            let preview: String = inner.document.chars().take(800).collect();
+            let lossy = String::from_utf8_lossy(&inner.document);
+            let preview: String = lossy.chars().take(800).collect();
             (inner.result_code, server, preview)
         };
-        if !looks_like_cloudflare(status, &server, &body_preview)
-            && !matches!(status, 403 | 429 | 503)
-        {
+        if !looks_like_cloudflare(status, &server, &body_preview) {
             return;
         }
-        let short: String = body_preview.chars().take(120).collect();
-        eprintln!("HTTP antibot? status={status} server={server} body≈{short:?}");
 
         if super::website_bypass_host::try_bypass(self, method, url) {
             self.persist_session();
-            return;
         }
-        // FMD2 webdriver path can use rookiepy; we try Firefox cookies without Flare.
-        let _ = self.try_firefox_cookie_retry(method, url);
     }
 
     fn get(&self, url: &str) -> bool {
@@ -722,6 +683,14 @@ impl UserData for HttpClient {
                     let this = this.clone();
                     let f = lua.create_function(move |_, ()| {
                         this.reset();
+                        Ok(())
+                    })?;
+                    Ok(Value::Function(f))
+                }
+                "AcceptImage" => {
+                    let this = this.clone();
+                    let f = lua.create_function(move |_, ()| {
+                        this.accept_image();
                         Ok(())
                     })?;
                     Ok(Value::Function(f))

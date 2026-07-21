@@ -9,6 +9,27 @@ mod xpath;
 use queue::QueueState;
 
 /// Exposed for smoke binaries / tests.
+pub fn download_chapter_for_test(
+    chapter_url: &str,
+    module_id: Option<&str>,
+    manga_url: Option<&str>,
+    output_dir: &std::path::Path,
+    manga_title: &str,
+    chapter_index: usize,
+    chapter_name: &str,
+) -> Result<download::DownloadResult, String> {
+    lua_host::download_chapter(
+        chapter_url,
+        module_id,
+        manga_url,
+        output_dir,
+        manga_title,
+        chapter_index,
+        chapter_name,
+        None,
+    )
+}
+
 pub fn download_pages_for_test(
     output_dir: &std::path::Path,
     manga_title: &str,

@@ -15,37 +15,25 @@ fn register_fmd_logger(lua: &Lua) -> mlua::Result<()> {
     let package: Table = lua.globals().get("package")?;
     let loaded: Table = package.get("loaded")?;
     let logger = lua.create_table()?;
+    // Quiet by default: use_webdriver=false is the normal path; errors only when debug needed.
     logger.set(
         "SendError",
-        lua.create_function(|_, msg: String| {
-            eprintln!("WebsiteBypass error: {msg}");
-            Ok(())
-        })?,
+        lua.create_function(|_, _msg: String| Ok(()))?,
     )?;
     logger.set(
         "SendWarning",
-        lua.create_function(|_, msg: String| {
-            eprintln!("WebsiteBypass warning: {msg}");
-            Ok(())
-        })?,
+        lua.create_function(|_, _msg: String| Ok(()))?,
     )?;
     logger.set(
         "Send",
-        lua.create_function(|_, msg: String| {
-            eprintln!("WebsiteBypass: {msg}");
-            Ok(())
-        })?,
+        lua.create_function(|_, _msg: String| Ok(()))?,
     )?;
     loaded.set("fmd.logger", logger)?;
     Ok(())
 }
 
 fn register_fmd_env(lua: &Lua) -> mlua::Result<()> {
-    let package: Table = lua.globals().get("package")?;
-    let loaded: Table = package.get("loaded")?;
-    let env = lua.create_table()?;
-    loaded.set("fmd.env", env)?;
-    Ok(())
+    super::fmd_env::register_fmd_env(lua)
 }
 
 fn resolve_python() -> String {
@@ -93,7 +81,6 @@ fn register_fmd_subprocess(lua: &Lua) -> mlua::Result<()> {
                 return Ok((false, String::new(), String::from("empty command")));
             }
             let program = cmd_args.remove(0);
-            eprintln!("WebsiteBypass subprocess: {program} {}", cmd_args.join(" "));
             let mut cmd = Command::new(&program);
             cmd.args(&cmd_args);
             #[cfg(windows)]
@@ -202,11 +189,6 @@ fn setup_bypass_lua(lua: &Lua, http: &HttpClient) -> mlua::Result<()> {
         config_json.to_string_lossy().as_ref(),
     )?;
     let python = resolve_python();
-    eprintln!(
-        "WebsiteBypass: python={python} script={} config={}",
-        py_script.display(),
-        config_json.display()
-    );
     lua.globals().set("FMD_PYTHON_EXE", python)?;
 
     // sleep(ms) used by cloudflare.lua
@@ -285,29 +267,19 @@ pub fn try_bypass(http: &HttpClient, method: &str, url: &str) -> bool {
         return false;
     }
 
-    eprintln!(
-        "WebsiteBypass: antibot detectado → {method} {url} (doc={} bytes)",
-        http.document().len()
-    );
     http.begin_bypass();
     let result = (|| {
         let bypass: mlua::Function = globals.get("____WebsiteBypass").ok()?;
         match bypass.call::<bool>((method.to_string(), url.to_string())) {
             Ok(ok) => Some(ok),
-            Err(e) => {
-                eprintln!("____WebsiteBypass error: {e}");
-                Some(false)
-            }
+            Err(_) => Some(false),
         }
     })();
     http.end_bypass();
 
     let ok = result.unwrap_or(false);
     if ok {
-        eprintln!("WebsiteBypass: OK");
         http.persist_session();
-    } else {
-        eprintln!("WebsiteBypass: sin solución Cloudflare (mismo camino que FMD2 sin webdriver)");
     }
     ok
 }

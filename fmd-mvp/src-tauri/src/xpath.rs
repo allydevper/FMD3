@@ -31,6 +31,13 @@ impl DomNode {
         collapse_ws(&out)
     }
 
+    /// Raw descendant text without whitespace collapse (needed for JSON in `<script>`).
+    pub fn raw_text(&self) -> String {
+        let mut out = String::new();
+        self.collect_text(&mut out);
+        out
+    }
+
     fn collect_text(&self, out: &mut String) {
         match self {
             DomNode::Text(t) => out.push_str(t),

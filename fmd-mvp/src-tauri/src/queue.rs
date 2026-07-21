@@ -1,6 +1,5 @@
 use crate::db::{self, Db, QueueItem};
-use crate::download::download_pages_with_progress;
-use crate::lua_host::get_page_links_warmed;
+use crate::lua_host::download_chapter;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -173,22 +172,17 @@ fn process_item(
     } else {
         Some(item.module_id.as_str())
     };
-    // Warm with manga page URL (not just RootURL) so Referer/cookies match FMD2 flow
     let warm = if !item.manga_url.trim().is_empty() {
-        item.manga_url.as_str()
+        Some(item.manga_url.as_str())
+    } else if !item.root_url.trim().is_empty() {
+        Some(item.root_url.as_str())
     } else {
-        item.root_url.as_str()
+        None
     };
-    eprintln!("queue: chapter={url} warm={warm}");
-    let page_result = get_page_links_warmed(&url, module_id, Some(warm))?;
-    let pages = page_result.pages;
-    let referer = page_result.referer;
+
     if cancel.load(Ordering::SeqCst) {
         let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
         return Ok(());
-    }
-    if pages.is_empty() {
-        return Err("GetPageNumber no devolvió imágenes".into());
     }
 
     let _ = app.emit(
@@ -200,7 +194,7 @@ fn process_item(
             message: format!("Downloading {}", item.chapter_name),
             pending_left: pending_count(&app.state::<QueueState>().db),
             page_current: 0,
-            page_total: pages.len() as u32,
+            page_total: 0,
         },
     );
 
@@ -224,15 +218,16 @@ fn process_item(
         );
     };
 
-    let result = download_pages_with_progress(
+    let result = download_chapter(
+        &url,
+        module_id,
+        warm,
         &output,
         &item.manga_title,
         item.chapter_index as usize,
         &item.chapter_name,
-        &pages,
         Some(&mut on_progress),
-        Some(referer.as_str()),
-    );
+    )?;
 
     if cancel.load(Ordering::SeqCst) {
         let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
@@ -258,7 +253,7 @@ fn process_item(
             message: format!("Completed ({} files)", result.files.len()),
             pending_left: pending_count(&app.state::<QueueState>().db),
             page_current: result.files.len() as u32,
-            page_total: pages.len() as u32,
+            page_total: result.files.len() as u32,
         },
     );
     Ok(())
