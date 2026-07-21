@@ -73,6 +73,8 @@ pub struct ModuleState {
     pub max_connection_limit: i64,
     /// Module options from AddOption* / GetOption (FMD2).
     pub options: HashMap<String, ModuleOptionValue>,
+    /// FMD2 TStringsStorage — string key/value bag (session-scoped).
+    pub storage: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -93,10 +95,54 @@ struct ModuleHandle {
     inner: Arc<Mutex<ModuleState>>,
 }
 
+/// FMD2 MODULE.Storage — `m.Storage['key'] = 'value'`.
+#[derive(Clone)]
+struct ModuleStorageHandle {
+    module: ModuleHandle,
+}
+
+impl UserData for ModuleStorageHandle {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            if key == "Remove" {
+                let this = this.clone();
+                let f = lua.create_function(move |_, name: String| {
+                    this.module.inner.lock().storage.remove(&name);
+                    Ok(())
+                })?;
+                return Ok(Value::Function(f));
+            }
+            let v = this
+                .module
+                .inner
+                .lock()
+                .storage
+                .get(&key)
+                .cloned()
+                .unwrap_or_default();
+            Ok(Value::String(lua.create_string(&v)?))
+        });
+        methods.add_meta_method_mut(
+            mlua::MetaMethod::NewIndex,
+            |_, this, (key, value): (String, Value)| {
+                let s = value_to_string(value);
+                this.module.inner.lock().storage.insert(key, s);
+                Ok(())
+            },
+        );
+    }
+}
+
 impl UserData for ModuleHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
             match key.as_str() {
+                "Storage" => {
+                    let ud = lua.create_userdata(ModuleStorageHandle {
+                        module: this.clone(),
+                    })?;
+                    Ok(Value::UserData(ud))
+                }
                 "AddOptionCheckBox" => {
                     let this = this.clone();
                     let f = lua.create_function(
