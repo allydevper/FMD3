@@ -68,7 +68,15 @@ pub fn package_path() -> String {
     let tpl = templates_dir();
     let root_s = root.to_string_lossy().replace('\\', "/");
     let tpl_s = tpl.to_string_lossy().replace('\\', "/");
+    let wb_s = root
+        .join("websitebypass")
+        .to_string_lossy()
+        .replace('\\', "/");
     format!(
-        "{root_s}/?.lua;{root_s}/?/init.lua;{tpl_s}/?.lua;{tpl_s}/?/init.lua;{root_s}/templates/?.lua;;"
+        "{root_s}/?.lua;{root_s}/?/init.lua;{tpl_s}/?.lua;{tpl_s}/?/init.lua;{root_s}/templates/?.lua;{wb_s}/?.lua;{root_s}/websitebypass/?.lua;;"
     )
+}
+
+pub fn websitebypass_dir() -> PathBuf {
+    lua_root().join("websitebypass")
 }

@@ -135,6 +135,123 @@ pub fn maybe_fill_host(host: &str, url: &str) -> String {
     }
 }
 
+/// FMD2 `RemoveHostFromURL` / `SplitURL(..., path)` — strip scheme+host, keep path/query/fragment.
+pub fn remove_host_from_url(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return String::new();
+    }
+    if let Ok(parsed) = url::Url::parse(url) {
+        if parsed.has_host() {
+            let mut out = String::new();
+            out.push_str(parsed.path());
+            if let Some(q) = parsed.query() {
+                out.push('?');
+                out.push_str(q);
+            }
+            if let Some(f) = parsed.fragment() {
+                out.push('#');
+                out.push_str(f);
+            }
+            if out.is_empty() {
+                return "/".into();
+            }
+            return out;
+        }
+    }
+    // Already relative or unparseable as absolute URL
+    if url.starts_with('/') {
+        url.to_string()
+    } else if !url.contains("://") {
+        format!("/{url}")
+    } else {
+        // Fallback: strip up to first path slash after host
+        if let Some(rest) = url.find("://").and_then(|i| {
+            let after = &url[i + 3..];
+            after.find('/').map(|j| after[j..].to_string())
+        }) {
+            rest
+        } else {
+            url.to_string()
+        }
+    }
+}
+
+/// FMD2 `RemoveHostFromURLsPair` — strip hosts; drop empty links and matching names.
+pub fn remove_host_from_urls_pair(links: &mut Vec<String>, names: &mut Vec<String>) {
+    let mut i = 0;
+    while i < links.len() {
+        links[i] = remove_host_from_url(&links[i]);
+        if links[i].is_empty() {
+            links.remove(i);
+            if i < names.len() {
+                names.remove(i);
+            }
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Align chapter link/name lists like FMD2 uData post-GetInfo (trim, pad, dedupe, strip host).
+pub fn normalize_chapter_lists(links: &mut Vec<String>, names: &mut Vec<String>) {
+    while names.len() < links.len() {
+        names.push(String::new());
+    }
+    while links.len() < names.len() {
+        names.pop();
+    }
+    for l in links.iter_mut() {
+        *l = l.trim().to_string();
+    }
+    for n in names.iter_mut() {
+        *n = n.trim().to_string();
+    }
+    // Deduplicate by link (case-insensitive), keep first — FMD2 uData.pas
+    let mut i = 0;
+    while i + 1 < links.len() {
+        let mut del = false;
+        for k in (i + 1)..links.len() {
+            if links[i].eq_ignore_ascii_case(&links[k]) {
+                links.remove(i);
+                if i < names.len() {
+                    names.remove(i);
+                }
+                del = true;
+                break;
+            }
+        }
+        if !del {
+            i += 1;
+        }
+    }
+    remove_host_from_urls_pair(links, names);
+}
+
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Light cleanup mirroring uData title/authors/summary trim (not full CommonStringFilter).
+pub fn cleanup_manga_fields(
+    title: &mut String,
+    authors: &mut String,
+    summary: &mut String,
+) {
+    *title = collapse_ws(title.trim());
+    *authors = collapse_ws(authors.trim()).trim_matches(',').trim().to_string();
+    *summary = summary.trim().to_string();
+    if title.is_empty() {
+        *title = "N/A".into();
+    }
+    if authors == "-" || authors == ":" {
+        authors.clear();
+    }
+    if summary == "-" || summary == ":" {
+        summary.clear();
+    }
+}
+
 pub fn manga_info_status_if_pos(
     search: &str,
     ongoing: &str,
@@ -201,4 +318,36 @@ pub fn register_helpers(lua: &Lua) -> mlua::Result<()> {
     globals.set("net_problem", 1)?;
     globals.set("information_not_found", 2)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_host_ninemanga_to_path() {
+        assert_eq!(
+            remove_host_from_url("https://es.ninemanga.com/chapter/foo/123/"),
+            "/chapter/foo/123/"
+        );
+    }
+
+    #[test]
+    fn remove_host_keeps_relative() {
+        assert_eq!(remove_host_from_url("/chapter/foo/"), "/chapter/foo/");
+    }
+
+    #[test]
+    fn normalize_strips_and_dedupes() {
+        let mut links = vec![
+            "https://es.ninemanga.com/chapter/a/1/".into(),
+            "https://es.ninemanga.com/chapter/a/1/".into(),
+            "https://es.niadd.com/chapter/b/2/".into(),
+        ];
+        let mut names = vec!["A".into(), "A2".into(), "B".into()];
+        normalize_chapter_lists(&mut links, &mut names);
+        // FMD2 deletes the earlier duplicate when a later match exists
+        assert_eq!(links, vec!["/chapter/a/1/", "/chapter/b/2/"]);
+        assert_eq!(names, vec!["A2", "B"]);
+    }
 }

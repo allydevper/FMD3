@@ -476,7 +476,7 @@ function selectedModuleId(): string | null {
 
 loadBtn.addEventListener("click", async () => {
   clearLog();
-  setBusy(true, "Cargando GetInfo…");
+  setBusy(true, "Cargando GetInfo… (Cloudflare puede tardar)");
   loadBtn.disabled = true;
   log("Cargando info vía Lua GetInfo…");
   try {
@@ -560,6 +560,7 @@ document.querySelector("#enqueue")!.addEventListener("click", async () => {
       req: {
         manga_title: manga.title || "manga",
         root_url: manga.root_url,
+        manga_url: mangaUrl,
         module_id: manga.module_id,
         output_dir: dir,
         chapters,

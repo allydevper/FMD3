@@ -173,7 +173,14 @@ fn process_item(
     } else {
         Some(item.module_id.as_str())
     };
-    let page_result = get_page_links_warmed(&url, module_id, Some(item.root_url.as_str()))?;
+    // Warm with manga page URL (not just RootURL) so Referer/cookies match FMD2 flow
+    let warm = if !item.manga_url.trim().is_empty() {
+        item.manga_url.as_str()
+    } else {
+        item.root_url.as_str()
+    };
+    eprintln!("queue: chapter={url} warm={warm}");
+    let page_result = get_page_links_warmed(&url, module_id, Some(warm))?;
     let pages = page_result.pages;
     let referer = page_result.referer;
     if cancel.load(Ordering::SeqCst) {

@@ -26,6 +26,7 @@ pub struct QueueItem {
     pub id: i64,
     pub manga_title: String,
     pub root_url: String,
+    pub manga_url: String,
     pub module_id: String,
     pub chapter_index: i64,
     pub chapter_name: String,
@@ -41,6 +42,7 @@ pub struct QueueItem {
 pub struct NewQueueItem {
     pub manga_title: String,
     pub root_url: String,
+    pub manga_url: String,
     pub module_id: String,
     pub chapter_index: i64,
     pub chapter_name: String,
@@ -85,6 +87,7 @@ pub fn open_db() -> Result<Db, String> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             manga_title TEXT NOT NULL,
             root_url TEXT NOT NULL,
+            manga_url TEXT NOT NULL DEFAULT '',
             module_id TEXT NOT NULL DEFAULT '',
             chapter_index INTEGER NOT NULL,
             chapter_name TEXT NOT NULL,
@@ -99,9 +102,13 @@ pub fn open_db() -> Result<Db, String> {
         "#,
     )
     .map_err(|e| e.to_string())?;
-    // Migration: module_id on queue_items
+    // Migrations for older DBs
     let _ = conn.execute(
         "ALTER TABLE queue_items ADD COLUMN module_id TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN manga_url TEXT NOT NULL DEFAULT ''",
         [],
     );
     Ok(Arc::new(Mutex::new(conn)))
@@ -116,6 +123,45 @@ pub fn settings_get(db: &Db, key: &str) -> Result<Option<String>, String> {
     )
     .optional()
     .map_err(|e| e.to_string())
+}
+
+/// Read a setting without holding QueueState (used by HttpClient / FlareSolverr).
+pub fn settings_get_direct(key: &str) -> Result<Option<String>, String> {
+    let dir = db_path();
+    let path = dir.join("fmd-mvp.db");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Write a setting without QueueState (cookie/UA persistence from HttpClient).
+pub fn settings_set_direct(key: &str, value: &str) -> Result<(), String> {
+    let dir = db_path();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("fmd-mvp.db");
+    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY NOT NULL,
+            value TEXT NOT NULL
+        );",
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES(?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn settings_set(db: &Db, key: &str, value: &str) -> Result<(), String> {
@@ -278,7 +324,8 @@ pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
     let conn = db.lock();
     let mut stmt = conn
         .prepare(
-            "SELECT id, manga_title, root_url, COALESCE(module_id,''), chapter_index, chapter_name, chapter_link,
+            "SELECT id, manga_title, root_url, COALESCE(manga_url,''), COALESCE(module_id,''),
+                    chapter_index, chapter_name, chapter_link,
                     output_dir, status, error, created_at, updated_at
              FROM queue_items
              ORDER BY
@@ -297,15 +344,16 @@ pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
                 id: r.get(0)?,
                 manga_title: r.get(1)?,
                 root_url: r.get(2)?,
-                module_id: r.get(3)?,
-                chapter_index: r.get(4)?,
-                chapter_name: r.get(5)?,
-                chapter_link: r.get(6)?,
-                output_dir: r.get(7)?,
-                status: r.get(8)?,
-                error: r.get(9)?,
-                created_at: r.get(10)?,
-                updated_at: r.get(11)?,
+                manga_url: r.get(3)?,
+                module_id: r.get(4)?,
+                chapter_index: r.get(5)?,
+                chapter_name: r.get(6)?,
+                chapter_link: r.get(7)?,
+                output_dir: r.get(8)?,
+                status: r.get(9)?,
+                error: r.get(10)?,
+                created_at: r.get(11)?,
+                updated_at: r.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -337,12 +385,13 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
         }
         conn.execute(
             "INSERT INTO queue_items(
-                manga_title, root_url, module_id, chapter_index, chapter_name, chapter_link,
+                manga_title, root_url, manga_url, module_id, chapter_index, chapter_name, chapter_link,
                 output_dir, status, error, created_at, updated_at
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,'pending','',?8,?8)",
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending','',?9,?9)",
             params![
                 item.manga_title,
                 item.root_url,
+                item.manga_url,
                 item.module_id,
                 item.chapter_index,
                 item.chapter_name,
@@ -383,7 +432,8 @@ pub fn queue_take_next_pending(db: &Db) -> Result<Option<QueueItem>, String> {
 pub fn queue_get(db: &Db, id: i64) -> Result<QueueItem, String> {
     let conn = db.lock();
     conn.query_row(
-        "SELECT id, manga_title, root_url, COALESCE(module_id,''), chapter_index, chapter_name, chapter_link,
+        "SELECT id, manga_title, root_url, COALESCE(manga_url,''), COALESCE(module_id,''),
+                chapter_index, chapter_name, chapter_link,
                 output_dir, status, error, created_at, updated_at
          FROM queue_items WHERE id = ?1",
         params![id],
@@ -392,15 +442,16 @@ pub fn queue_get(db: &Db, id: i64) -> Result<QueueItem, String> {
                 id: r.get(0)?,
                 manga_title: r.get(1)?,
                 root_url: r.get(2)?,
-                module_id: r.get(3)?,
-                chapter_index: r.get(4)?,
-                chapter_name: r.get(5)?,
-                chapter_link: r.get(6)?,
-                output_dir: r.get(7)?,
-                status: r.get(8)?,
-                error: r.get(9)?,
-                created_at: r.get(10)?,
-                updated_at: r.get(11)?,
+                manga_url: r.get(3)?,
+                module_id: r.get(4)?,
+                chapter_index: r.get(5)?,
+                chapter_name: r.get(6)?,
+                chapter_link: r.get(7)?,
+                output_dir: r.get(8)?,
+                status: r.get(9)?,
+                error: r.get(10)?,
+                created_at: r.get(11)?,
+                updated_at: r.get(12)?,
             })
         },
     )

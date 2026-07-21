@@ -1,7 +1,15 @@
+//! HTTP userdata compatible with FMD2 modules + WebsiteBypass Lua scripts.
+
 use mlua::{UserData, UserDataMethods, Value};
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+// Match FMD2 UserAgentDefault (httpsendthread.pas)
+const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+const CF_SESSION_KEY: &str = "http_cf_session";
+const MAX_REDIRECTS: u32 = 5;
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -11,7 +19,28 @@ pub struct HttpClient {
 struct HttpInner {
     client: reqwest::blocking::Client,
     document: String,
+    /// Outgoing body written via Document.WriteString (FMD2).
+    pending_body: String,
+    /// Request headers (set by modules / bypass).
     headers: HashMap<String, String>,
+    /// Last response headers (Server, Content-Type, …).
+    response_headers: HashMap<String, String>,
+    cookies: HashMap<String, String>,
+    result_code: u16,
+    user_agent: String,
+    mime_type: String,
+    follow_redirection: bool,
+    retry_count: i64,
+    terminated: bool,
+    enabled_cookies: bool,
+    /// >0 while inside WebsiteBypass (avoid recursive antibot).
+    bypass_depth: u32,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CfSession {
+    user_agent: String,
+    cookies: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -29,19 +58,149 @@ struct HeaderValuesHandle {
     client: HttpClient,
 }
 
+#[derive(Clone)]
+struct CookiesHandle {
+    client: HttpClient,
+}
+
+#[derive(Clone)]
+struct CookieValuesHandle {
+    client: HttpClient,
+}
+
+fn build_client(ua: &str) -> Result<reqwest::blocking::Client, String> {
+    // FMD2/Synapse is HTTP/1.1; HTTP/2 ALPN is a common CF fingerprint tell.
+    // Redirects: manual (Referer + relative Location), like httpsendthread.pas.
+    reqwest::blocking::Client::builder()
+        .user_agent(ua)
+        .cookie_store(true)
+        .http1_only()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn resolve_redirect(base: &str, location: &str) -> String {
+    let loc = location.trim();
+    if loc.is_empty() {
+        return base.to_string();
+    }
+    if loc.starts_with("http://") || loc.starts_with("https://") {
+        return loc.to_string();
+    }
+    match url::Url::parse(base) {
+        Ok(base_url) => base_url
+            .join(loc)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| loc.to_string()),
+        Err(_) => loc.to_string(),
+    }
+}
+
+fn merge_set_cookie(cookies: &mut HashMap<String, String>, headers: &reqwest::header::HeaderMap) {
+    for sc in headers.get_all(reqwest::header::SET_COOKIE) {
+        let Ok(s) = sc.to_str() else { continue };
+        let Some(nv) = s.split(';').next() else { continue };
+        let Some((n, v)) = nv.split_once('=') else { continue };
+        let n = n.trim();
+        if !n.is_empty() {
+            cookies.insert(n.to_string(), v.trim().to_string());
+        }
+    }
+}
+
+fn load_cf_session() -> CfSession {
+    crate::db::settings_get_direct(CF_SESSION_KEY)
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_cf_session(ua: &str, cookies: &HashMap<String, String>) {
+    let session = CfSession {
+        user_agent: ua.to_string(),
+        cookies: cookies.clone(),
+    };
+    if let Ok(json) = serde_json::to_string(&session) {
+        let _ = crate::db::settings_set_direct(CF_SESSION_KEY, &json);
+    }
+}
+
+fn default_browser_headers() -> HashMap<String, String> {
+    // Match THTTPSendThread.Reset / ResetBasic (FMD2)
+    let mut h = HashMap::new();
+    h.insert("DNT".into(), "1".into());
+    h.insert("Upgrade-Insecure-Requests".into(), "1".into());
+    h.insert(
+        "Accept".into(),
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8".into(),
+    );
+    h.insert("Accept-Language".into(), "en-US,en;q=0.5".into());
+    h.insert("Accept-Charset".into(), "utf-8".into());
+    h.insert("Accept-Encoding".into(), "gzip, deflate, br".into());
+    h
+}
+
+fn looks_like_cloudflare(status: u16, server: &str, body: &str) -> bool {
+    let server = server.to_lowercase();
+    let cf_server = server.contains("cloudflare") || server.contains("ddos-guard");
+    if matches!(status, 403 | 429 | 503) && cf_server {
+        return true;
+    }
+    // Some edges return 200 + challenge HTML
+    if cf_server
+        && (body.contains("challenge-platform")
+            || body.contains("Just a moment")
+            || body.contains("cf-browser-verification")
+            || body.contains("__cf_chl"))
+    {
+        return true;
+    }
+    false
+}
+
+fn header_get_ci(map: &HashMap<String, String>, key: &str) -> Option<String> {
+    map.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v.clone())
+}
+
 impl HttpClient {
     pub fn new() -> mlua::Result<Self> {
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) FMD-MVP/0.1")
-            .cookie_store(true)
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
-            .map_err(mlua::Error::external)?;
+        let saved = load_cf_session();
+        let ua = if saved.user_agent.is_empty() {
+            DEFAULT_UA.to_string()
+        } else {
+            saved.user_agent
+        };
+        let client = build_client(&ua).map_err(mlua::Error::external)?;
+        let mut headers = default_browser_headers();
+        let cookies = saved.cookies;
+        if !cookies.is_empty() {
+            let cookie_hdr = cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            headers.insert("Cookie".into(), cookie_hdr);
+        }
         Ok(Self {
             inner: Arc::new(Mutex::new(HttpInner {
                 client,
                 document: String::new(),
-                headers: HashMap::new(),
+                pending_body: String::new(),
+                headers,
+                response_headers: HashMap::new(),
+                cookies,
+                result_code: 0,
+                user_agent: ua,
+                mime_type: String::new(),
+                follow_redirection: true,
+                retry_count: 0,
+                terminated: false,
+                enabled_cookies: true,
+                bypass_depth: 0,
             })),
         })
     }
@@ -55,71 +214,337 @@ impl HttpClient {
     }
 
     pub fn set_header(&self, key: &str, value: &str) {
-        self.inner.lock().headers.insert(key.to_string(), value.to_string());
+        self.inner
+            .lock()
+            .headers
+            .insert(key.to_string(), value.to_string());
     }
 
-    /// Perform GET (applies stored headers). Returns success.
+    #[allow(dead_code)]
     pub fn get_url(&self, url: &str) -> bool {
         self.get(url)
+    }
+
+    pub fn begin_bypass(&self) {
+        self.inner.lock().bypass_depth += 1;
+    }
+
+    pub fn end_bypass(&self) {
+        let mut inner = self.inner.lock();
+        if inner.bypass_depth > 0 {
+            inner.bypass_depth -= 1;
+        }
+    }
+
+    pub fn persist_session(&self) {
+        let inner = self.inner.lock();
+        save_cf_session(&inner.user_agent, &inner.cookies);
+    }
+
+    fn rebuild_client_locked(inner: &mut HttpInner) {
+        if let Ok(c) = build_client(&inner.user_agent) {
+            inner.client = c;
+        }
+    }
+
+    fn sync_cookie_header(inner: &mut HttpInner) {
+        if !inner.enabled_cookies {
+            inner.headers.remove("Cookie");
+            return;
+        }
+        if inner.cookies.is_empty() {
+            return;
+        }
+        let cookie_hdr = inner
+            .cookies
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        inner.headers.insert("Cookie".into(), cookie_hdr);
+    }
+
+    fn cookie_header(inner: &HttpInner) -> Option<String> {
+        if !inner.enabled_cookies {
+            return None;
+        }
+        if let Some(c) = header_get_ci(&inner.headers, "Cookie") {
+            if !c.is_empty() {
+                return Some(c);
+            }
+        }
+        if inner.cookies.is_empty() {
+            return None;
+        }
+        Some(
+            inner
+                .cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+
+    fn apply_response(
+        inner: &mut HttpInner,
+        status: u16,
+        headers: HashMap<String, String>,
+        text: String,
+        raw_headers: &reqwest::header::HeaderMap,
+    ) {
+        inner.result_code = status;
+        inner.response_headers = headers;
+        inner.document = text;
+        inner.pending_body.clear();
+        if inner.enabled_cookies {
+            merge_set_cookie(&mut inner.cookies, raw_headers);
+            Self::sync_cookie_header(inner);
+        }
+    }
+
+    fn send_raw(&self, method: &str, url: &str, body: Option<&str>) -> bool {
+        let (mut headers, mime, follow) = {
+            let inner = self.inner.lock();
+            if inner.terminated {
+                return false;
+            }
+            (
+                inner.headers.clone(),
+                inner.mime_type.clone(),
+                inner.follow_redirection,
+            )
+        };
+
+        let client = self.inner.lock().client.clone();
+        let mut method_u = method.to_ascii_uppercase();
+        let mut current_url = url.to_string();
+        let mut body_owned = body.map(|s| s.to_string());
+        let mut redirects = 0u32;
+
+        loop {
+            let cookie = {
+                let inner = self.inner.lock();
+                Self::cookie_header(&inner)
+            };
+
+            eprintln!("HTTP {method_u} {current_url}");
+
+            let mut req = match method_u.as_str() {
+                "POST" => client.post(&current_url),
+                "PUT" => client.put(&current_url),
+                "HEAD" => client.head(&current_url),
+                _ => client.get(&current_url),
+            };
+
+            for (k, v) in &headers {
+                if k.eq_ignore_ascii_case("Cookie") {
+                    continue;
+                }
+                req = req.header(k.as_str(), v.as_str());
+            }
+            if let Some(c) = cookie {
+                req = req.header("Cookie", c);
+            }
+
+            if matches!(method_u.as_str(), "POST" | "PUT") {
+                let b = body_owned.as_deref().unwrap_or("");
+                if !mime.is_empty() {
+                    req = req.header("Content-Type", &mime);
+                } else if !b.is_empty() {
+                    req = req.header("Content-Type", "application/x-www-form-urlencoded");
+                }
+                req = req.body(b.to_string());
+            }
+
+            let resp = match req.send() {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("HTTP error {current_url}: {e}");
+                    let mut inner = self.inner.lock();
+                    inner.result_code = 0;
+                    inner.document.clear();
+                    inner.response_headers.clear();
+                    return false;
+                }
+            };
+
+            let status = resp.status().as_u16();
+            let raw_headers = resp.headers().clone();
+            let mut rh = HashMap::new();
+            for (k, v) in raw_headers.iter() {
+                // Keep first value for lookup APIs; Set-Cookie handled separately
+                rh.entry(k.as_str().to_string())
+                    .or_insert_with(|| v.to_str().unwrap_or_default().to_string());
+            }
+
+            let is_redirect = matches!(status, 301 | 302 | 303 | 307);
+            if follow && is_redirect && redirects < MAX_REDIRECTS {
+                let loc = raw_headers
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                if loc.is_empty() {
+                    let text = resp.text().unwrap_or_default();
+                    let mut inner = self.inner.lock();
+                    Self::apply_response(&mut inner, status, rh, text, &raw_headers);
+                    return status > 0;
+                }
+                // Merge cookies from redirect response before following
+                {
+                    let mut inner = self.inner.lock();
+                    if inner.enabled_cookies {
+                        merge_set_cookie(&mut inner.cookies, &raw_headers);
+                        Self::sync_cookie_header(&mut inner);
+                    }
+                }
+                let next = resolve_redirect(&current_url, &loc);
+                eprintln!("HTTP redirect {status} → {next}");
+                // FMD2: add Referer = previous URL if missing
+                if !headers.keys().any(|k| k.eq_ignore_ascii_case("Referer")) {
+                    headers.insert("Referer".into(), current_url.clone());
+                } else {
+                    // Update Referer to last hop (closer to browser behaviour on cross-host)
+                    headers.insert("Referer".into(), current_url.clone());
+                }
+                current_url = next;
+                method_u = "GET".into();
+                body_owned = None;
+                redirects += 1;
+                let _ = resp; // drop body unread
+                continue;
+            }
+
+            let text = resp.text().unwrap_or_default();
+            let mut inner = self.inner.lock();
+            Self::apply_response(&mut inner, status, rh, text, &raw_headers);
+            return status > 0;
+        }
+    }
+
+    /// Low-level request used by WebsiteBypass (no antibot recursion).
+    pub fn request_nobypass(&self, method: &str, url: &str) -> bool {
+        let body = {
+            let mut inner = self.inner.lock();
+            let b = inner.pending_body.clone();
+            inner.pending_body.clear();
+            b
+        };
+        let body_ref = if body.is_empty() {
+            None
+        } else {
+            Some(body.as_str())
+        };
+        self.send_raw(method, url, body_ref)
+    }
+
+    fn apply_cookie_map(&self, cookies: &HashMap<String, String>) {
+        let mut inner = self.inner.lock();
+        for (k, v) in cookies {
+            if !k.is_empty() {
+                inner.cookies.insert(k.clone(), v.clone());
+            }
+        }
+        Self::sync_cookie_header(&mut inner);
+    }
+
+    fn try_firefox_cookie_retry(&self, method: &str, url: &str) -> bool {
+        let Some(host) = super::browser_cookies::host_from_url(url) else {
+            return false;
+        };
+        let cookies = super::browser_cookies::firefox_cookies_for_host(&host);
+        if cookies.is_empty() {
+            eprintln!("WebsiteBypass: sin cookies Firefox para {host}");
+            return false;
+        }
+        let has_cf = cookies.keys().any(|k| k == "cf_clearance" || k.starts_with("__cf"));
+        eprintln!(
+            "WebsiteBypass: reintento con cookies Firefox ({host}, {} cookies, cf={has_cf})",
+            cookies.len()
+        );
+        self.apply_cookie_map(&cookies);
+        if !self.request_nobypass(method, url) {
+            return false;
+        }
+        let (status, server, body) = {
+            let inner = self.inner.lock();
+            let server = header_get_ci(&inner.response_headers, "Server").unwrap_or_default();
+            (inner.result_code, server, inner.document.clone())
+        };
+        if looks_like_cloudflare(status, &server, &body) {
+            eprintln!("WebsiteBypass: cookies Firefox no bastaron (status={status})");
+            return false;
+        }
+        eprintln!("WebsiteBypass: OK con cookies Firefox");
+        self.persist_session();
+        true
+    }
+
+    fn after_request(&self, method: &str, url: &str) {
+        let depth = self.inner.lock().bypass_depth;
+        if depth > 0 {
+            return;
+        }
+        let (status, server, body_preview) = {
+            let inner = self.inner.lock();
+            let server = header_get_ci(&inner.response_headers, "Server").unwrap_or_default();
+            let preview: String = inner.document.chars().take(800).collect();
+            (inner.result_code, server, preview)
+        };
+        if !looks_like_cloudflare(status, &server, &body_preview)
+            && !matches!(status, 403 | 429 | 503)
+        {
+            return;
+        }
+        let short: String = body_preview.chars().take(120).collect();
+        eprintln!("HTTP antibot? status={status} server={server} body≈{short:?}");
+
+        if super::website_bypass_host::try_bypass(self, method, url) {
+            self.persist_session();
+            return;
+        }
+        // FMD2 webdriver path can use rookiepy; we try Firefox cookies without Flare.
+        let _ = self.try_firefox_cookie_retry(method, url);
+    }
+
+    fn get(&self, url: &str) -> bool {
+        let ok = self.request_nobypass("GET", url);
+        self.after_request("GET", url);
+        let inner = self.inner.lock();
+        ok || !inner.document.is_empty()
+    }
+
+    fn post(&self, url: &str, body: Option<&str>) -> bool {
+        if let Some(b) = body {
+            self.inner.lock().pending_body = b.to_string();
+        }
+        let ok = self.request_nobypass("POST", url);
+        self.after_request("POST", url);
+        let inner = self.inner.lock();
+        ok || !inner.document.is_empty()
     }
 
     fn reset(&self) {
         let mut inner = self.inner.lock();
         inner.document.clear();
-        inner.headers.clear();
+        inner.pending_body.clear();
+        let cookie_hdr = header_get_ci(&inner.headers, "Cookie");
+        inner.headers = default_browser_headers();
+        if let Some(c) = cookie_hdr {
+            inner.headers.insert("Cookie".into(), c);
+        }
+        inner.response_headers.clear();
+        inner.result_code = 0;
+        inner.mime_type.clear();
     }
 
-    fn get(&self, url: &str) -> bool {
-        let (client, headers) = {
-            let inner = self.inner.lock();
-            (inner.client.clone(), inner.headers.clone())
-        };
-        let mut req = client.get(url);
-        for (k, v) in &headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        match req.send() {
-            Ok(resp) => {
-                let ok = resp.status().is_success() || resp.status().as_u16() == 304;
-                let text = resp.text().unwrap_or_default();
-                let mut inner = self.inner.lock();
-                inner.document = text;
-                ok || !inner.document.is_empty()
-            }
-            Err(_) => {
-                self.inner.lock().document.clear();
-                false
-            }
-        }
-    }
-
-    fn post(&self, url: &str, body: Option<&str>) -> bool {
-        let (client, headers) = {
-            let inner = self.inner.lock();
-            (inner.client.clone(), inner.headers.clone())
-        };
-        let mut req = client.post(url);
-        for (k, v) in &headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        if let Some(b) = body {
-            req = req
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .body(b.to_string());
-        }
-        match req.send() {
-            Ok(resp) => {
-                let ok = resp.status().is_success();
-                let text = resp.text().unwrap_or_default();
-                let mut inner = self.inner.lock();
-                inner.document = text;
-                ok || !inner.document.is_empty()
-            }
-            Err(_) => {
-                self.inner.lock().document.clear();
-                false
-            }
-        }
+    fn clear_cookies(&self) {
+        let mut inner = self.inner.lock();
+        inner.cookies.clear();
+        inner.headers.remove("Cookie");
+        // rebuild client to drop jar
+        Self::rebuild_client_locked(&mut inner);
     }
 }
 
@@ -130,6 +555,14 @@ impl UserData for DocumentHandle {
                 "ToString" => {
                     let this = this.clone();
                     let f = lua.create_function(move |_, ()| Ok(this.client.document()))?;
+                    Ok(Value::Function(f))
+                }
+                "WriteString" => {
+                    let this = this.clone();
+                    let f = lua.create_function(move |_, s: String| {
+                        this.client.inner.lock().pending_body.push_str(&s);
+                        Ok(())
+                    })?;
                     Ok(Value::Function(f))
                 }
                 _ => Ok(Value::Nil),
@@ -144,13 +577,10 @@ impl UserData for DocumentHandle {
 impl UserData for HeaderValuesHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
-            let v = this
-                .client
-                .inner
-                .lock()
-                .headers
-                .get(&key)
-                .cloned()
+            let inner = this.client.inner.lock();
+            // Response first (Server/Content-Type), then request headers
+            let v = header_get_ci(&inner.response_headers, &key)
+                .or_else(|| header_get_ci(&inner.headers, &key))
                 .unwrap_or_default();
             Ok(Value::String(lua.create_string(&v)?))
         });
@@ -158,7 +588,7 @@ impl UserData for HeaderValuesHandle {
             mlua::MetaMethod::NewIndex,
             |_, this, (key, value): (String, Value)| {
                 let s = match value {
-                    Value::String(s) => s.to_string_lossy(),
+                    Value::String(s) => s.to_string_lossy().trim().to_string(),
                     Value::Integer(i) => i.to_string(),
                     Value::Number(n) => n.to_string(),
                     Value::Boolean(b) => b.to_string(),
@@ -185,6 +615,49 @@ impl UserData for HeadersHandle {
     }
 }
 
+impl UserData for CookieValuesHandle {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            let v = this
+                .client
+                .inner
+                .lock()
+                .cookies
+                .get(&key)
+                .cloned()
+                .unwrap_or_default();
+            Ok(Value::String(lua.create_string(&v)?))
+        });
+        methods.add_meta_method_mut(
+            mlua::MetaMethod::NewIndex,
+            |_, this, (key, value): (String, Value)| {
+                let s = match value {
+                    Value::String(s) => s.to_string_lossy(),
+                    _ => String::new(),
+                };
+                let mut inner = this.client.inner.lock();
+                inner.cookies.insert(key, s);
+                HttpClient::sync_cookie_header(&mut inner);
+                Ok(())
+            },
+        );
+    }
+}
+
+impl UserData for CookiesHandle {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            if key == "Values" {
+                Ok(Value::UserData(lua.create_userdata(CookieValuesHandle {
+                    client: this.client.clone(),
+                })?))
+            } else {
+                Ok(Value::Nil)
+            }
+        });
+    }
+}
+
 impl UserData for HttpClient {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
@@ -195,6 +668,22 @@ impl UserData for HttpClient {
                 "Headers" => Ok(Value::UserData(lua.create_userdata(HeadersHandle {
                     client: this.clone(),
                 })?)),
+                "Cookies" => Ok(Value::UserData(lua.create_userdata(CookiesHandle {
+                    client: this.clone(),
+                })?)),
+                "ResultCode" => Ok(Value::Integer(this.inner.lock().result_code as i64)),
+                "UserAgent" => {
+                    Ok(Value::String(lua.create_string(&this.inner.lock().user_agent)?))
+                }
+                "MimeType" => {
+                    Ok(Value::String(lua.create_string(&this.inner.lock().mime_type)?))
+                }
+                "FollowRedirection" => {
+                    Ok(Value::Boolean(this.inner.lock().follow_redirection))
+                }
+                "RetryCount" => Ok(Value::Integer(this.inner.lock().retry_count)),
+                "Terminated" => Ok(Value::Boolean(this.inner.lock().terminated)),
+                "EnabledCookies" => Ok(Value::Boolean(this.inner.lock().enabled_cookies)),
                 "GET" => {
                     let this = this.clone();
                     let f = lua.create_function(move |_, url: String| Ok(this.get(&url)))?;
@@ -221,6 +710,14 @@ impl UserData for HttpClient {
                     })?;
                     Ok(Value::Function(f))
                 }
+                "Request" => {
+                    let this = this.clone();
+                    let f = lua.create_function(move |_, (method, url): (String, String)| {
+                        // Used heavily by WebsiteBypass — no recursive antibot
+                        Ok(this.request_nobypass(&method, &url))
+                    })?;
+                    Ok(Value::Function(f))
+                }
                 "Reset" => {
                     let this = this.clone();
                     let f = lua.create_function(move |_, ()| {
@@ -229,9 +726,62 @@ impl UserData for HttpClient {
                     })?;
                     Ok(Value::Function(f))
                 }
-                "MimeType" => Ok(Value::String(lua.create_string("")?)),
+                "ClearCookiesStorage" => {
+                    let this = this.clone();
+                    let f = lua.create_function(move |_, ()| {
+                        this.clear_cookies();
+                        Ok(())
+                    })?;
+                    Ok(Value::Function(f))
+                }
                 _ => Ok(Value::Nil),
             }
         });
+
+        methods.add_meta_method_mut(
+            mlua::MetaMethod::NewIndex,
+            |_, this, (key, value): (String, Value)| {
+                let mut inner = this.inner.lock();
+                match key.as_str() {
+                    "UserAgent" => {
+                        if let Value::String(s) = value {
+                            let ua = s.to_string_lossy();
+                            if ua != inner.user_agent {
+                                inner.user_agent = ua;
+                                HttpClient::rebuild_client_locked(&mut inner);
+                            }
+                        }
+                    }
+                    "MimeType" => {
+                        if let Value::String(s) = value {
+                            inner.mime_type = s.to_string_lossy();
+                        }
+                    }
+                    "FollowRedirection" => {
+                        if let Value::Boolean(b) = value {
+                            inner.follow_redirection = b;
+                        }
+                    }
+                    "RetryCount" => {
+                        if let Value::Integer(i) = value {
+                            inner.retry_count = i;
+                        }
+                    }
+                    "Terminated" => {
+                        if let Value::Boolean(b) = value {
+                            inner.terminated = b;
+                        }
+                    }
+                    "EnabledCookies" => {
+                        if let Value::Boolean(b) = value {
+                            inner.enabled_cookies = b;
+                            HttpClient::sync_cookie_header(&mut inner);
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+        );
     }
 }

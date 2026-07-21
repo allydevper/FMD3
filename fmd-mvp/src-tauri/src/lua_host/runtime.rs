@@ -1,4 +1,5 @@
 use super::crypto::register_fmd_crypto;
+use super::duktape_js::register_fmd_duktape;
 use super::http::HttpClient;
 use super::paths::{modules_dir, package_path};
 use super::registry;
@@ -511,6 +512,10 @@ fn setup_package_path(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+pub fn register_create_txquery_pub(lua: &Lua) -> mlua::Result<()> {
+    register_create_txquery(lua)
+}
+
 fn register_create_txquery(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
     globals.set(
@@ -549,6 +554,7 @@ pub fn prepare_lua_scan(module_file: &Path) -> mlua::Result<(Lua, Vec<ModuleStat
     let lua = Lua::new();
     register_helpers(&lua)?;
     register_fmd_crypto(&lua)?;
+    register_fmd_duktape(&lua)?;
     setup_package_path(&lua)?;
 
     let http = HttpClient::new()?;
@@ -611,6 +617,7 @@ fn prepare_lua_for_meta(
     let lua = Lua::new();
     register_helpers(&lua).map_err(|e| e.to_string())?;
     register_fmd_crypto(&lua).map_err(|e| e.to_string())?;
+    register_fmd_duktape(&lua).map_err(|e| e.to_string())?;
     setup_package_path(&lua).map_err(|e| e.to_string())?;
 
     let http = HttpClient::new().map_err(|e| e.to_string())?;
@@ -761,8 +768,11 @@ fn get_info_with_path(
         ));
     }
 
-    let links = mangainfo.chapter_links.values();
-    let names = mangainfo.chapter_names.values();
+    let mut links = mangainfo.chapter_links.values();
+    let mut names = mangainfo.chapter_names.values();
+    // FMD2 uData: RemoveHostFromURLsPair + trim/dedupe after GetInfo
+    super::strings::normalize_chapter_lists(&mut links, &mut names);
+
     let mut chapters = Vec::new();
     for (i, link) in links.iter().enumerate() {
         chapters.push(ChapterInfo {
@@ -770,17 +780,19 @@ fn get_info_with_path(
             name: names
                 .get(i)
                 .cloned()
+                .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| format!("Chapter {}", i + 1)),
             link: link.clone(),
         });
     }
 
     let mod_state = module.inner.lock().clone();
-    let title = mangainfo.title.lock().clone();
+    let mut title = mangainfo.title.lock().clone();
     let cover = mangainfo.cover.lock().clone();
-    let authors = mangainfo.authors.lock().clone();
+    let mut authors = mangainfo.authors.lock().clone();
     let status = mangainfo.status.lock().clone();
-    let summary = mangainfo.summary.lock().clone();
+    let mut summary = mangainfo.summary.lock().clone();
+    super::strings::cleanup_manga_fields(&mut title, &mut authors, &mut summary);
     Ok(MangaInfoResult {
         title,
         cover,
@@ -801,7 +813,7 @@ pub fn get_page_links(
     get_page_links_inner(chapter_url, module_id, None)
 }
 
-/// Same Lua/HTTP session: optional manga URL warm-up (NiAdd Referer + cookies).
+/// Get page links. `manga_url` is only used to help module resolution when chapter path has no host.
 pub fn get_page_links_warmed(
     chapter_url: &str,
     module_id: Option<&str>,
@@ -815,15 +827,15 @@ fn get_page_links_inner(
     module_id: Option<&str>,
     manga_url: Option<&str>,
 ) -> Result<PageLinksResult, String> {
-    let meta = registry::resolve_for_url(
-        manga_url.unwrap_or(chapter_url),
-        module_id,
-    )?;
-    // If chapter host differs from module, still use module_id when provided
+    // Prefer manga URL for module match when chapter is host-stripped (/chapter/...)
+    let resolve_hint = manga_url
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or(chapter_url);
+    let meta = registry::resolve_for_url(resolve_hint, module_id)?;
     let meta = if module_id.is_some() {
         meta
-    } else if let Ok(m) = registry::resolve_for_url(chapter_url, module_id) {
-        m
+    } else if chapter_url.starts_with("http://") || chapter_url.starts_with("https://") {
+        registry::resolve_for_url(chapter_url, module_id).unwrap_or(meta)
     } else {
         meta
     };
@@ -852,18 +864,19 @@ fn get_page_links_inner(
     let root = module.inner.lock().root_url.clone();
     let globals = lua.globals();
 
-    // Warm cookies + Referer (NiAdd chapter CDN often requires prior site visit)
-    let referer_seed = manga_url
-        .map(|m| absolute_url(&root, m))
-        .unwrap_or_else(|| root.clone());
-    http.set_header("Referer", &referer_seed);
-    let _ = http.get_url(&referer_seed);
-    http.set_header("Referer", &referer_seed);
-
-    let abs = absolute_url(&root, chapter_url);
-    // Keep absolute chapter URL when host differs — MaybeFillHost preserves it
-    let rel = abs.clone();
-    globals.set("URL", rel).map_err(|e| e.to_string())?;
+    // FMD2: ChapterLinks are host-stripped; DoGetPageNumber passes AURL as-is.
+    // Legacy queue rows may still store absolute URLs — strip once.
+    let chapter_rel = super::strings::remove_host_from_url(chapter_url);
+    eprintln!("GetPageNumber URL={chapter_rel} root={root}");
+    if let Some(m) = manga_url.filter(|s| !s.trim().is_empty()) {
+        let referer = absolute_url(&root, m);
+        http.set_header("Referer", &referer);
+    } else {
+        http.set_header("Referer", &root);
+    }
+    globals
+        .set("URL", chapter_rel.clone())
+        .map_err(|e| e.to_string())?;
 
     let on_page = module.inner.lock().on_get_page_number.clone();
     let fn_name = if on_page.is_empty() {
@@ -893,6 +906,10 @@ fn get_page_links_inner(
         }
         let image_fn: mlua::Function = globals.get(on_image.as_str()).map_err(|e| e.to_string())?;
         for i in 0..n {
+            // FMD2 DoGetImageURL: URL = chapter link, WORKID = i
+            globals
+                .set("URL", chapter_rel.clone())
+                .map_err(|e| e.to_string())?;
             globals.set("WORKID", i as i64).map_err(|e| e.to_string())?;
             let st: Value = image_fn.call(()).map_err(|e| e.to_string())?;
             if !lua_status_ok(st) {

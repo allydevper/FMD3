@@ -2,19 +2,22 @@
 
 Host de escritorio que **reutiliza** los módulos Lua de FMD2 sin Lazarus.
 
-**Pilotos de scraping:** LeerCapitulo, MangaOni, NiAddES (GetInfo).  
-**Piloto de catálogo:** LoliVault (`lector.lolivault.net`) — UpdateList rápido / pocos títulos.
+**Pilotos:** LeerCapitulo, MangaOni, NiAddES, catálogo LoliVault.
+
+## Stack
+
+- UI: Tauri + TypeScript  
+- Backend: Rust + mlua + reqwest + SQLite  
+- Módulos: `lua/modules` + `lua/templates`  
+- **Cloudflare:** mismos scripts que FMD2 (`lua/websitebypass/`) + **Duktape** embebido
 
 ## Flujo
 
-1. **Manga:** pegar URL → Auto/módulo → `GetInfo` → encolar capítulos.  
-2. **Catálogo:** elegir sitio → Actualizar lista o Importar `.db` → buscar → clic → GetInfo.  
-3. **Cola / Favoritos:** descarga y check de capítulos nuevos (`module_id` correcto).
+1. Manga / Catálogo / Cola / Favoritos.  
+2. Tras `GetInfo`, los `chapter.link` se normalizan **sin host** (como FMD2 `RemoveHostFromURLsPair`); `GetPageNumber` recibe path relativo y el Lua hace `MaybeFillHost(RootURL, URL)`.  
+3. Ante antibot: WebsiteBypass + Duktape (`use_webdriver: false` por defecto).
 
-Datos:
-
-- App: `%AppData%/fmd-mvp/fmd-mvp.db`
-- Catálogo por sitio: `%AppData%/fmd-mvp/data/<module_id>.db` (`masterlist`, compatible FMD2)
+Datos: `%AppData%/fmd-mvp/fmd-mvp.db` y `data/<module_id>.db`.
 
 ## Setup (Windows)
 
@@ -24,26 +27,22 @@ npm install
 npm run tauri dev
 ```
 
-Variable opcional:
-
 ```powershell
 $env:FMD_LUA_ROOT = "C:\ruta\a\FMD3\lua"
 ```
 
-## Smoke tests
+## Cloudflare (paridad FMD2)
 
-Desde `fmd-mvp/src-tauri`:
+FMD2 **no** usa FlareSolverr por defecto. Solo intenta el challenge IUAM legacy con Duktape. Sitios con Cloudflare moderno (Turnstile / `challenge-platform`) fallan igual en FMD2 y en este host si no hay cookies válidas.
+
+Opcional (avanzado, como FMD2 con webdriver): pon `"use_webdriver": true` en `lua/websitebypass/websitebypass_config.json` y ten Python + FlareSolverr en `:8191`.
+
+## Smoke
 
 ```powershell
-# Catálogo LoliVault (GetNameAndLink → .db)
-cargo run --example smoke_catalog
-
-# O importar un .db FMD2 local
-cargo run --example smoke_catalog -- --import "C:\ruta\a\218b722b1eb34f2aa3863f84538c5b08.db"
-
-# GetInfo
-cargo run --example smoke_info -- --module LeerCapitulo "https://www.leercapitulo.co/manga/one-piece/"
-cargo run --example smoke_pages -- --module MangaOni "https://manga-oni.com/lector/one-piece/80/" "$env:TEMP\fmd-smoke"
+cd fmd-mvp/src-tauri
+cargo test --lib lua_host::duktape_js
+cargo run --example smoke_niadd
 ```
 
 ## Build
@@ -53,11 +52,4 @@ cd fmd-mvp
 npm run tauri build
 ```
 
-Empaqueta `lua/modules` y `lua/templates` como resources.
-
-## Fuera de alcance (por ahora)
-
-- FMD2-DB remoto (`.7z`)
-- Cloudflare / FlareSolverr
-- `json(*)` en FoOlSlide `GetPageNumber` (descarga de páginas LoliVault)
-- Rename de la carpeta `fmd-mvp`
+Empaqueta `lua/modules`, `lua/templates`, `lua/websitebypass`, `lua/utils`.

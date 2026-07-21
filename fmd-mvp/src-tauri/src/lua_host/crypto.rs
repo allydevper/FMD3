@@ -16,6 +16,12 @@ pub fn register_fmd_crypto(lua: &Lua) -> mlua::Result<()> {
             }
         })?,
     )?;
+    crypto.set(
+        "EncodeURLElement",
+        lua.create_function(|_, s: String| {
+            Ok(url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>())
+        })?,
+    )?;
 
     loaded.set("fmd.crypto", crypto)?;
     Ok(())

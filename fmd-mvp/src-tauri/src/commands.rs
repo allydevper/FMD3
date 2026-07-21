@@ -90,6 +90,8 @@ pub struct DownloadChapterInput {
 pub struct QueueAddRequest {
     pub manga_title: String,
     pub root_url: String,
+    #[serde(default)]
+    pub manga_url: String,
     pub module_id: String,
     pub output_dir: String,
     pub chapters: Vec<DownloadChapterInput>,
@@ -215,6 +217,7 @@ async fn check_favorite_inner(
     let fav = db::favorites_get(&db, id)?;
     let manga_url = fav.manga_url.clone();
     let module_id = fav.module_id.clone();
+    let manga_url_for_queue = manga_url.clone();
 
     let info = tauri::async_runtime::spawn_blocking(move || {
         get_info(&manga_url, Some(module_id.as_str()))
@@ -236,6 +239,7 @@ async fn check_favorite_inner(
             .map(|c| NewQueueItem {
                 manga_title: info.title.clone(),
                 root_url: info.root_url.clone(),
+                manga_url: manga_url_for_queue.clone(),
                 module_id: info.module_id.clone(),
                 chapter_index: c.index as i64,
                 chapter_name: c.name.clone(),
@@ -286,6 +290,7 @@ pub fn queue_add(
         .map(|c| NewQueueItem {
             manga_title: req.manga_title.clone(),
             root_url: req.root_url.clone(),
+            manga_url: req.manga_url.clone(),
             module_id: req.module_id.clone(),
             chapter_index: c.index as i64,
             chapter_name: c.name.clone(),
