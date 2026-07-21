@@ -319,6 +319,13 @@ pub fn queue_cancel(state: State<QueueState>, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn queue_retry(app: AppHandle, state: State<QueueState>, id: i64) -> Result<(), String> {
+    db::queue_retry(&state.db, id)?;
+    queue::start_worker(app);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn queue_remove(state: State<QueueState>, id: i64) -> Result<(), String> {
     db::queue_remove(&state.db, id)
 }

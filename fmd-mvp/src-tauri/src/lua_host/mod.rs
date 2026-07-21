@@ -2,7 +2,9 @@ mod crypto;
 mod duktape_js;
 mod fmd_env;
 mod http;
+mod image_puzzle;
 mod json_xpath;
+mod mangafox_watermark;
 mod paths;
 mod registry;
 mod runtime;
@@ -15,5 +17,5 @@ pub use registry::{
 };
 pub use runtime::{
     download_chapter, get_info, get_page_links, get_page_links_warmed, update_list, ChapterInfo,
-    MangaInfoResult, PageLinksResult, UpdateListProgress, UpdateListStats,
+    MangaInfoResult, PageLinksResult, UpdateListProgress, UpdateListStats, DOWNLOAD_CANCELLED,
 };

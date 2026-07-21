@@ -66,8 +66,12 @@ fn meta_from_state(state: &ModuleState, file_path: &PathBuf) -> ModuleMeta {
 }
 
 fn scan_file(path: &PathBuf) -> Vec<ModuleMeta> {
-    let Ok((_lua, modules)) = prepare_lua_scan(path) else {
-        return Vec::new();
+    let (_lua, modules) = match prepare_lua_scan(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("registry: {} — {e}", path.display());
+            return Vec::new();
+        }
     };
     modules
         .into_iter()

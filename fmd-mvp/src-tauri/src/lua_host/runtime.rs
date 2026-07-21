@@ -1,6 +1,8 @@
 use super::crypto::register_fmd_crypto;
 use super::duktape_js::register_fmd_duktape;
 use super::fmd_env::register_fmd_env;
+use super::image_puzzle::register_fmd_imagepuzzle;
+use super::mangafox_watermark::register_fmd_mangafoxwatermark;
 use super::http::HttpClient;
 use super::json_xpath::{json_collect_strings, json_string_at, parse_json_text, split_json_expr};
 use super::paths::{modules_dir, package_path};
@@ -13,7 +15,11 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// Returned by [`download_chapter`] when the cancel flag trips mid-download.
+pub const DOWNLOAD_CANCELLED: &str = "cancelado";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChapterInfo {
@@ -61,6 +67,10 @@ pub struct ModuleState {
     pub dynamic_page_link: bool,
     pub total_directory: i64,
     pub current_directory_index: i64,
+    /// 0 = unlimited (FMD2 default).
+    pub max_task_limit: i64,
+    pub max_thread_per_task_limit: i64,
+    pub max_connection_limit: i64,
     /// Module options from AddOption* / GetOption (FMD2).
     pub options: HashMap<String, ModuleOptionValue>,
 }
@@ -90,11 +100,11 @@ impl UserData for ModuleHandle {
                 "AddOptionCheckBox" => {
                     let this = this.clone();
                     let f = lua.create_function(
-                        move |_, (name, _caption, default): (String, String, bool)| {
-                            this.inner
-                                .lock()
-                                .options
-                                .insert(name, ModuleOptionValue::Bool(default));
+                        move |_, (name, _caption, default): (String, String, Option<bool>)| {
+                            this.inner.lock().options.insert(
+                                name,
+                                ModuleOptionValue::Bool(default.unwrap_or(false)),
+                            );
                             Ok(())
                         },
                     )?;
@@ -103,11 +113,17 @@ impl UserData for ModuleHandle {
                 "AddOptionComboBox" => {
                     let this = this.clone();
                     let f = lua.create_function(
-                        move |_, (name, _caption, _items, default): (String, String, String, i64)| {
-                            this.inner
-                                .lock()
-                                .options
-                                .insert(name, ModuleOptionValue::Int(default));
+                        move |_,
+                              (name, _caption, _items, default): (
+                            String,
+                            String,
+                            String,
+                            Option<i64>,
+                        )| {
+                            this.inner.lock().options.insert(
+                                name,
+                                ModuleOptionValue::Int(default.unwrap_or(0)),
+                            );
                             Ok(())
                         },
                     )?;
@@ -115,12 +131,13 @@ impl UserData for ModuleHandle {
                 }
                 "AddOptionEdit" => {
                     let this = this.clone();
+                    // FMD2: 3rd arg (default) is optional → nil becomes "".
                     let f = lua.create_function(
-                        move |_, (name, _caption, default): (String, String, String)| {
-                            this.inner
-                                .lock()
-                                .options
-                                .insert(name, ModuleOptionValue::Str(default));
+                        move |_, (name, _caption, default): (String, String, Option<String>)| {
+                            this.inner.lock().options.insert(
+                                name,
+                                ModuleOptionValue::Str(default.unwrap_or_default()),
+                            );
                             Ok(())
                         },
                     )?;
@@ -129,11 +146,11 @@ impl UserData for ModuleHandle {
                 "AddOptionSpinEdit" => {
                     let this = this.clone();
                     let f = lua.create_function(
-                        move |_, (name, _caption, default): (String, String, i64)| {
-                            this.inner
-                                .lock()
-                                .options
-                                .insert(name, ModuleOptionValue::Int(default));
+                        move |_, (name, _caption, default): (String, String, Option<i64>)| {
+                            this.inner.lock().options.insert(
+                                name,
+                                ModuleOptionValue::Int(default.unwrap_or(0)),
+                            );
                             Ok(())
                         },
                     )?;
@@ -186,6 +203,9 @@ impl UserData for ModuleHandle {
                         "DynamicPageLink" => Value::Boolean(s.dynamic_page_link),
                         "TotalDirectory" => Value::Integer(s.total_directory),
                         "CurrentDirectoryIndex" => Value::Integer(s.current_directory_index),
+                        "MaxTaskLimit" => Value::Integer(s.max_task_limit),
+                        "MaxThreadPerTaskLimit" => Value::Integer(s.max_thread_per_task_limit),
+                        "MaxConnectionLimit" => Value::Integer(s.max_connection_limit),
                         _ => Value::Nil,
                     };
                     Ok(val)
@@ -234,6 +254,9 @@ impl UserData for ModuleHandle {
                             _ => 0,
                         }
                     }
+                    "MaxTaskLimit" => s.max_task_limit = value_to_i64(value),
+                    "MaxThreadPerTaskLimit" => s.max_thread_per_task_limit = value_to_i64(value),
+                    "MaxConnectionLimit" => s.max_connection_limit = value_to_i64(value),
                     _ => {}
                 }
                 Ok(())
@@ -249,6 +272,26 @@ fn value_to_string(value: Value) -> String {
         Value::Number(n) => n.to_string(),
         Value::Boolean(b) => b.to_string(),
         _ => String::new(),
+    }
+}
+
+/// Strip UTF-8 BOM (`EF BB BF`) so Lua 5.4 can parse modules saved from Windows editors.
+fn strip_utf8_bom(s: &str) -> &str {
+    s.strip_prefix('\u{FEFF}').unwrap_or(s)
+}
+
+fn read_lua_source(path: &Path) -> Result<String, std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    Ok(strip_utf8_bom(&raw).to_string())
+}
+
+fn value_to_i64(value: Value) -> i64 {
+    match value {
+        Value::Integer(i) => i,
+        Value::Number(n) => n as i64,
+        Value::String(s) => s.to_string_lossy().parse().unwrap_or(0),
+        Value::Boolean(b) => i64::from(b),
+        _ => 0,
     }
 }
 
@@ -414,7 +457,27 @@ impl UserData for UpdateListHandle {
 
 #[derive(Clone)]
 struct TxQueryHandle {
-    inner: Arc<TxQuery>,
+    inner: Arc<Mutex<TxQuery>>,
+}
+
+fn html_from_parse_arg(doc: Value) -> String {
+    match doc {
+        Value::String(s) => s.to_string_lossy(),
+        Value::UserData(ud) => {
+            if let Ok(http) = ud.borrow::<HttpClient>() {
+                return http.document();
+            }
+            if let Ok(dh) = ud.borrow::<super::http::DocumentHandle>() {
+                return dh.client.document();
+            }
+            let to_string: Result<mlua::Function, _> = ud.get("ToString");
+            if let Ok(f) = to_string {
+                return f.call::<String>(()).unwrap_or_default();
+            }
+            String::new()
+        }
+        _ => String::new(),
+    }
 }
 
 fn ctx_from_value(ctx: Option<Value>) -> Option<DomNode> {
@@ -502,6 +565,15 @@ impl UserData for TxQueryHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
             match key.as_str() {
+                "ParseHTML" => {
+                    let this = this.clone();
+                    let f = lua.create_function(move |_, doc: Value| {
+                        let html = html_from_parse_arg(doc);
+                        *this.inner.lock() = TxQuery::parse(&html);
+                        Ok(())
+                    })?;
+                    Ok(Value::Function(f))
+                }
                 "XPathString" => {
                     let this = this.clone();
                     let f = lua.create_function(move |_, args: mlua::Variadic<Value>| {
@@ -509,13 +581,12 @@ impl UserData for TxQueryHandle {
                             Some(Value::String(s)) => s.to_string_lossy(),
                             _ => return Ok(String::new()),
                         };
-                        // JSON context: XPathString('title', jsonNode)
                         if let Some(jv) = json_ctx_from_value(args.get(1).cloned()) {
                             return Ok(json_string_at(&jv, &expr));
                         }
-                        // json(xpath).path or json(xpath)
+                        let tq = this.inner.lock();
                         if let Some((inner, rest)) = split_json_expr(&expr) {
-                            if let Some(jv) = extract_json_from_html(&this.inner, &inner) {
+                            if let Some(jv) = extract_json_from_html(&tq, &inner) {
                                 if rest.is_empty() {
                                     return Ok(jv.to_string());
                                 }
@@ -524,9 +595,9 @@ impl UserData for TxQueryHandle {
                             return Ok(String::new());
                         }
                         if let Some(ctx) = ctx_from_value(args.get(1).cloned()) {
-                            Ok(this.inner.xpath_string_ctx(&expr, &ctx))
+                            Ok(tq.xpath_string_ctx(&expr, &ctx))
                         } else {
-                            Ok(this.inner.xpath_string(&expr))
+                            Ok(tq.xpath_string(&expr))
                         }
                     })?;
                     Ok(Value::Function(f))
@@ -538,8 +609,9 @@ impl UserData for TxQueryHandle {
                             Some(Value::String(s)) => s.to_string_lossy(),
                             _ => return Ok(Value::String(lua.create_string("")?)),
                         };
+                        let tq = this.inner.lock();
                         let values = if let Some((inner, rest)) = split_json_expr(&expr) {
-                            if let Some(jv) = extract_json_from_html(&this.inner, &inner) {
+                            if let Some(jv) = extract_json_from_html(&tq, &inner) {
                                 if rest.is_empty() {
                                     json_collect_strings(&jv, "")
                                 } else {
@@ -549,9 +621,9 @@ impl UserData for TxQueryHandle {
                                 Vec::new()
                             }
                         } else {
-                            this.inner.xpath_string_all_values(&expr)
+                            tq.xpath_string_all_values(&expr)
                         };
-                        // Optional 2nd arg: string list to fill (FMD style)
+                        drop(tq);
                         if let Some(Value::UserData(ud)) = args.get(1) {
                             if let Ok(list) = ud.borrow::<LuaStringList>() {
                                 for v in values {
@@ -560,9 +632,7 @@ impl UserData for TxQueryHandle {
                                 return Ok(Value::Nil);
                             }
                         }
-                        Ok(Value::String(
-                            lua.create_string(&values.join(", "))?,
-                        ))
+                        Ok(Value::String(lua.create_string(&values.join(", "))?))
                     })?;
                     Ok(Value::Function(f))
                 }
@@ -570,7 +640,7 @@ impl UserData for TxQueryHandle {
                     let this = this.clone();
                     let f = lua.create_function(
                         move |_, (expr, links, names): (String, Value, Value)| {
-                            let pairs = this.inner.xpath_href_all(&expr);
+                            let pairs = this.inner.lock().xpath_href_all(&expr);
                             if let Value::UserData(ud) = links {
                                 if let Ok(list) = ud.borrow::<LuaStringList>() {
                                     for (href, _) in &pairs {
@@ -594,7 +664,7 @@ impl UserData for TxQueryHandle {
                     let this = this.clone();
                     let f = lua.create_function(
                         move |_, (expr, links, names): (String, Value, Value)| {
-                            let pairs = this.inner.xpath_href_title_all(&expr);
+                            let pairs = this.inner.lock().xpath_href_title_all(&expr);
                             if let Value::UserData(ud) = links {
                                 if let Ok(list) = ud.borrow::<LuaStringList>() {
                                     for (href, _) in &pairs {
@@ -621,12 +691,10 @@ impl UserData for TxQueryHandle {
                             Some(Value::String(s)) => s.to_string_lossy(),
                             _ => return Ok(Value::Nil),
                         };
-                        // json(//script...) → JsonNode for use as XPathString context
+                        let tq = this.inner.lock();
                         if let Some((inner, rest)) = split_json_expr(&expr) {
-                            if let Some(mut jv) = extract_json_from_html(&this.inner, &inner) {
+                            if let Some(mut jv) = extract_json_from_html(&tq, &inner) {
                                 if !rest.is_empty() {
-                                    // Navigate to first collected value's parent path — keep object
-                                    // For ComicK, rest is empty on XPath('json(...)')
                                     let collected = json_collect_strings(&jv, &rest);
                                     if let Some(s) = collected.first() {
                                         jv = JsonValue::String(s.clone());
@@ -639,9 +707,9 @@ impl UserData for TxQueryHandle {
                             return Ok(Value::Nil);
                         }
                         let nodes = if let Some(ctx) = ctx_from_value(args.get(1).cloned()) {
-                            this.inner.xpath_nodes_ctx(&expr, &ctx)
+                            tq.xpath_nodes_ctx(&expr, &ctx)
                         } else {
-                            this.inner.xpath_nodes(&expr)
+                            tq.xpath_nodes(&expr)
                         };
                         let result = XPathResult {
                             nodes: Arc::new(nodes),
@@ -760,27 +828,9 @@ fn register_create_txquery(lua: &Lua) -> mlua::Result<()> {
     globals.set(
         "CreateTXQuery",
         lua.create_function(|lua, doc: Value| {
-            let html = match doc {
-                Value::String(s) => s.to_string_lossy(),
-                Value::UserData(ud) => {
-                    if let Ok(http) = ud.borrow::<HttpClient>() {
-                        http.document()
-                    } else {
-                        // DocumentHandle: try ToString via metamethod by reading as string-like
-                        // Fallback: empty — Document is separate userdata in http.rs
-                        // We expose document via calling ToString if available
-                        let to_string: Result<mlua::Function, _> = ud.get("ToString");
-                        if let Ok(f) = to_string {
-                            f.call::<String>(()).unwrap_or_default()
-                        } else {
-                            String::new()
-                        }
-                    }
-                }
-                _ => String::new(),
-            };
+            let html = html_from_parse_arg(doc);
             let q = TxQueryHandle {
-                inner: Arc::new(TxQuery::parse(&html)),
+                inner: Arc::new(Mutex::new(TxQuery::parse(&html))),
             };
             Ok(lua.create_userdata(q)?)
         })?,
@@ -795,6 +845,8 @@ pub fn prepare_lua_scan(module_file: &Path) -> mlua::Result<(Lua, Vec<ModuleStat
     register_fmd_crypto(&lua)?;
     register_fmd_duktape(&lua)?;
     register_fmd_env(&lua)?;
+    register_fmd_imagepuzzle(&lua)?;
+    register_fmd_mangafoxwatermark(&lua)?;
     setup_package_path(&lua)?;
 
     let http = HttpClient::new()?;
@@ -825,13 +877,15 @@ pub fn prepare_lua_scan(module_file: &Path) -> mlua::Result<(Lua, Vec<ModuleStat
 
     register_create_txquery(&lua)?;
 
-    let source = std::fs::read_to_string(module_file).map_err(mlua::Error::external)?;
+    let source = read_lua_source(module_file).map_err(mlua::Error::external)?;
     lua.load(&source)
         .set_name(module_file.to_string_lossy())
         .exec()?;
 
     if let Ok(init) = globals.get::<mlua::Function>("Init") {
-        let _ = init.call::<()>(());
+        if let Err(e) = init.call::<()>(()) {
+            eprintln!("registry Init {}: {e}", module_file.display());
+        }
     }
 
     let states: Vec<ModuleState> = created2
@@ -859,6 +913,8 @@ fn prepare_lua_for_meta(
     register_fmd_crypto(&lua).map_err(|e| e.to_string())?;
     register_fmd_duktape(&lua).map_err(|e| e.to_string())?;
     register_fmd_env(&lua).map_err(|e| e.to_string())?;
+    register_fmd_imagepuzzle(&lua).map_err(|e| e.to_string())?;
+    register_fmd_mangafoxwatermark(&lua).map_err(|e| e.to_string())?;
     setup_package_path(&lua).map_err(|e| e.to_string())?;
 
     let http = HttpClient::new().map_err(|e| e.to_string())?;
@@ -904,7 +960,7 @@ fn prepare_lua_for_meta(
 
     register_create_txquery(&lua).map_err(|e| e.to_string())?;
 
-    let source = std::fs::read_to_string(file_path).map_err(|e| e.to_string())?;
+    let source = read_lua_source(file_path).map_err(|e| e.to_string())?;
     lua.load(&source)
         .set_name(file_path.to_string_lossy())
         .exec()
@@ -1240,6 +1296,9 @@ fn ext_from_url(url: &str) -> Option<&'static str> {
 }
 
 fn find_existing_image(base_no_ext: &Path) -> Option<PathBuf> {
+    if base_no_ext.is_file() {
+        return Some(base_no_ext.to_path_buf());
+    }
     for ext in ["jpg", "jpeg", "png", "webp", "gif", "avif"] {
         let p = base_no_ext.with_extension(ext);
         if p.is_file() {
@@ -1249,14 +1308,35 @@ fn find_existing_image(base_no_ext: &Path) -> Option<PathBuf> {
     None
 }
 
-fn chapter_output_dir(output_dir: &Path, manga_title: &str, chapter_index: usize, chapter_name: &str) -> PathBuf {
-    output_dir
-        .join(sanitize_filename::sanitize(manga_title))
-        .join(format!(
-            "{:03}_{}",
-            chapter_index + 1,
-            sanitize_filename::sanitize(chapter_name)
-        ))
+fn chapter_output_dir(
+    output_dir: &Path,
+    manga_title: &str,
+    chapter_index: usize,
+    chapter_name: &str,
+    website: &str,
+) -> PathBuf {
+    use crate::rename_patterns::{apply_pattern, format_chapter_index};
+    use crate::settings_keys::{chapter_folder_pattern, manga_folder_pattern};
+    let idx = format_chapter_index(chapter_index + 1);
+    let manga_folder = apply_pattern(
+        &manga_folder_pattern(),
+        &[
+            ("%Manga%", manga_title),
+            ("%Website%", website),
+            ("%Chapter%", chapter_name),
+            ("%ChapterIndex%", &idx),
+        ],
+    );
+    let chapter_folder = apply_pattern(
+        &chapter_folder_pattern(),
+        &[
+            ("%Manga%", manga_title),
+            ("%Website%", website),
+            ("%Chapter%", chapter_name),
+            ("%ChapterIndex%", &idx),
+        ],
+    );
+    output_dir.join(manga_folder).join(chapter_folder)
 }
 
 fn work_basename(file_names: &LuaStringList, work_id: usize, page_count: usize) -> String {
@@ -1268,7 +1348,36 @@ fn work_basename(file_names: &LuaStringList, work_id: usize, page_count: usize) 
             }
         }
     }
-    format!("{:03}", work_id + 1)
+    use crate::rename_patterns::{apply_pattern, format_page};
+    use crate::settings_keys::page_name_pattern;
+    let page = format_page(work_id + 1);
+    apply_pattern(&page_name_pattern(), &[("%Page%", &page)])
+}
+
+fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {
+    let fmt = crate::settings_keys::convert_to();
+    if fmt == "keep" || fmt.is_empty() {
+        return (bytes.to_vec(), None);
+    }
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return (bytes.to_vec(), None);
+    };
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let (enc, ext) = match fmt.as_str() {
+        "png" => (image::ImageFormat::Png, "png"),
+        "webp" => (image::ImageFormat::WebP, "webp"),
+        "jpg" | "jpeg" => (image::ImageFormat::Jpeg, "jpg"),
+        _ => return (bytes.to_vec(), None),
+    };
+    let result = if enc == image::ImageFormat::Jpeg {
+        img.to_rgb8().write_to(&mut cursor, enc)
+    } else {
+        img.write_to(&mut cursor, enc)
+    };
+    match result {
+        Ok(()) => (cursor.into_inner(), Some(ext)),
+        Err(_) => (bytes.to_vec(), None),
+    }
 }
 
 /// Full FMD2 chapter download pipeline in one Lua/HTTP session.
@@ -1281,7 +1390,17 @@ pub fn download_chapter(
     chapter_index: usize,
     chapter_name: &str,
     mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
+    cancel: Option<&AtomicBool>,
 ) -> Result<crate::download::DownloadResult, String> {
+    let cancelled = || cancel.is_some_and(|c| c.load(Ordering::SeqCst));
+    let abort_if_cancelled = |http: &HttpClient| -> Result<(), String> {
+        if cancelled() {
+            http.set_terminated(true);
+            Err(DOWNLOAD_CANCELLED.into())
+        } else {
+            Ok(())
+        }
+    };
     let (meta, path) = resolve_module_path(chapter_url, module_id, manga_url)?;
     let Prepared {
         lua,
@@ -1356,6 +1475,7 @@ pub fn download_chapter(
         let n = task.page_links.len().max(page_number as usize);
         let image_fn: mlua::Function = globals.get(on_image.as_str()).map_err(|e| e.to_string())?;
         for i in 0..n {
+            abort_if_cancelled(&http)?;
             let cur = task.page_links.get(i).unwrap_or_default();
             if cur != "W" && !cur.is_empty() && cur != "G" {
                 continue;
@@ -1377,7 +1497,36 @@ pub fn download_chapter(
     }
     *task.page_number.lock() = page_count as i64;
 
-    let chapter_dir = chapter_output_dir(output_dir, manga_title, chapter_index, chapter_name);
+    let website_name = {
+        let s = module.inner.lock();
+        if s.name.is_empty() {
+            s.root_url.clone()
+        } else {
+            s.name.clone()
+        }
+    };
+    let chapter_dir = chapter_output_dir(
+        output_dir,
+        manga_title,
+        chapter_index,
+        chapter_name,
+        &website_name,
+    );
+    let max_threads = {
+        let mod_lim = module.inner.lock().max_thread_per_task_limit;
+        let global = crate::settings_keys::max_threads();
+        let lim = if mod_lim > 0 {
+            (mod_lim as usize).min(global)
+        } else {
+            global
+        };
+        lim.clamp(1, 16)
+    };
+    let parallel_ok = on_before.is_empty()
+        && on_download.is_empty()
+        && on_save.is_empty()
+        && on_after.is_empty()
+        && max_threads > 1;
     let mut files = Vec::new();
     let mut errors = Vec::new();
 
@@ -1394,7 +1543,151 @@ pub fn download_chapter(
         && page_count == task.page_container_links.len()
         && task.page_container_links.len() > 0;
 
+    if parallel_ok {
+        let mut pending: Vec<(usize, String)> = Vec::new();
+        for i in 0..page_count {
+            abort_if_cancelled(&http)?;
+            if let Some(cb) = on_progress.as_mut() {
+                cb(i, page_count);
+            }
+            let work_url = task.page_links.get(i).unwrap_or_default();
+            let trimmed = work_url.trim().to_string();
+            if trimmed == "D" || (!trimmed.is_empty() && trimmed != "W") {
+                let base_name = work_basename(&task.file_names, i, page_count);
+                let base_path = chapter_dir.join(&base_name);
+                if let Some(existing) = find_existing_image(&base_path) {
+                    files.push(existing.display().to_string());
+                    task.page_links.set(i, "D".into());
+                    if let Some(cb) = on_progress.as_mut() {
+                        cb(i + 1, page_count);
+                    }
+                    continue;
+                }
+            }
+            if trimmed.is_empty() || trimmed == "W" {
+                errors.push(format!("Página {}: URL vacía (W)", i + 1));
+                continue;
+            }
+            if find_existing_image(&chapter_dir.join(work_basename(&task.file_names, i, page_count)))
+                .is_some()
+            {
+                continue;
+            }
+            pending.push((i, absolute_url(&root, &work_url)));
+        }
+
+        if pending.is_empty() {
+            return Ok(crate::download::DownloadResult {
+                chapter_index,
+                chapter_name: chapter_name.to_string(),
+                files,
+                errors,
+            });
+        }
+
+        let files_m = Mutex::new(files);
+        let errors_m = Mutex::new(errors);
+        let progress = Arc::new(std::sync::atomic::AtomicUsize::new(
+            files_m.lock().len(),
+        ));
+        let n_workers = max_threads.min(pending.len().max(1));
+        let chunk = (pending.len() + n_workers - 1) / n_workers.max(1);
+        let cancel_flag = cancel;
+        std::thread::scope(|scope| {
+            for part in pending.chunks(chunk.max(1)) {
+                let part = part.to_vec();
+                let http0 = &http;
+                let chapter_dir = &chapter_dir;
+                let task = &task;
+                let files_m = &files_m;
+                let errors_m = &errors_m;
+                let progress = &progress;
+                let page_count = page_count;
+                scope.spawn(move || {
+                    let Ok(client) = http0.fork() else {
+                        return;
+                    };
+                    for (i, abs) in part {
+                        if cancel_flag.is_some_and(|c| c.load(Ordering::SeqCst)) {
+                            client.set_terminated(true);
+                            return;
+                        }
+                        let base_name = work_basename(&task.file_names, i, page_count);
+                        let base_path = chapter_dir.join(&base_name);
+                        if let Some(existing) = find_existing_image(&base_path) {
+                            files_m.lock().push(existing.display().to_string());
+                            task.page_links.set(i, "D".into());
+                            progress.fetch_add(1, Ordering::SeqCst);
+                            continue;
+                        }
+                        client.reset_http();
+                        client.accept_image();
+                        if !client.get_public(&abs) {
+                            errors_m
+                                .lock()
+                                .push(format!("Página {}: descarga falló", i + 1));
+                            continue;
+                        }
+                        let raw = client.document_bytes();
+                        if raw.is_empty() {
+                            errors_m
+                                .lock()
+                                .push(format!("Página {}: vacía", i + 1));
+                            continue;
+                        }
+                        let (bytes, conv_ext) = maybe_convert_image_bytes(&raw);
+                        let ext = conv_ext
+                            .map(|s| s.to_string())
+                            .or_else(|| ext_from_url(&abs).map(|s| s.to_string()))
+                            .unwrap_or_else(|| ext_from_bytes(&bytes).to_string());
+                        let file_path = if Path::new(&base_name).extension().is_some()
+                            && conv_ext.is_none()
+                        {
+                            chapter_dir.join(&base_name)
+                        } else {
+                            chapter_dir.join(format!(
+                                "{}.{}",
+                                Path::new(&base_name)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or(&base_name),
+                                ext
+                            ))
+                        };
+                        match std::fs::write(&file_path, &bytes) {
+                            Ok(()) => {
+                                files_m.lock().push(file_path.display().to_string());
+                                task.page_links.set(i, "D".into());
+                                progress.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Err(e) => {
+                                errors_m
+                                    .lock()
+                                    .push(format!("Página {}: write error: {e}", i + 1));
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        if cancelled() {
+            http.set_terminated(true);
+            return Err(DOWNLOAD_CANCELLED.into());
+        }
+        if let Some(cb) = on_progress.as_mut() {
+            cb(page_count, page_count);
+        }
+        return Ok(crate::download::DownloadResult {
+            chapter_index,
+            chapter_name: chapter_name.to_string(),
+            files: files_m.into_inner(),
+            errors: errors_m.into_inner(),
+        });
+    }
+
     for i in 0..page_count {
+        abort_if_cancelled(&http)?;
+
         if let Some(cb) = on_progress.as_mut() {
             cb(i, page_count);
         }
@@ -1410,6 +1703,24 @@ pub fn download_chapter(
         }
         if trimmed.is_empty() || trimmed == "W" {
             errors.push(format!("Página {}: URL vacía (W)", i + 1));
+            continue;
+        }
+
+        // Resume: skip pages already on disk before any network I/O (EXTRAS #4).
+        let base_name = work_basename(&task.file_names, i, page_count);
+        let base_path = chapter_dir.join(&base_name);
+        if let Some(existing) = find_existing_image(&base_path) {
+            files.push(existing.display().to_string());
+            task.page_links.set(i, "D".into());
+            if !on_after.is_empty() {
+                let _ = globals.set("FILENAME", existing.display().to_string());
+                if let Ok(f) = globals.get::<mlua::Function>(on_after.as_str()) {
+                    let _ = f.call::<Value>(());
+                }
+            }
+            if let Some(cb) = on_progress.as_mut() {
+                cb(i + 1, page_count);
+            }
             continue;
         }
 
@@ -1457,24 +1768,6 @@ pub fn download_chapter(
             continue;
         }
 
-        let base_name = work_basename(&task.file_names, i, page_count);
-        let base_path = chapter_dir.join(&base_name);
-
-        if let Some(existing) = find_existing_image(&base_path) {
-            files.push(existing.display().to_string());
-            task.page_links.set(i, "D".into());
-            if !on_after.is_empty() {
-                let _ = globals.set("FILENAME", existing.display().to_string());
-                if let Ok(f) = globals.get::<mlua::Function>(on_after.as_str()) {
-                    let _ = f.call::<Value>(());
-                }
-            }
-            if let Some(cb) = on_progress.as_mut() {
-                cb(i + 1, page_count);
-            }
-            continue;
-        }
-
         let saved = if !on_save.is_empty() {
             let path_str = chapter_dir.display().to_string();
             let _ = globals.set("PATH", path_str);
@@ -1494,13 +1787,20 @@ pub fn download_chapter(
                 Err(_) => None,
             }
         } else {
-            let bytes = http.document_bytes();
-            if bytes.is_empty() {
+            let raw = http.document_bytes();
+            if raw.is_empty() {
                 None
             } else {
-                let ext = ext_from_url(&work_url).unwrap_or_else(|| ext_from_bytes(&bytes));
-                let file_path = if Path::new(&base_name).extension().is_some() {
+                let (bytes, conv_ext) = maybe_convert_image_bytes(&raw);
+                let ext = conv_ext
+                    .map(|s| s.to_string())
+                    .or_else(|| ext_from_url(&work_url).map(|s| s.to_string()))
+                    .unwrap_or_else(|| ext_from_bytes(&bytes).to_string());
+                let file_path = if Path::new(&base_name).extension().is_some() && conv_ext.is_none()
+                {
                     chapter_dir.join(&base_name)
+                } else if Path::new(&base_name).extension().is_some() && conv_ext.is_some() {
+                    chapter_dir.join(base_name).with_extension(ext)
                 } else {
                     chapter_dir.join(format!("{base_name}.{ext}"))
                 };

@@ -3,7 +3,10 @@ mod commands;
 mod db;
 mod download;
 pub mod lua_host;
+mod pack;
 mod queue;
+mod rename_patterns;
+mod settings_keys;
 mod xpath;
 
 use queue::QueueState;
@@ -26,6 +29,7 @@ pub fn download_chapter_for_test(
         manga_title,
         chapter_index,
         chapter_name,
+        None,
         None,
     )
 }
@@ -135,6 +139,7 @@ pub fn run() {
             commands::queue_add,
             commands::queue_start,
             commands::queue_cancel,
+            commands::queue_retry,
             commands::queue_remove,
             commands::queue_clear_finished,
         ])

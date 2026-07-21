@@ -1,5 +1,5 @@
 use crate::db::{self, Db, QueueItem};
-use crate::lua_host::download_chapter;
+use crate::lua_host::{self, download_chapter};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -218,7 +218,7 @@ fn process_item(
         );
     };
 
-    let result = download_chapter(
+    let result = match download_chapter(
         &url,
         module_id,
         warm,
@@ -227,10 +227,20 @@ fn process_item(
         item.chapter_index as usize,
         &item.chapter_name,
         Some(&mut on_progress),
-    )?;
+        Some(&cancel),
+    ) {
+        Err(e) if e == lua_host::DOWNLOAD_CANCELLED || cancel.load(Ordering::SeqCst) => {
+            let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
+            cancel.store(false, Ordering::SeqCst);
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+        Ok(r) => r,
+    };
 
     if cancel.load(Ordering::SeqCst) {
         let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
+        cancel.store(false, Ordering::SeqCst);
         return Ok(());
     }
 
@@ -238,11 +248,37 @@ fn process_item(
         return Err(result.errors.join("; "));
     }
 
-    let err = if result.errors.is_empty() {
+    let mut err = if result.errors.is_empty() {
         String::new()
     } else {
         result.errors.join("; ")
     };
+
+    let pack_fmt = crate::settings_keys::pack_format();
+    if matches!(pack_fmt.as_str(), "cbz" | "zip") && !result.files.is_empty() {
+        if let Some(first) = result.files.first() {
+            if let Some(dir) = std::path::Path::new(first).parent() {
+                match crate::pack::pack_chapter_dir(dir, &pack_fmt) {
+                    Ok(archive) => {
+                        if crate::settings_keys::pack_delete_folder() {
+                            let _ = std::fs::remove_dir_all(dir);
+                        }
+                        if !err.is_empty() {
+                            err.push_str("; ");
+                        }
+                        err.push_str(&format!("packed {}", archive.display()));
+                    }
+                    Err(e) => {
+                        if !err.is_empty() {
+                            err.push_str("; ");
+                        }
+                        err.push_str(&format!("pack failed: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
     db::queue_set_status(&app.state::<QueueState>().db, item.id, "done", &err)?;
     let _ = app.emit(
         "queue-progress",

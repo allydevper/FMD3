@@ -101,7 +101,7 @@ let mangaUrl = "";
 let outputDir = "";
 let visibleCount = PAGE_SIZE;
 let selected = new Set<number>();
-let activeTab: "manga" | "catalog" | "queue" | "favorites" = "manga";
+let activeTab: "manga" | "catalog" | "queue" | "favorites" | "settings" = "manga";
 let expandedGroups = new Set<string>();
 let liveProgress = new Map<
   number,
@@ -122,6 +122,7 @@ app.innerHTML = `
     <button type="button" class="tab active" data-tab="manga">Manga</button>
     <button type="button" class="tab" data-tab="catalog">Catálogo</button>
     <button type="button" class="tab" data-tab="queue">Cola</button>
+    <button type="button" class="tab" data-tab="settings">Ajustes</button>
     <button type="button" class="tab" data-tab="favorites">Favoritos</button>
   </div>
   <p id="busy" class="sub" hidden></p>
@@ -218,6 +219,28 @@ app.innerHTML = `
     <div id="fav-list" class="list"></div>
   </section>
 
+  <section id="tab-settings" hidden>
+    <div class="panel">
+      <h3>Descarga / red</h3>
+      <div class="row"><label>User-Agent</label><input id="set-ua" type="text" style="flex:1" placeholder="(default)" /></div>
+      <div class="row"><label>Proxy</label><input id="set-proxy" type="text" style="flex:1" placeholder="http://host:port" /></div>
+      <div class="row"><label>Threads/cap</label><input id="set-threads" type="number" min="1" max="16" value="1" /></div>
+      <div class="row">
+        <label>Pack</label>
+        <select id="set-pack"><option value="none">none</option><option value="cbz">cbz</option><option value="zip">zip</option></select>
+        <label><input id="set-pack-del" type="checkbox" /> borrar carpeta tras pack</label>
+      </div>
+      <div class="row">
+        <label>Convertir a</label>
+        <select id="set-convert"><option value="keep">keep</option><option value="jpg">jpg</option><option value="png">png</option><option value="webp">webp</option></select>
+      </div>
+      <div class="row"><label>Carpeta manga</label><input id="set-pat-manga" type="text" style="flex:1" value="%Manga%" /></div>
+      <div class="row"><label>Carpeta cap</label><input id="set-pat-chapter" type="text" style="flex:1" value="%ChapterIndex%_%Chapter%" /></div>
+      <div class="row"><label>Página</label><input id="set-pat-page" type="text" style="flex:1" value="%Page%" /></div>
+      <div class="toolbar"><button id="set-save" type="button">Guardar ajustes</button></div>
+    </div>
+  </section>
+
   <div class="panel">
     <pre id="log" class="log">Listo.</pre>
   </div>
@@ -265,7 +288,7 @@ function clearLog() {
   logEl.textContent = "";
 }
 
-function switchTab(tab: "manga" | "catalog" | "queue" | "favorites") {
+function switchTab(tab: "manga" | "catalog" | "queue" | "favorites" | "settings") {
   activeTab = tab;
   document.querySelectorAll(".tab").forEach((el) => {
     el.classList.toggle("active", (el as HTMLElement).dataset.tab === tab);
@@ -274,9 +297,11 @@ function switchTab(tab: "manga" | "catalog" | "queue" | "favorites") {
   document.querySelector<HTMLElement>("#tab-catalog")!.hidden = tab !== "catalog";
   document.querySelector<HTMLElement>("#tab-queue")!.hidden = tab !== "queue";
   document.querySelector<HTMLElement>("#tab-favorites")!.hidden = tab !== "favorites";
+  document.querySelector<HTMLElement>("#tab-settings")!.hidden = tab !== "settings";
   if (tab === "queue") void refreshQueue();
   if (tab === "favorites") void refreshFavorites();
   if (tab === "catalog") void refreshCatalogStats();
+  if (tab === "settings") void loadSettingsForm();
 }
 
 document.querySelectorAll(".tab").forEach((el) => {
@@ -733,6 +758,20 @@ function renderQueueTable(items: QueueItem[]) {
       });
       actions.appendChild(cancel);
     }
+    const retryItems = g.items.filter((i) => i.status === "cancelled" || i.status === "failed");
+    if (retryItems.length) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "row-btn";
+      retry.textContent = "Retry";
+      retry.addEventListener("click", async () => {
+        for (const it of retryItems) {
+          await invoke("queue_retry", { id: it.id });
+        }
+        await refreshQueue();
+      });
+      actions.appendChild(retry);
+    }
     const finished = g.items.filter((i) => i.status !== "running");
     if (finished.length === g.items.length) {
       const remove = document.createElement("button");
@@ -800,6 +839,17 @@ function renderQueueTable(items: QueueItem[]) {
           });
           subActions.appendChild(c);
         } else {
+          if (item.status === "cancelled" || item.status === "failed") {
+            const retry = document.createElement("button");
+            retry.type = "button";
+            retry.className = "row-btn";
+            retry.textContent = "Retry";
+            retry.addEventListener("click", async () => {
+              await invoke("queue_retry", { id: item.id });
+              await refreshQueue();
+            });
+            subActions.appendChild(retry);
+          }
           const r = document.createElement("button");
           r.type = "button";
           r.className = "row-btn";
@@ -852,6 +902,7 @@ async function refreshFavorites() {
         <div class="list-main">
           <div><strong>${fav.title}</strong></div>
           <div class="muted">${fav.module_name} · ${fav.chapter_count} caps · último: ${fav.last_chapter_name || "—"}</div>
+          <div class="muted" title="${fav.last_chapter_link}">check updates: compara vs último capítulo conocido</div>
         </div>
         <div class="list-actions"></div>
       `;
@@ -1045,6 +1096,56 @@ void listen("queue-changed", () => {
   if (activeTab === "queue") void refreshQueue();
   // clear finished live entries on full refresh
   busyEl.hidden = true;
+});
+
+async function loadSettingsForm() {
+  const get = (k: string) => invoke<string | null>("settings_get", { key: k });
+  const ua = document.querySelector<HTMLInputElement>("#set-ua")!;
+  const proxy = document.querySelector<HTMLInputElement>("#set-proxy")!;
+  const threads = document.querySelector<HTMLInputElement>("#set-threads")!;
+  const pack = document.querySelector<HTMLSelectElement>("#set-pack")!;
+  const packDel = document.querySelector<HTMLInputElement>("#set-pack-del")!;
+  const convert = document.querySelector<HTMLSelectElement>("#set-convert")!;
+  const patM = document.querySelector<HTMLInputElement>("#set-pat-manga")!;
+  const patC = document.querySelector<HTMLInputElement>("#set-pat-chapter")!;
+  const patP = document.querySelector<HTMLInputElement>("#set-pat-page")!;
+  ua.value = (await get("http.user_agent")) ?? "";
+  proxy.value = (await get("http.proxy")) ?? "";
+  threads.value = (await get("download.max_threads")) ?? "1";
+  pack.value = (await get("download.pack_format")) ?? "none";
+  packDel.checked = ["1", "true", "yes"].includes(
+    ((await get("download.pack_delete_folder")) ?? "").toLowerCase(),
+  );
+  convert.value = (await get("download.convert_to")) ?? "keep";
+  patM.value = (await get("download.manga_folder_pattern")) ?? "%Manga%";
+  patC.value = (await get("download.chapter_folder_pattern")) ?? "%ChapterIndex%_%Chapter%";
+  patP.value = (await get("download.page_name_pattern")) ?? "%Page%";
+}
+
+document.querySelector("#set-save")!.addEventListener("click", async () => {
+  const set = (key: string, value: string) => invoke("settings_set", { key, value });
+  await set("http.user_agent", document.querySelector<HTMLInputElement>("#set-ua")!.value);
+  await set("http.proxy", document.querySelector<HTMLInputElement>("#set-proxy")!.value);
+  await set("download.max_threads", document.querySelector<HTMLInputElement>("#set-threads")!.value);
+  await set("download.pack_format", document.querySelector<HTMLSelectElement>("#set-pack")!.value);
+  await set(
+    "download.pack_delete_folder",
+    document.querySelector<HTMLInputElement>("#set-pack-del")!.checked ? "true" : "false",
+  );
+  await set("download.convert_to", document.querySelector<HTMLSelectElement>("#set-convert")!.value);
+  await set(
+    "download.manga_folder_pattern",
+    document.querySelector<HTMLInputElement>("#set-pat-manga")!.value,
+  );
+  await set(
+    "download.chapter_folder_pattern",
+    document.querySelector<HTMLInputElement>("#set-pat-chapter")!.value,
+  );
+  await set(
+    "download.page_name_pattern",
+    document.querySelector<HTMLInputElement>("#set-pat-page")!.value,
+  );
+  log("Ajustes guardados", "ok");
 });
 
 void initSettings()

@@ -45,8 +45,8 @@ struct CfSession {
 }
 
 #[derive(Clone)]
-struct DocumentHandle {
-    client: HttpClient,
+pub struct DocumentHandle {
+    pub client: HttpClient,
 }
 
 #[derive(Clone)]
@@ -72,13 +72,33 @@ struct CookieValuesHandle {
 fn build_client(ua: &str) -> Result<reqwest::blocking::Client, String> {
     // FMD2/Synapse is HTTP/1.1; HTTP/2 ALPN is a common CF fingerprint tell.
     // Redirects: manual (Referer + relative Location), like httpsendthread.pas.
-    reqwest::blocking::Client::builder()
+    let mut b = reqwest::blocking::Client::builder()
         .user_agent(ua)
         .cookie_store(true)
         .http1_only()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| e.to_string())
+        .redirect(reqwest::redirect::Policy::none());
+    if let Ok(Some(proxy)) = crate::db::settings_get_direct(crate::settings_keys::HTTP_PROXY) {
+        let proxy = proxy.trim().to_string();
+        if !proxy.is_empty() {
+            let p = reqwest::Proxy::all(&proxy).map_err(|e| e.to_string())?;
+            b = b.proxy(p);
+        }
+    }
+    b.build().map_err(|e| e.to_string())
+}
+
+fn configured_user_agent(session_ua: &str) -> String {
+    if let Ok(Some(ua)) = crate::db::settings_get_direct(crate::settings_keys::HTTP_USER_AGENT) {
+        let ua = ua.trim();
+        if !ua.is_empty() {
+            return ua.to_string();
+        }
+    }
+    if session_ua.is_empty() {
+        DEFAULT_UA.to_string()
+    } else {
+        session_ua.to_string()
+    }
 }
 
 fn resolve_redirect(base: &str, location: &str) -> String {
@@ -170,11 +190,7 @@ fn header_get_ci(map: &HashMap<String, String>, key: &str) -> Option<String> {
 impl HttpClient {
     pub fn new() -> mlua::Result<Self> {
         let saved = load_cf_session();
-        let ua = if saved.user_agent.is_empty() {
-            DEFAULT_UA.to_string()
-        } else {
-            saved.user_agent
-        };
+        let ua = configured_user_agent(&saved.user_agent);
         let client = build_client(&ua).map_err(mlua::Error::external)?;
         let mut headers = default_browser_headers();
         let cookies = saved.cookies;
@@ -214,6 +230,38 @@ impl HttpClient {
     /// Raw Document bytes (image download / save).
     pub fn document_bytes(&self) -> Vec<u8> {
         self.inner.lock().document.clone()
+    }
+
+    pub fn set_document_bytes(&self, bytes: Vec<u8>) {
+        self.inner.lock().document = bytes;
+    }
+
+    pub fn set_terminated(&self, terminated: bool) {
+        self.inner.lock().terminated = terminated;
+    }
+
+    /// Clone cookies/headers/UA into a new client with its own document buffer (parallel GETs).
+    pub fn fork(&self) -> Result<Self, String> {
+        let inner = self.inner.lock();
+        let client = build_client(&inner.user_agent)?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(HttpInner {
+                client,
+                document: Vec::new(),
+                pending_body: String::new(),
+                headers: inner.headers.clone(),
+                response_headers: HashMap::new(),
+                cookies: inner.cookies.clone(),
+                result_code: 0,
+                user_agent: inner.user_agent.clone(),
+                mime_type: String::new(),
+                follow_redirection: inner.follow_redirection,
+                retry_count: inner.retry_count,
+                terminated: inner.terminated,
+                enabled_cookies: inner.enabled_cookies,
+                bypass_depth: 0,
+            })),
+        })
     }
 
     pub fn headers_map(&self) -> HashMap<String, String> {

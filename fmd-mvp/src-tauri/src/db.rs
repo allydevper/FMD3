@@ -479,6 +479,22 @@ pub fn queue_cancel(db: &Db, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Re-queue a cancelled/failed item so the worker can resume (skip existing files).
+pub fn queue_retry(db: &Db, id: i64) -> Result<(), String> {
+    let conn = db.lock();
+    let n = conn
+        .execute(
+            "UPDATE queue_items SET status='pending', error='', updated_at=?1
+             WHERE id=?2 AND status IN ('cancelled','failed')",
+            params![now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("solo se puede reintentar ítems cancelled o failed".into());
+    }
+    Ok(())
+}
+
 pub fn queue_remove(db: &Db, id: i64) -> Result<(), String> {
     let conn = db.lock();
     conn.execute(

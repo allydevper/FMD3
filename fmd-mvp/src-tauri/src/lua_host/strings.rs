@@ -294,11 +294,49 @@ fn opt_str(v: Option<Value>) -> String {
     }
 }
 
+/// FMD2 synautil.GetBetween — text between PairBegin and PairEnd (nested-aware).
+pub fn get_between(pair_begin: &str, pair_end: &str, value: &str) -> String {
+    if value == format!("{pair_begin}{pair_end}") {
+        return String::new();
+    }
+    if value.len() < pair_begin.len() + pair_end.len() {
+        return value.to_string();
+    }
+    let Some(after) = value.find(pair_begin).map(|i| &value[i + pair_begin.len()..]) else {
+        return value.to_string();
+    };
+    if !after.contains(pair_end) {
+        return value.to_string();
+    }
+    let mut depth = 1i32;
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < after.len() {
+        if after[i..].starts_with(pair_end) {
+            depth -= 1;
+            if depth <= 0 {
+                break;
+            }
+        }
+        if after[i..].starts_with(pair_begin) {
+            depth += 1;
+        }
+        let ch = after[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 pub fn register_helpers(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
     globals.set(
         "MaybeFillHost",
         lua.create_function(|_, (host, url): (String, String)| Ok(maybe_fill_host(&host, &url)))?,
+    )?;
+    globals.set(
+        "GetBetween",
+        lua.create_function(|_, (a, b, v): (String, String, String)| Ok(get_between(&a, &b, &v)))?,
     )?;
     // FMD allows 3–5 args: (search, ongoing, completed[, hiatus[, cancelled]])
     globals.set(
@@ -360,5 +398,15 @@ mod tests {
         // FMD2 deletes the earlier duplicate when a later match exists
         assert_eq!(links, vec!["/chapter/a/1/", "/chapter/b/2/"]);
         assert_eq!(names, vec!["A2", "B"]);
+    }
+
+    #[test]
+    fn get_between_simple() {
+        assert_eq!(
+            get_between("var x=", ";", "prefix var x=hello; suffix"),
+            "hello"
+        );
+        assert_eq!(get_between("(", ")", "()"), "");
+        assert_eq!(get_between("<a>", "</a>", "nope"), "nope");
     }
 }
