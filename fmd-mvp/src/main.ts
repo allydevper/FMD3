@@ -99,13 +99,15 @@ type UpdateListStats = {
 type NavId = "downloads" | "info" | "favorites" | "about" | "options";
 
 const PAGE_SIZE = 80;
-const CATALOG_PAGE = 80;
+const CATALOG_BATCH = 500;
 const LOLI_VAULT_ID = "218b722b1eb34f2aa3863f84538c5b08";
 const THEME_KEY = "fmd-theme-dark";
 const CH_ROW_H = 52;
 const CH_ROW_GAP = 8;
 const CH_ROW_STRIDE = CH_ROW_H + CH_ROW_GAP;
 const CH_OVERSCAN = 8;
+const CAT_ROW_H = 34;
+const CAT_OVERSCAN = 12;
 
 function svgIco(d: string): string {
   return `url('data:image/svg+xml,${encodeURIComponent(
@@ -188,8 +190,8 @@ let liveProgress = new Map<
 >();
 let lastQueueItems: QueueItem[] = [];
 let catalogEntries: CatalogEntry[] = [];
-let catalogOffset = 0;
 let catalogQuery = "";
+let catalogLoadedKey = "";
 let modulesCache: ModuleMeta[] = [];
 let sourceOpen = false;
 let sourceFilter = "";
@@ -265,7 +267,7 @@ app.innerHTML = `
             <div class="search-input-row">
               <div class="search-field">
                 <span class="ico ico-sm" style="--ico:${ICO.search}"></span>
-                <input id="catalog-q" type="text" placeholder="Buscar título..." autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                <input id="catalog-q" type="text" placeholder="Buscar título..." autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="font-size:12px;font-weight:400;line-height:36px;" />
                 <button type="button" class="search-clear" id="catalog-clear" hidden title="Limpiar">
                   <span class="ico ico-sm" style="--ico:${ICO.x}"></span>
                 </button>
@@ -284,10 +286,7 @@ app.innerHTML = `
               <span class="result-badge" id="catalog-stats">0</span>
             </div>
           </div>
-          <div class="catalog-results" id="catalog-list"></div>
-          <div class="catalog-more-wrap" id="catalog-more-wrap">
-            <button type="button" class="secondary" id="catalog-more" hidden>Mostrar más</button>
-          </div>
+            <div class="catalog-results" id="catalog-list"></div>
         </aside>
 
         <div class="info-main">
@@ -310,11 +309,11 @@ app.innerHTML = `
                 <div class="chapters-head">
                   <div class="chapters-head-left">
                     <span class="chapters-label">Capítulos</span>
-                    <span class="chapters-meta" id="chapters-available">0 disponibles</span>
+                    <span class="chapters-meta" id="chapters-available" hidden></span>
                   </div>
                   <div class="chapters-head-right">
-                    <span class="sel-count" id="count">0 seleccionados</span>
-                    <button type="button" class="btn-select-all" id="sel-all">Seleccionar todo</button>
+                    <span class="sel-count" id="count" hidden></span>
+                    <button type="button" class="btn-select-all" id="sel-all" hidden>Seleccionar todo</button>
                   </div>
                 </div>
                 <div class="chapters-list" id="chapters"></div>
@@ -372,7 +371,7 @@ app.innerHTML = `
               <button type="button" class="btn-split" id="btn-split" disabled title="Próximamente">
                 <span class="ico ico-sm" style="--ico:${ICO.split}"></span> Dividir descarga
               </button>
-              <button type="button" class="btn-download" id="enqueue">
+              <button type="button" class="btn-download" id="enqueue" disabled>
                 <span class="ico ico-sm" style="--ico:${ICO.download}"></span> Descargar
               </button>
             </div>
@@ -469,7 +468,6 @@ const catalogListEl = document.querySelector<HTMLDivElement>("#catalog-list")!;
 const catalogStatsEl = document.querySelector<HTMLElement>("#catalog-stats")!;
 const catalogQ = document.querySelector<HTMLInputElement>("#catalog-q")!;
 const catalogClearBtn = document.querySelector<HTMLButtonElement>("#catalog-clear")!;
-const catalogMoreBtn = document.querySelector<HTMLButtonElement>("#catalog-more")!;
 const busyEl = document.querySelector<HTMLElement>("#busy")!;
 void busyEl; /* oculto; progreso va al log */
 const titleEl = document.querySelector<HTMLElement>("#title")!;
@@ -502,6 +500,7 @@ const favIco = document.querySelector<HTMLElement>("#fav-ico")!;
 const favLabel = document.querySelector<HTMLElement>("#fav-label")!;
 const urlClearBtn = document.querySelector<HTMLButtonElement>("#url-clear")!;
 const selAllBtn = document.querySelector<HTMLButtonElement>("#sel-all")!;
+const enqueueBtn = document.querySelector<HTMLButtonElement>("#enqueue")!;
 const catalogRefreshIco = document.querySelector<HTMLElement>("#catalog-refresh-ico")!;
 const themeIco = document.querySelector<HTMLElement>("#theme-ico")!;
 const logDrawer = document.querySelector<HTMLDivElement>("#log-drawer")!;
@@ -513,9 +512,8 @@ function setBusy(_on: boolean, text?: string) {
 
 function setCatalogLoading(on: boolean, text = "Cargando títulos…") {
   if (!on) return;
+  catalogListEl.onscroll = null;
   catalogListEl.innerHTML = `<div class="panel-loading"><span class="spinner"></span>${escapeHtml(text)}</div>`;
-  catalogMoreBtn.hidden = true;
-  document.querySelector("#catalog-more-wrap")?.classList.remove("is-visible");
 }
 
 function setSourcesLoading(on: boolean) {
@@ -582,14 +580,17 @@ function renderSourceList() {
       m.id === cur ? `<span class="ico ico-sm" style="--ico:${ICO.check}"></span>` : ""
     }`;
     btn.addEventListener("click", () => {
+      const same = m.id === selectedModuleId();
       moduleSel.value = m.id;
       sourceOpen = false;
       sourceFilter = "";
       sourceQ.value = "";
       updateSourceMenu();
       updateSourceLabel();
-      void refreshCatalogStats();
-      void loadCatalog(true);
+      if (!same) {
+        void refreshCatalogStats();
+        void loadCatalog(true);
+      }
     });
     sourceListEl.appendChild(btn);
     if (m.id === cur) selectedEl = btn;
@@ -651,6 +652,7 @@ function updateResponsive() {
   const w = window.innerWidth;
   app.classList.toggle("narrow", w < 860);
   app.classList.toggle("hide-info", w < 1040);
+  app.classList.toggle("show-manga-info", !!manga);
 }
 window.addEventListener("resize", updateResponsive);
 updateResponsive();
@@ -683,11 +685,21 @@ document.querySelectorAll("input").forEach((el) => {
 });
 
 function refreshCount() {
+  const hasManga = !!manga;
   const total = manga?.chapters.length ?? 0;
-  countEl.textContent = `${selected.size} seleccionados`;
-  chaptersAvailableEl.textContent = `${total} disponibles`;
-  const allOn = total > 0 && selected.size === total;
-  selAllBtn.textContent = allOn ? "Deseleccionar" : "Seleccionar todo";
+  chaptersAvailableEl.hidden = !hasManga;
+  selAllBtn.hidden = !hasManga;
+  countEl.hidden = !hasManga;
+  if (hasManga) {
+    countEl.textContent = `${selected.size} seleccionados`;
+    chaptersAvailableEl.textContent = `${total} disponibles`;
+    const allOn = total > 0 && selected.size === total;
+    selAllBtn.textContent = allOn ? "Deseleccionar" : "Seleccionar todo";
+  } else {
+    countEl.textContent = "";
+    chaptersAvailableEl.textContent = "";
+  }
+  enqueueBtn.disabled = !hasManga || selected.size === 0;
 }
 
 function visibleSlice(): ChapterInfo[] {
@@ -837,9 +849,11 @@ function setCover(url: string) {
 }
 
 function renderInfoSidebar() {
+  updateResponsive();
   if (!manga) {
-    titleEl.textContent = "—";
+    titleEl.textContent = "";
     altTitlesEl.textContent = "";
+    altTitlesEl.hidden = true;
     setCover("");
     infoRowsEl.innerHTML = "";
     btnOnline.disabled = true;
@@ -848,20 +862,30 @@ function renderInfoSidebar() {
     updateFavButton();
     return;
   }
-  titleEl.textContent = manga.title || "(sin título)";
-  altTitlesEl.textContent = manga.alt_titles || "";
+  titleEl.textContent = manga.title.trim() || "(sin título)";
+  const alt = manga.alt_titles.trim();
+  altTitlesEl.textContent = alt;
+  altTitlesEl.hidden = !alt;
   setCover(resolveCover(manga.cover, manga.root_url));
   btnOnline.disabled = !mangaUrl;
   favAddBtn.disabled = false;
 
-  const fuente = [manga.module_name, manga.genres].filter(Boolean).join(" · ");
-  const rows: { icon: string; label: string; value: string }[] = [
-    { icon: ICO.user, label: "Autor", value: manga.authors || "—" },
-    { icon: ICO.brush, label: "Artista", value: manga.artists || manga.authors || "—" },
-    { icon: ICO.heart, label: "Fuente", value: fuente || "—" },
-    { icon: ICO.status, label: "Estado", value: manga.status || "—" },
-    { icon: ICO.book, label: "Capítulos", value: String(manga.chapters.length) },
-  ];
+  const rows: { icon: string; label: string; value: string }[] = [];
+  const authors = manga.authors.trim();
+  const artists = manga.artists.trim();
+  const genres = manga.genres.trim();
+  const status = manga.status.trim();
+  const moduleName = manga.module_name.trim();
+
+  if (authors) rows.push({ icon: ICO.user, label: "Autor", value: authors });
+  if (artists) rows.push({ icon: ICO.brush, label: "Artista", value: artists });
+  const fuente = [moduleName, genres].filter(Boolean).join(" · ");
+  if (fuente) rows.push({ icon: ICO.heart, label: "Fuente", value: fuente });
+  if (status) rows.push({ icon: ICO.status, label: "Estado", value: status });
+  if (manga.chapters.length) {
+    rows.push({ icon: ICO.book, label: "Capítulos", value: String(manga.chapters.length) });
+  }
+
   infoRowsEl.innerHTML = rows
     .map(
       (r) => `
@@ -974,61 +998,142 @@ async function refreshCatalogStats() {
 }
 
 function renderCatalogList() {
-  catalogListEl.innerHTML = "";
-  const moreWrap = document.querySelector<HTMLDivElement>("#catalog-more-wrap")!;
   if (!catalogEntries.length) {
+    catalogListEl.onscroll = null;
     catalogListEl.innerHTML = `<div class="catalog-empty">Sin resultados. Actualiza la lista o importa un .db.</div>`;
-    catalogMoreBtn.hidden = true;
-    moreWrap.classList.remove("is-visible");
     return;
   }
-  for (const e of catalogEntries) {
-    const row = document.createElement("button");
-    row.type = "button";
-    const title = e.title || e.link;
-    row.className = `catalog-row${title === activeCatalogTitle ? " active" : ""}`;
-    row.title = "Doble clic para abrir";
-    row.innerHTML = `<div class="catalog-row-title">${escapeHtml(title)}</div>`;
-    row.addEventListener("click", () => {
-      activeCatalogTitle = title;
-      catalogListEl.querySelectorAll(".catalog-row").forEach((el) => {
-        el.classList.toggle("active", el === row);
-      });
-    });
-    row.addEventListener("dblclick", () => void openCatalogEntry(e));
-    catalogListEl.appendChild(row);
+
+  let virtual = catalogListEl.querySelector<HTMLDivElement>(".catalog-virtual");
+  if (!virtual) {
+    catalogListEl.innerHTML = "";
+    virtual = document.createElement("div");
+    virtual.className = "catalog-virtual";
+    catalogListEl.appendChild(virtual);
+    catalogListEl.onscroll = () => paintVirtualCatalog();
   }
-  const showMore = catalogEntries.length > 0 && catalogEntries.length % CATALOG_PAGE === 0;
-  catalogMoreBtn.hidden = !showMore;
-  moreWrap.classList.toggle("is-visible", showMore);
+  virtual.style.height = `${catalogEntries.length * CAT_ROW_H}px`;
+  paintVirtualCatalog();
 }
 
-async function loadCatalog(reset: boolean) {
+function paintVirtualCatalog() {
+  const virtual = catalogListEl.querySelector<HTMLDivElement>(".catalog-virtual");
+  if (!virtual || !catalogEntries.length) return;
+
+  const scrollTop = catalogListEl.scrollTop;
+  const viewH = catalogListEl.clientHeight || 400;
+  let start = Math.floor(scrollTop / CAT_ROW_H) - CAT_OVERSCAN;
+  let end = Math.ceil((scrollTop + viewH) / CAT_ROW_H) + CAT_OVERSCAN;
+  start = Math.max(0, start);
+  end = Math.min(catalogEntries.length, end);
+
+  const existing = new Map<string, HTMLButtonElement>();
+  virtual.querySelectorAll<HTMLButtonElement>(".catalog-row").forEach((el) => {
+    const key = el.dataset.i;
+    if (key != null) existing.set(key, el);
+  });
+
+  const keep = new Set<string>();
+  for (let i = start; i < end; i++) {
+    const e = catalogEntries[i];
+    const key = String(i);
+    keep.add(key);
+    const title = e.title || e.link;
+    let row = existing.get(key);
+    if (!row) {
+      row = document.createElement("button");
+      row.type = "button";
+      row.dataset.i = key;
+      row.title = "Doble clic para abrir";
+      virtual.appendChild(row);
+    }
+    row.className = `catalog-row${title === activeCatalogTitle ? " active" : ""}`;
+    row.style.top = `${i * CAT_ROW_H}px`;
+    let label = row.querySelector<HTMLElement>(".catalog-row-title");
+    if (!label) {
+      label = document.createElement("div");
+      label.className = "catalog-row-title";
+      row.appendChild(label);
+    }
+    label.textContent = title;
+  }
+
+  existing.forEach((el, key) => {
+    if (!keep.has(key)) el.remove();
+  });
+}
+
+/** Doble clic por índice (sobrevive si el DOM virtual se recrea entre clics). */
+let lastCatalogClickIdx = -1;
+let lastCatalogClickAt = 0;
+
+catalogListEl.addEventListener("click", (ev) => {
+  const row = (ev.target as HTMLElement | null)?.closest?.(".catalog-row") as HTMLElement | null;
+  if (!row || !catalogListEl.contains(row)) return;
+  ev.preventDefault();
+  const idx = Number(row.dataset.i);
+  const entry = catalogEntries[idx];
+  if (!entry) return;
+
+  const title = entry.title || entry.link;
+  activeCatalogTitle = title;
+  catalogListEl.querySelectorAll(".catalog-row").forEach((el) => {
+    const i = Number((el as HTMLElement).dataset.i);
+    const t = catalogEntries[i];
+    el.classList.toggle("active", !!(t && (t.title || t.link) === activeCatalogTitle));
+  });
+
+  const now = performance.now();
+  if (lastCatalogClickIdx === idx && now - lastCatalogClickAt < 450) {
+    lastCatalogClickIdx = -1;
+    lastCatalogClickAt = 0;
+    void openCatalogEntry(entry);
+    return;
+  }
+  lastCatalogClickIdx = idx;
+  lastCatalogClickAt = now;
+});
+
+catalogListEl.addEventListener("dblclick", (ev) => {
+  /* Evitar selección de texto; la apertura la hace el 2º click arriba. */
+  ev.preventDefault();
+});
+
+async function loadCatalog(force = false) {
   const id = selectedModuleId();
   if (!id) return;
-  if (reset) {
-    catalogOffset = 0;
-    catalogEntries = [];
-    setCatalogLoading(true, "Cargando títulos…");
+  const key = `${id}||${catalogQuery}`;
+  if (!force && key === catalogLoadedKey && catalogEntries.length) {
+    renderCatalogList();
+    return;
   }
-  setBusy(true, "Buscando catálogo…");
+
+  setCatalogLoading(true, "Cargando títulos…");
+  setBusy(true, "Cargando catálogo…");
   try {
-    const rows = await invoke<CatalogEntry[]>("catalog_search", {
-      moduleId: id,
-      query: catalogQuery,
-      limit: CATALOG_PAGE,
-      offset: catalogOffset,
-    });
-    if (reset) catalogEntries = rows;
-    else catalogEntries = catalogEntries.concat(rows);
-    catalogOffset = catalogEntries.length;
+    const all: CatalogEntry[] = [];
+    let offset = 0;
+    for (;;) {
+      const rows = await invoke<CatalogEntry[]>("catalog_search", {
+        moduleId: id,
+        query: catalogQuery,
+        limit: CATALOG_BATCH,
+        offset,
+      });
+      all.push(...rows);
+      if (rows.length < CATALOG_BATCH) break;
+      offset += rows.length;
+      setCatalogLoading(true, `Cargando títulos… (${all.length})`);
+    }
+    catalogEntries = all;
+    catalogLoadedKey = key;
     renderCatalogList();
     await refreshCatalogStats();
+    log(`Catálogo: ${all.length} títulos`, "ok");
   } catch (e) {
+    catalogLoadedKey = "";
     log(String(e), "err");
-    if (reset) {
-      catalogListEl.innerHTML = `<div class="catalog-empty">Error al cargar el catálogo.</div>`;
-    }
+    catalogListEl.innerHTML = `<div class="catalog-empty">Error al cargar el catálogo.</div>`;
   } finally {
     setBusy(false);
   }
@@ -1068,7 +1173,6 @@ async function loadMangaInfo() {
     manga = result;
     selected = new Set();
     visibleCount = PAGE_SIZE;
-    for (const c of result.chapters.slice(-10)) selected.add(c.index);
     if (result.module_id && [...moduleSel.options].some((o) => o.value === result.module_id)) {
       moduleSel.value = result.module_id;
       updateSourceLabel();
@@ -1127,7 +1231,7 @@ document.querySelector("#pick")!.addEventListener("click", async () => {
   }
 });
 
-document.querySelector("#enqueue")!.addEventListener("click", async () => {
+enqueueBtn.addEventListener("click", async () => {
   if (!manga) {
     log("Carga un manga primero.", "err");
     return;
@@ -1603,7 +1707,6 @@ catalogClearBtn.addEventListener("click", () => {
   syncCatalogClear();
   void loadCatalog(true);
 });
-catalogMoreBtn.addEventListener("click", () => void loadCatalog(false));
 
 document.querySelector("#catalog-update")!.addEventListener("click", async () => {
   const id = selectedModuleId();
@@ -1622,6 +1725,7 @@ document.querySelector("#catalog-update")!.addEventListener("click", async () =>
     catalogQuery = "";
     catalogQ.value = "";
     syncCatalogClear();
+    catalogLoadedKey = "";
     await loadCatalog(true);
   } catch (e) {
     log(String(e), "err");
@@ -1646,6 +1750,7 @@ document.querySelector("#catalog-import")!.addEventListener("click", async () =>
   try {
     const st = await invoke<CatalogStats>("catalog_import", { moduleId: id, path: file });
     log(`Importado: ${st.count} títulos → ${st.path}`, "ok");
+    catalogLoadedKey = "";
     await loadCatalog(true);
   } catch (e) {
     log(String(e), "err");
