@@ -15,18 +15,26 @@ fn register_fmd_logger(lua: &Lua) -> mlua::Result<()> {
     let package: Table = lua.globals().get("package")?;
     let loaded: Table = package.get("loaded")?;
     let logger = lua.create_table()?;
-    // Quiet by default: use_webdriver=false is the normal path; errors only when debug needed.
     logger.set(
         "SendError",
-        lua.create_function(|_, _msg: String| Ok(()))?,
+        lua.create_function(|_, msg: String| {
+            super::lua_log::emit_lua_log(&format!("[error] {msg}"));
+            Ok(())
+        })?,
     )?;
     logger.set(
         "SendWarning",
-        lua.create_function(|_, _msg: String| Ok(()))?,
+        lua.create_function(|_, msg: String| {
+            super::lua_log::emit_lua_log(&format!("[warn] {msg}"));
+            Ok(())
+        })?,
     )?;
     logger.set(
         "Send",
-        lua.create_function(|_, _msg: String| Ok(()))?,
+        lua.create_function(|_, msg: String| {
+            super::lua_log::emit_lua_log(&msg);
+            Ok(())
+        })?,
     )?;
     loaded.set("fmd.logger", logger)?;
     Ok(())
@@ -173,6 +181,7 @@ fn setup_bypass_lua(lua: &Lua, http: &HttpClient) -> mlua::Result<()> {
 
     super::crypto::register_fmd_crypto(lua)?;
     duktape_js::register_fmd_duktape(lua)?;
+    super::lua_log::install_print(lua)?;
     register_fmd_logger(lua)?;
     register_fmd_env(lua)?;
     register_fmd_subprocess(lua)?;

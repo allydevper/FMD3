@@ -329,6 +329,7 @@ pub fn get_between(pair_begin: &str, pair_end: &str, value: &str) -> String {
 }
 
 pub fn register_helpers(lua: &Lua) -> mlua::Result<()> {
+    super::lua_log::install_print(lua)?;
     let globals = lua.globals();
     globals.set(
         "MaybeFillHost",

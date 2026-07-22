@@ -110,6 +110,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(queue_state)
         .setup(|app| {
+            crate::lua_host::set_lua_log_app(app.handle().clone());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 crate::lua_host::ensure_loaded();

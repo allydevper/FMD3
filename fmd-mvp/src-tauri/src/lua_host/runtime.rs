@@ -33,6 +33,9 @@ pub struct MangaInfoResult {
     pub title: String,
     pub cover: String,
     pub authors: String,
+    pub artists: String,
+    pub genres: String,
+    pub alt_titles: String,
     pub status: String,
     pub summary: String,
     pub chapters: Vec<ChapterInfo>,
@@ -1133,6 +1136,9 @@ fn get_info_with_path(
     let mut title = mangainfo.title.lock().clone();
     let cover = mangainfo.cover.lock().clone();
     let mut authors = mangainfo.authors.lock().clone();
+    let artists = mangainfo.artists.lock().clone();
+    let genres = mangainfo.genres.lock().clone();
+    let alt_titles = mangainfo.alt_titles.lock().clone();
     let status = mangainfo.status.lock().clone();
     let mut summary = mangainfo.summary.lock().clone();
     super::strings::cleanup_manga_fields(&mut title, &mut authors, &mut summary);
@@ -1140,6 +1146,9 @@ fn get_info_with_path(
         title,
         cover,
         authors,
+        artists,
+        genres,
+        alt_titles,
         status,
         summary,
         chapters,

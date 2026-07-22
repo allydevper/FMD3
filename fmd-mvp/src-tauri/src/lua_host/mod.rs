@@ -4,6 +4,7 @@ mod fmd_env;
 mod http;
 mod image_puzzle;
 mod json_xpath;
+mod lua_log;
 mod mangafox_watermark;
 mod paths;
 mod registry;
@@ -11,6 +12,7 @@ mod runtime;
 mod strings;
 mod website_bypass_host;
 
+pub use lua_log::set_app_handle as set_lua_log_app;
 pub use registry::{
     ensure_loaded, find_by_id, list as modules_list, match_url as modules_match_url,
     refresh as modules_refresh, ModuleMeta,
