@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import coverDefaultUrl from "./assets/cover-default.svg";
+import chaptersEmptyUrl from "./assets/chapters-empty.png";
 import "./styles.css";
 
 type ChapterInfo = {
@@ -721,7 +722,10 @@ function chapterNum(index: number): string {
 function renderChapters() {
   if (!manga) {
     chaptersEl.onscroll = null;
-    chaptersEl.innerHTML = `<div class="catalog-empty">Doble clic en un título del catálogo, o pega un enlace arriba.</div>`;
+    chaptersEl.innerHTML = `<div class="chapters-empty">
+      <img class="chapters-empty-art" src="${chaptersEmptyUrl}" alt="" />
+      <p class="chapters-empty-text">Doble clic en un título del catálogo, o pega un enlace arriba.</p>
+    </div>`;
     moreBtn.hidden = true;
     document.querySelector("#chapters-more-wrap")?.classList.remove("is-visible");
     refreshCount();
@@ -903,40 +907,34 @@ function renderInfoSidebar() {
   const genres = manga.genres.trim();
   const status = manga.status.trim();
   const moduleName = manga.module_name.trim();
+  const summary = manga.summary.trim();
 
   if (authors) rows.push({ icon: ICO.user, label: "Autor", value: authors });
   if (artists) rows.push({ icon: ICO.brush, label: "Artista", value: artists });
   if (genres) rows.push({ icon: ICO.about, label: "Géneros", value: genres });
   if (status) rows.push({ icon: ICO.status, label: "Estado", value: status });
 
-  /* Siempre al final: reservan sitio aunque vayan vacíos */
-  rows.push({ icon: ICO.heart, label: "Fuente", value: moduleName || "—" });
-  rows.push({
-    icon: ICO.book,
-    label: "Capítulos",
-    value: manga.chapters.length ? String(manga.chapters.length) : "—",
-  });
+  const fuente = moduleName || "—";
+  const caps = manga.chapters.length ? `caps. ${manga.chapters.length}` : "caps. —";
 
-  const summary = manga.summary.trim();
-  infoRowsEl.innerHTML =
-    rows
-      .map(
-        (r) => `
+  const rowHtml = (r: { icon: string; label: string; value: string }) => `
     <div class="info-row">
       <span class="ico" style="--ico:${r.icon}"></span>
       <div>
         <div class="info-row-label">${r.label}</div>
         <div class="info-row-value">${escapeHtml(r.value)}</div>
       </div>
-    </div>`,
-      )
-      .join("") +
+    </div>`;
+
+  infoRowsEl.innerHTML =
+    rows.map(rowHtml).join("") +
     (summary
       ? `<div class="info-summary">
           <div class="info-row-label">Sinopsis</div>
           <div class="info-summary-text">${escapeHtml(summary)}</div>
         </div>`
-      : "");
+      : "") +
+    `<div class="info-meta-line">${escapeHtml(fuente)} <span class="info-meta-sep">—</span> ${escapeHtml(caps)}</div>`;
   updateFavButton();
 }
 

@@ -1119,6 +1119,46 @@ button.secondary:hover:not(:disabled) {
   display: block;
 }
 
+.chapters-list:has(.chapters-empty) {
+  display: flex;
+  align-items: stretch;
+}
+
+.chapters-empty {
+  flex: 1 1 auto;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 28px 24px 36px;
+  text-align: center;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.chapters-empty-art {
+  width: min(160px, 42%);
+  height: auto;
+  opacity: 0.85;
+  pointer-events: none;
+  user-select: none;
+}
+
+.app.dark .chapters-empty-art {
+  opacity: 0.7;
+  filter: brightness(1.15);
+}
+
+.chapters-empty-text {
+  margin: 0;
+  max-width: 280px;
+  font-size: 14.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
 .ch-card {
   display: grid;
   grid-template-columns: 16px 42px minmax(0, 1fr);
@@ -1420,6 +1460,19 @@ button.secondary:hover:not(:disabled) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.info-meta-line {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--on-deep-dimmer);
+  line-height: 1.35;
+  padding-top: 2px;
+}
+
+.info-meta-sep {
+  opacity: 0.7;
+  margin: 0 2px;
 }
 
 /* Action bar */
