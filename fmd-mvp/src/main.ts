@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import coverDefaultUrl from "./assets/cover-default.svg";
 import "./styles.css";
 
 type ChapterInfo = {
@@ -146,6 +147,9 @@ const ICO = {
   ),
   chevron: svgIco('<path d="m6 9 6 6 6-6"/>'),
   arrowRight: svgIco('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>'),
+  broom: svgIco(
+    '<path d="m13 11 9-9"/><path d="M14.6 12.6c.8.8.9 2.1.2 3L10 22l-8-8 6.4-4.8c.9-.7 2.2-.6 3 .2Z"/>',
+  ),
   x: svgIco('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
   check: svgIco('<path d="M20 6 9 17l-5-5"/>'),
   external: svgIco(
@@ -272,8 +276,8 @@ app.innerHTML = `
                   <span class="ico ico-sm" style="--ico:${ICO.x}"></span>
                 </button>
               </div>
-              <button type="button" class="ghost" id="catalog-search" title="Buscar">
-                <span class="ico" style="--ico:${ICO.arrowRight}"></span>
+              <button type="button" class="ghost" id="catalog-broom" title="Limpiar filtro">
+                <span class="ico" style="--ico:${ICO.broom}"></span>
               </button>
             </div>
           </div>
@@ -306,7 +310,7 @@ app.innerHTML = `
 
               <div class="chapters-panel">
                 <div class="chapters-tex" aria-hidden="true"></div>
-                <div class="chapters-head">
+                <div class="chapters-head" id="chapters-head" hidden>
                   <div class="chapters-head-left">
                     <span class="chapters-label">Capítulos</span>
                     <span class="chapters-meta" id="chapters-available" hidden></span>
@@ -474,6 +478,7 @@ const titleEl = document.querySelector<HTMLElement>("#title")!;
 const altTitlesEl = document.querySelector<HTMLElement>("#alt-titles")!;
 const chaptersEl = document.querySelector<HTMLDivElement>("#chapters")!;
 const chaptersAvailableEl = document.querySelector<HTMLElement>("#chapters-available")!;
+const chaptersHeadEl = document.querySelector<HTMLElement>("#chapters-head")!;
 const countEl = document.querySelector<HTMLElement>("#count")!;
 const pathInput = document.querySelector<HTMLInputElement>("#path-input")!;
 const logEl = document.querySelector<HTMLElement>("#log")!;
@@ -686,14 +691,14 @@ document.querySelectorAll("input").forEach((el) => {
 
 function refreshCount() {
   const hasManga = !!manga;
-  const total = manga?.chapters.length ?? 0;
+  chaptersHeadEl.hidden = !hasManga;
   chaptersAvailableEl.hidden = !hasManga;
   selAllBtn.hidden = !hasManga;
   countEl.hidden = !hasManga;
   if (hasManga) {
     countEl.textContent = `${selected.size} seleccionados`;
-    chaptersAvailableEl.textContent = `${total} disponibles`;
-    const allOn = total > 0 && selected.size === total;
+    chaptersAvailableEl.textContent = `${manga!.chapters.length} disponibles`;
+    const allOn = manga!.chapters.length > 0 && selected.size === manga!.chapters.length;
     selAllBtn.textContent = allOn ? "Deseleccionar" : "Seleccionar todo";
   } else {
     countEl.textContent = "";
@@ -716,7 +721,7 @@ function chapterNum(index: number): string {
 function renderChapters() {
   if (!manga) {
     chaptersEl.onscroll = null;
-    chaptersEl.innerHTML = `<div class="catalog-empty">Carga una URL o elige un título del catálogo.</div>`;
+    chaptersEl.innerHTML = `<div class="catalog-empty">Doble clic en un título del catálogo, o pega un enlace arriba.</div>`;
     moreBtn.hidden = true;
     document.querySelector("#chapters-more-wrap")?.classList.remove("is-visible");
     refreshCount();
@@ -833,19 +838,41 @@ function resolveCover(cover: string, root: string): string {
 }
 
 function setCover(url: string) {
+  coverImg.onerror = null;
+  coverImg.onload = null;
   if (!url) {
-    coverImg.hidden = true;
-    coverPh.hidden = false;
-    coverBlur.hidden = true;
-    coverImg.removeAttribute("src");
-    coverBlurImg.removeAttribute("src");
+    applyDefaultCover();
     return;
   }
+  coverImg.onload = () => {
+    coverImg.hidden = false;
+    coverPh.hidden = true;
+    coverBlur.hidden = false;
+  };
+  coverImg.onerror = () => applyDefaultCover();
   coverImg.src = url;
   coverBlurImg.src = url;
   coverImg.hidden = false;
   coverPh.hidden = true;
   coverBlur.hidden = false;
+}
+
+function applyDefaultCover() {
+  coverImg.onerror = null;
+  coverImg.onload = null;
+  coverImg.src = coverDefaultUrl;
+  coverBlurImg.src = coverDefaultUrl;
+  coverImg.hidden = false;
+  coverPh.hidden = true;
+  coverBlur.hidden = false;
+}
+
+function setChaptersLoading(text = "Cargando capítulos…") {
+  chaptersHeadEl.hidden = true;
+  chaptersEl.onscroll = null;
+  moreBtn.hidden = true;
+  document.querySelector("#chapters-more-wrap")?.classList.remove("is-visible");
+  chaptersEl.innerHTML = `<div class="panel-loading"><span class="spinner"></span>${escapeHtml(text)}</div>`;
 }
 
 function renderInfoSidebar() {
@@ -879,16 +906,22 @@ function renderInfoSidebar() {
 
   if (authors) rows.push({ icon: ICO.user, label: "Autor", value: authors });
   if (artists) rows.push({ icon: ICO.brush, label: "Artista", value: artists });
-  const fuente = [moduleName, genres].filter(Boolean).join(" · ");
-  if (fuente) rows.push({ icon: ICO.heart, label: "Fuente", value: fuente });
+  if (genres) rows.push({ icon: ICO.about, label: "Géneros", value: genres });
   if (status) rows.push({ icon: ICO.status, label: "Estado", value: status });
-  if (manga.chapters.length) {
-    rows.push({ icon: ICO.book, label: "Capítulos", value: String(manga.chapters.length) });
-  }
 
-  infoRowsEl.innerHTML = rows
-    .map(
-      (r) => `
+  /* Siempre al final: reservan sitio aunque vayan vacíos */
+  rows.push({ icon: ICO.heart, label: "Fuente", value: moduleName || "—" });
+  rows.push({
+    icon: ICO.book,
+    label: "Capítulos",
+    value: manga.chapters.length ? String(manga.chapters.length) : "—",
+  });
+
+  const summary = manga.summary.trim();
+  infoRowsEl.innerHTML =
+    rows
+      .map(
+        (r) => `
     <div class="info-row">
       <span class="ico" style="--ico:${r.icon}"></span>
       <div>
@@ -896,8 +929,14 @@ function renderInfoSidebar() {
         <div class="info-row-value">${escapeHtml(r.value)}</div>
       </div>
     </div>`,
-    )
-    .join("");
+      )
+      .join("") +
+    (summary
+      ? `<div class="info-summary">
+          <div class="info-row-label">Sinopsis</div>
+          <div class="info-summary-text">${escapeHtml(summary)}</div>
+        </div>`
+      : "");
   updateFavButton();
 }
 
@@ -1000,7 +1039,7 @@ async function refreshCatalogStats() {
 function renderCatalogList() {
   if (!catalogEntries.length) {
     catalogListEl.onscroll = null;
-    catalogListEl.innerHTML = `<div class="catalog-empty">Sin resultados. Actualiza la lista o importa un .db.</div>`;
+    catalogListEl.innerHTML = `<div class="catalog-empty">Sin resultados.</div>`;
     return;
   }
 
@@ -1099,7 +1138,7 @@ catalogListEl.addEventListener("dblclick", (ev) => {
   ev.preventDefault();
 });
 
-async function loadCatalog(force = false) {
+async function loadCatalog(force = false, silent = false) {
   const id = selectedModuleId();
   if (!id) return;
   const key = `${id}||${catalogQuery}`;
@@ -1108,8 +1147,11 @@ async function loadCatalog(force = false) {
     return;
   }
 
-  setCatalogLoading(true, "Cargando títulos…");
-  setBusy(true, "Cargando catálogo…");
+  const keepList = silent && !!catalogListEl.querySelector(".catalog-virtual");
+  if (!keepList) {
+    setCatalogLoading(true, "Cargando títulos…");
+  }
+  if (!silent) setBusy(true, "Cargando catálogo…");
   try {
     const all: CatalogEntry[] = [];
     let offset = 0;
@@ -1123,19 +1165,23 @@ async function loadCatalog(force = false) {
       all.push(...rows);
       if (rows.length < CATALOG_BATCH) break;
       offset += rows.length;
-      setCatalogLoading(true, `Cargando títulos… (${all.length})`);
+      if (!keepList) {
+        setCatalogLoading(true, `Cargando títulos… (${all.length})`);
+      }
     }
     catalogEntries = all;
     catalogLoadedKey = key;
+    if (silent) catalogListEl.scrollTop = 0;
     renderCatalogList();
     await refreshCatalogStats();
-    log(`Catálogo: ${all.length} títulos`, "ok");
+    if (!silent) log(`Catálogo: ${all.length} títulos`, "ok");
+    else catalogStatsEl.textContent = String(all.length);
   } catch (e) {
     catalogLoadedKey = "";
     log(String(e), "err");
     catalogListEl.innerHTML = `<div class="catalog-empty">Error al cargar el catálogo.</div>`;
   } finally {
-    setBusy(false);
+    if (!silent) setBusy(false);
   }
 }
 
@@ -1162,6 +1208,7 @@ async function loadMangaInfo() {
   clearLog();
   setBusy(true, "Cargando GetInfo… (Cloudflare puede tardar)");
   loadBtn.disabled = true;
+  setChaptersLoading();
   log("Cargando info vía Lua GetInfo…");
   try {
     mangaUrl = urlInput.value.trim();
@@ -1695,7 +1742,7 @@ let catalogSearchTimer: number | undefined;
 function runCatalogSearch() {
   catalogQuery = catalogQ.value.trim();
   syncCatalogClear();
-  void loadCatalog(true);
+  void loadCatalog(true, true);
 }
 
 function scheduleCatalogSearch() {
@@ -1707,14 +1754,19 @@ function scheduleCatalogSearch() {
       return;
     }
     catalogQuery = next;
-    void loadCatalog(true);
+    void loadCatalog(true, true);
   }, 280);
 }
 
-document.querySelector("#catalog-search")!.addEventListener("click", () => {
+function clearCatalogFilter() {
   window.clearTimeout(catalogSearchTimer);
-  runCatalogSearch();
-});
+  catalogQ.value = "";
+  catalogQuery = "";
+  syncCatalogClear();
+  void loadCatalog(true, true);
+}
+
+document.querySelector("#catalog-broom")!.addEventListener("click", clearCatalogFilter);
 catalogQ.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") {
     window.clearTimeout(catalogSearchTimer);
@@ -1722,13 +1774,7 @@ catalogQ.addEventListener("keydown", (ev) => {
   }
 });
 catalogQ.addEventListener("input", scheduleCatalogSearch);
-catalogClearBtn.addEventListener("click", () => {
-  window.clearTimeout(catalogSearchTimer);
-  catalogQ.value = "";
-  catalogQuery = "";
-  syncCatalogClear();
-  void loadCatalog(true);
-});
+catalogClearBtn.addEventListener("click", clearCatalogFilter);
 
 document.querySelector("#catalog-update")!.addEventListener("click", async () => {
   const id = selectedModuleId();

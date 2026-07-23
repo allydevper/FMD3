@@ -239,6 +239,25 @@ mod tests {
         );
         assert_eq!(vals, vec!["/b/1".to_string(), "/b/2".to_string()]);
     }
+
+    #[test]
+    fn foolslide_summary_text_eq_or() {
+        let html = "<html><body><div class=\"info\"><b>Author</b>: Alice<br/><b>Artist</b>: Bob<br/><b>Descripción</b>: Una sinopsis de prueba bastante larga.<br/></div></body></html>";
+        let q = TxQuery::parse(html);
+
+        let authors = q.xpath_string(
+            r#"//div[@class="info"]//b[text()="Author"]/following-sibling::text()[1]"#,
+        );
+        assert!(authors.contains("Alice"), "got authors={authors:?}");
+
+        let summary = q.xpath_string(
+            r#"//div[@class="info"]//b[text()="Synopsis" or text()="Descripción"]/following-sibling::text()[1]"#,
+        );
+        assert!(
+            summary.contains("sinopsis de prueba"),
+            "got summary={summary:?}"
+        );
+    }
 }
 
 fn to_dom(node: ego_tree::NodeRef<'_, Node>) -> Option<DomNode> {
@@ -294,11 +313,14 @@ fn split_terminal(expr: &str) -> (String, Terminal) {
     (expr.to_string(), Terminal::None)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Pred {
     AttrEq(String, String),
     AttrContains(String, String),
     TextContains(String),
+    /// `text()="Exact"` — compares collapsed element text.
+    TextEq(String),
+    Or(Vec<Pred>),
 }
 
 #[derive(Clone)]
@@ -375,27 +397,42 @@ fn find_closing_bracket(s: &str) -> Option<usize> {
 
 fn parse_pred(inner: &str) -> Option<Pred> {
     let inner = inner.trim();
+    if inner.contains(" or ") {
+        let parts: Vec<Pred> = inner
+            .split(" or ")
+            .filter_map(|p| parse_pred_atom(p.trim()))
+            .collect();
+        return match parts.len() {
+            0 => None,
+            1 => parts.into_iter().next(),
+            _ => Some(Pred::Or(parts)),
+        };
+    }
+    parse_pred_atom(inner)
+}
+
+fn parse_pred_atom(inner: &str) -> Option<Pred> {
+    let inner = inner.trim();
     static EQ: OnceLock<Regex> = OnceLock::new();
     static AC: OnceLock<Regex> = OnceLock::new();
     static TC: OnceLock<Regex> = OnceLock::new();
+    static TE: OnceLock<Regex> = OnceLock::new();
 
     let eq = EQ.get_or_init(|| {
         Regex::new(r#"^@([a-zA-Z0-9_\-:]+)\s*=\s*['"]([^'"]*)['"]$"#).unwrap()
     });
     if let Some(c) = eq.captures(inner) {
-        return Some(Pred::AttrEq(
-            c[1].to_string(),
-            c[2].to_string(),
-        ));
+        return Some(Pred::AttrEq(c[1].to_string(), c[2].to_string()));
     }
     let ac = AC.get_or_init(|| {
         Regex::new(r#"^contains\(@([a-zA-Z0-9_\-:]+)\s*,\s*['"]([^'"]*)['"]\)$"#).unwrap()
     });
     if let Some(c) = ac.captures(inner) {
-        return Some(Pred::AttrContains(
-            c[1].to_string(),
-            c[2].to_string(),
-        ));
+        return Some(Pred::AttrContains(c[1].to_string(), c[2].to_string()));
+    }
+    let te = TE.get_or_init(|| Regex::new(r#"^text\(\)\s*=\s*['"]([^'"]*)['"]$"#).unwrap());
+    if let Some(c) = te.captures(inner) {
+        return Some(Pred::TextEq(c[1].to_string()));
     }
     let tc = TC.get_or_init(|| {
         Regex::new(r#"^contains\(\.\s*,\s*['"]([^'"]*)['"]\)$"#).unwrap()
@@ -411,6 +448,8 @@ fn match_pred(node: &DomNode, pred: &Pred) -> bool {
         Pred::AttrEq(k, v) => node.attr(k) == Some(v.as_str()),
         Pred::AttrContains(k, v) => node.attr(k).is_some_and(|a| a.contains(v)),
         Pred::TextContains(v) => node.all_text().contains(v.as_str()),
+        Pred::TextEq(v) => node.all_text() == v.as_str(),
+        Pred::Or(parts) => parts.iter().any(|p| match_pred(node, p)),
     }
 }
 
@@ -472,52 +511,39 @@ fn eval_following_sibling_text(roots: &[DomNode], expr: &str) -> Option<String> 
     find_following_text(roots, target, index)
 }
 
-fn same_elem(a: &DomNode, b: &DomNode) -> bool {
-    match (a, b) {
-        (
-            DomNode::Elem {
-                tag: t1,
-                attrs: a1,
-                children: c1,
-            },
-            DomNode::Elem {
-                tag: t2,
-                attrs: a2,
-                children: c2,
-            },
-        ) => t1 == t2 && a1 == a2 && c1.len() == c2.len() && a.all_text() == b.all_text(),
-        _ => false,
+fn elem_match_key(node: &DomNode) -> Option<(String, String)> {
+    match node {
+        DomNode::Elem { tag, .. } => Some((tag.to_ascii_lowercase(), node.all_text())),
+        _ => None,
     }
 }
 
 fn find_following_text(nodes: &[DomNode], target: &DomNode, index: usize) -> Option<String> {
-    for node in nodes {
-        if let DomNode::Elem { children, .. } = node {
-            for (i, child) in children.iter().enumerate() {
-                if same_elem(child, target) {
-                    let mut count = 0usize;
-                    for sib in children.iter().skip(i + 1) {
-                        if let DomNode::Text(t) = sib {
-                            let trimmed = t.trim();
-                            if !trimmed.is_empty() {
-                                count += 1;
-                                if count == index {
-                                    return Some(trimmed.to_string());
-                                }
-                            }
+    let key = elem_match_key(target)?;
+
+    // Match against this sibling list, then take following text nodes.
+    for (i, child) in nodes.iter().enumerate() {
+        if elem_match_key(child).as_ref() == Some(&key) {
+            let mut count = 0usize;
+            for sib in nodes.iter().skip(i + 1) {
+                if let DomNode::Text(t) = sib {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() {
+                        count += 1;
+                        if count == index {
+                            return Some(trimmed.to_string());
                         }
                     }
                 }
-                if let Some(r) = find_following_text(
-                    match child {
-                        DomNode::Elem { children, .. } => children.as_slice(),
-                        _ => &[],
-                    },
-                    target,
-                    index,
-                ) {
-                    return Some(r);
-                }
+            }
+        }
+    }
+
+    // Recurse into elements (their children become the next sibling list).
+    for node in nodes {
+        if let DomNode::Elem { children, .. } = node {
+            if let Some(r) = find_following_text(children, target, index) {
+                return Some(r);
             }
         }
     }
