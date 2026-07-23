@@ -121,14 +121,20 @@ pub fn search(
             out.push(row.map_err(|e| e.to_string())?);
         }
     } else {
-        let like = format!("%{q}%");
+        let like = format!(
+            "%{}%",
+            q.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
         let mut stmt = conn
             .prepare(
                 r#"SELECT link, COALESCE(title,''), COALESCE(alttitles,''), COALESCE(authors,''),
                           COALESCE(artists,''), COALESCE(genres,''), COALESCE(status,''),
                           COALESCE(summary,''), COALESCE(numchapter,0), COALESCE(jdn,0)
                    FROM masterlist
-                   WHERE title LIKE ?1 ESCAPE '\' OR alttitles LIKE ?1 ESCAPE '\'
+                   WHERE lower(title) LIKE lower(?1) ESCAPE '\'
+                      OR lower(alttitles) LIKE lower(?1) ESCAPE '\'
                    ORDER BY title COLLATE NOCASE
                    LIMIT ?2 OFFSET ?3"#,
             )

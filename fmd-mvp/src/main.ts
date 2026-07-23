@@ -1690,18 +1690,40 @@ document.querySelector("#fav-check-enqueue-all")!.addEventListener("click", asyn
   }
 });
 
+let catalogSearchTimer: number | undefined;
+
 function runCatalogSearch() {
   catalogQuery = catalogQ.value.trim();
   syncCatalogClear();
   void loadCatalog(true);
 }
 
-document.querySelector("#catalog-search")!.addEventListener("click", runCatalogSearch);
-catalogQ.addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter") runCatalogSearch();
+function scheduleCatalogSearch() {
+  syncCatalogClear();
+  window.clearTimeout(catalogSearchTimer);
+  catalogSearchTimer = window.setTimeout(() => {
+    const next = catalogQ.value.trim();
+    if (next === catalogQuery && catalogLoadedKey.startsWith(`${selectedModuleId()}||`)) {
+      return;
+    }
+    catalogQuery = next;
+    void loadCatalog(true);
+  }, 280);
+}
+
+document.querySelector("#catalog-search")!.addEventListener("click", () => {
+  window.clearTimeout(catalogSearchTimer);
+  runCatalogSearch();
 });
-catalogQ.addEventListener("input", syncCatalogClear);
+catalogQ.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    window.clearTimeout(catalogSearchTimer);
+    runCatalogSearch();
+  }
+});
+catalogQ.addEventListener("input", scheduleCatalogSearch);
 catalogClearBtn.addEventListener("click", () => {
+  window.clearTimeout(catalogSearchTimer);
   catalogQ.value = "";
   catalogQuery = "";
   syncCatalogClear();
