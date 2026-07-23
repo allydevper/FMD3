@@ -1345,7 +1345,7 @@ button.secondary:hover:not(:disabled) {
   overflow: hidden;
   position: relative;
   background: var(--deep-hover);
-  border: 1px solid var(--deep-line);
+  border: 2px solid var(--deep-line);
 }
 
 .cover-frame img {
@@ -1353,11 +1353,20 @@ button.secondary:hover:not(:disabled) {
   height: 100%;
   object-fit: cover;
   display: block;
+  filter: contrast(1.08) saturate(1.04) brightness(1.01) url(#cover-sharpen);
 }
 
 .cover-frame img.is-default {
   object-fit: cover;
   opacity: 0.95;
+  filter: none;
+}
+
+.svg-filters {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
 }
 
 .chapters-list > .panel-loading {

@@ -209,6 +209,11 @@ const app = document.querySelector("#app")!;
 app.className = `app${darkTheme ? " dark" : ""}`;
 
 app.innerHTML = `
+  <svg class="svg-filters" aria-hidden="true" focusable="false" width="0" height="0">
+    <filter id="cover-sharpen" color-interpolation-filters="sRGB">
+      <feConvolveMatrix order="3" kernelMatrix="0 -0.35 0 -0.35 2.4 -0.35 0 -0.35 0" preserveAlpha="true"/>
+    </filter>
+  </svg>
   <div class="shell-body">
     <nav class="nav-rail" aria-label="Principal">
       <button type="button" class="nav-item" data-nav="downloads" title="Descargas">
@@ -848,6 +853,7 @@ function setCover(url: string) {
     applyDefaultCover();
     return;
   }
+  coverImg.classList.remove("is-default");
   coverImg.onload = () => {
     coverImg.hidden = false;
     coverPh.hidden = true;
@@ -864,6 +870,7 @@ function setCover(url: string) {
 function applyDefaultCover() {
   coverImg.onerror = null;
   coverImg.onload = null;
+  coverImg.classList.add("is-default");
   coverImg.src = coverDefaultUrl;
   coverBlurImg.src = coverDefaultUrl;
   coverImg.hidden = false;
