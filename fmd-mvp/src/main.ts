@@ -91,6 +91,92 @@ type CatalogStats = {
   count: number;
 };
 
+type GenreTri = "ignore" | "include" | "exclude";
+type InfoMode = "search" | "filter";
+type AdvFilterState = {
+  genres: Record<string, GenreTri>;
+  customGenres: string;
+  title: string;
+  authors: string;
+  artists: string;
+  summary: string;
+  status: 0 | 1 | 2 | 3 | 4;
+  matchMode: "all" | "one";
+  onlyNew: boolean;
+  allSites: boolean;
+  useRegex: boolean;
+};
+
+/** Canonical EN keys (FMD2 defaultGenres) + ES labels for UI. */
+const DEFAULT_GENRES: { id: string; label: string }[] = [
+  { id: "Action", label: "Acción" },
+  { id: "Adult", label: "Adulto" },
+  { id: "Adventure", label: "Aventura" },
+  { id: "Comedy", label: "Comedia" },
+  { id: "Doujinshi", label: "Doujinshi" },
+  { id: "Drama", label: "Drama" },
+  { id: "Ecchi", label: "Ecchi" },
+  { id: "Fantasy", label: "Fantasía" },
+  { id: "Gender Bender", label: "Cambio de sexo" },
+  { id: "Harem", label: "Harem" },
+  { id: "Hentai", label: "Hentai" },
+  { id: "Historical", label: "Historico" },
+  { id: "Horror", label: "Horror" },
+  { id: "Josei", label: "Josei" },
+  { id: "Lolicon", label: "Lolicon" },
+  { id: "Martial Arts", label: "Artes Marciales" },
+  { id: "Mature", label: "Maduro" },
+  { id: "Mecha", label: "Mecha" },
+  { id: "Musical", label: "Musical" },
+  { id: "Mystery", label: "Misterio" },
+  { id: "Psychological", label: "Psicológico" },
+  { id: "Romance", label: "Romance" },
+  { id: "School Life", label: "Vida Escolar" },
+  { id: "Sci-fi", label: "Sci-Fi (Ciencia Ficción)" },
+  { id: "Seinen", label: "Seinen" },
+  { id: "Shotacon", label: "Shotacon" },
+  { id: "Shoujo", label: "Shoujo" },
+  { id: "Shoujo Ai", label: "Shoujo Ai" },
+  { id: "Shounen", label: "Shounen" },
+  { id: "Shounen Ai", label: "Shounen Ai" },
+  { id: "Slice of Life", label: "Recuentos de la Vida" },
+  { id: "Smut", label: "Smut (Atrevido)" },
+  { id: "Sports", label: "Deportes" },
+  { id: "Supernatural", label: "Sobrenatural" },
+  { id: "Tragedy", label: "Tragedia" },
+  { id: "Yaoi", label: "Yaoi" },
+  { id: "Yuri", label: "Yuri" },
+  { id: "Webtoons", label: "Webtoons" },
+];
+
+const FILTER_CUSTOM_HINT =
+  "Géneros:\n" +
+  "- Incluir: el manga debe tener este género.\n" +
+  "- Excluir (X): el manga no debe tenerlo.\n" +
+  "- Vacío: no importa.\n\n" +
+  "Géneros extra:\n" +
+  "- Separa varios con coma.\n" +
+  "- Antepone ! o - para excluir.\n" +
+  "- Ejemplo: Aventura, !Ecchi, Comedia.";
+
+function emptyAdvFilter(): AdvFilterState {
+  const genres: Record<string, GenreTri> = {};
+  for (const g of DEFAULT_GENRES) genres[g.id] = "ignore";
+  return {
+    genres,
+    customGenres: "",
+    title: "",
+    authors: "",
+    artists: "",
+    summary: "",
+    status: 4,
+    matchMode: "all",
+    onlyNew: false,
+    allSites: false,
+    useRegex: false,
+  };
+}
+
 type UpdateListStats = {
   module_id: string;
   inserted: number;
@@ -177,6 +263,9 @@ const ICO = {
   import: svgIco(
     '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
   ),
+  filterOff: svgIco(
+    '<path d="M13.013 3H2l8 9.06V21l4-2v-3.5"/><path d="m22 3-5 5"/><path d="m17 3 5 5"/>',
+  ),
   terminal: svgIco(
     '<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
   ),
@@ -204,6 +293,10 @@ let activeCatalogTitle = "";
 let isFavorite = false;
 let darkTheme = localStorage.getItem(THEME_KEY) === "1";
 let logOpen = false;
+let infoMode: InfoMode = "search";
+let advFilter = emptyAdvFilter();
+/** Stub: UI says filter is “applied” (no catalog SQL yet). */
+let advFilterApplied = false;
 
 const app = document.querySelector("#app")!;
 app.className = `app${darkTheme ? " dark" : ""}`;
@@ -251,8 +344,8 @@ app.innerHTML = `
         <aside class="search-panel">
           <div class="search-panel-head">
             <div class="seg">
-              <button type="button" class="seg-btn active" id="seg-search">búsqueda</button>
-              <button type="button" class="seg-btn" id="seg-filter" disabled title="Próximamente">Filtro</button>
+              <button type="button" class="seg-btn active" id="seg-search">Info</button>
+              <button type="button" class="seg-btn" id="seg-filter">Filtro</button>
             </div>
             <div class="field-label">Fuente</div>
             <div class="source-row">
@@ -288,10 +381,10 @@ app.innerHTML = `
             </div>
           </div>
           <div class="search-mode-bar">
-            <span>Modo: <strong>búsqueda individual</strong></span>
+            <span>Modo: <strong id="catalog-mode-label">búsqueda individual</strong></span>
             <div class="search-mode-right">
-              <button type="button" class="ghost ghost-sm" id="catalog-import" title="Importar .db…">
-                <span class="ico ico-sm" style="--ico:${ICO.import}"></span>
+              <button type="button" class="ghost ghost-sm" id="catalog-clear-adv" title="Quitar filtro">
+                <span class="ico ico-sm" style="--ico:${ICO.filterOff}"></span>
               </button>
               <span class="result-badge" id="catalog-stats">0</span>
             </div>
@@ -361,6 +454,106 @@ app.innerHTML = `
                 </div>
               </div>
             </aside>
+
+            <div class="filter-panel" id="filter-panel" hidden>
+              <div class="filter-scroll">
+                <div class="filter-section">
+                  <div class="filter-section-head">
+                    <h2 class="filter-section-title">Géneros</h2>
+                    <span
+                      class="filter-hint ico ico-sm"
+                      id="filter-hint"
+                      style="--ico:${ICO.about}"
+                      role="img"
+                      aria-label="Ayuda de géneros"
+                    ></span>
+                  </div>
+                  <div class="filter-genres" id="filter-genres" role="group" aria-label="Géneros"></div>
+                </div>
+
+                <div class="filter-section filter-custom-row">
+                  <h2 class="filter-section-title" id="filter-custom-label">Géneros extra</h2>
+                  <input
+                    id="filter-custom"
+                    type="text"
+                    placeholder="Ej.: Aventura, !Ecchi, Comedia"
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-labelledby="filter-custom-label"
+                  />
+                </div>
+
+                <div class="filter-body">
+                  <div class="filter-fields">
+                    <label class="filter-field">
+                      <span class="filter-field-label">Título</span>
+                      <input id="filter-title" type="text" placeholder="Parte del título" autocomplete="off" spellcheck="false" />
+                    </label>
+                    <label class="filter-field">
+                      <span class="filter-field-label">Autor</span>
+                      <input id="filter-authors" type="text" placeholder="Nombre del autor" autocomplete="off" spellcheck="false" />
+                    </label>
+                    <label class="filter-field">
+                      <span class="filter-field-label">Artista</span>
+                      <input id="filter-artists" type="text" placeholder="Nombre del artista" autocomplete="off" spellcheck="false" />
+                    </label>
+                    <label class="filter-field">
+                      <span class="filter-field-label">Estado</span>
+                      <div class="filter-select-wrap">
+                        <select id="filter-status">
+                          <option value="0">Completado</option>
+                          <option value="1">En curso</option>
+                          <option value="2">En pausa</option>
+                          <option value="3">Cancelado</option>
+                          <option value="4" selected>Sin filtrar</option>
+                        </select>
+                      </div>
+                    </label>
+                    <label class="filter-field">
+                      <span class="filter-field-label">Sinopsis</span>
+                      <input id="filter-summary" type="text" placeholder="Texto en la sinopsis" autocomplete="off" spellcheck="false" />
+                    </label>
+                  </div>
+
+                  <div class="filter-options">
+                    <p class="filter-options-label">Coincidencia de géneros</p>
+                    <label class="filter-radio">
+                      <input type="radio" name="filter-match" id="filter-match-one" value="one" />
+                      <span class="filter-ctrl" aria-hidden="true"></span>
+                      <span>Cualquiera de los marcados</span>
+                    </label>
+                    <label class="filter-radio">
+                      <input type="radio" name="filter-match" id="filter-match-all" value="all" checked />
+                      <span class="filter-ctrl" aria-hidden="true"></span>
+                      <span>Todos los marcados</span>
+                    </label>
+                    <p class="filter-options-label">Opciones</p>
+                    <label class="filter-check">
+                      <input type="checkbox" id="filter-only-new" />
+                      <span class="filter-ctrl" aria-hidden="true"></span>
+                      <span>Solo mangas nuevos</span>
+                    </label>
+                    <label class="filter-check">
+                      <input type="checkbox" id="filter-all-sites" />
+                      <span class="filter-ctrl" aria-hidden="true"></span>
+                      <span>Buscar en todas las fuentes</span>
+                    </label>
+                    <label class="filter-check">
+                      <input type="checkbox" id="filter-regex" />
+                      <span class="filter-ctrl" aria-hidden="true"></span>
+                      <span>Usar expresión regular</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="filter-actions">
+                <button type="button" class="btn" id="filter-apply">Aplicar filtro</button>
+                <button type="button" class="secondary" id="filter-remove">Quitar filtro</button>
+                <button type="button" class="secondary" id="filter-reset">Reiniciar</button>
+                <button type="button" class="secondary" id="filter-back">Regresar</button>
+              </div>
+            </div>
           </div>
 
           <div class="action-bar">
@@ -515,6 +708,27 @@ const enqueueBtn = document.querySelector<HTMLButtonElement>("#enqueue")!;
 const catalogRefreshIco = document.querySelector<HTMLElement>("#catalog-refresh-ico")!;
 const themeIco = document.querySelector<HTMLElement>("#theme-ico")!;
 const logDrawer = document.querySelector<HTMLDivElement>("#log-drawer")!;
+const segSearchBtn = document.querySelector<HTMLButtonElement>("#seg-search")!;
+const segFilterBtn = document.querySelector<HTMLButtonElement>("#seg-filter")!;
+const filterPanel = document.querySelector<HTMLDivElement>("#filter-panel")!;
+const infoCenter = document.querySelector<HTMLDivElement>(".info-center")!;
+const infoSidebar = document.querySelector<HTMLElement>("#info-sidebar")!;
+const filterGenresEl = document.querySelector<HTMLDivElement>("#filter-genres")!;
+const filterCustomEl = document.querySelector<HTMLInputElement>("#filter-custom")!;
+const filterTitleEl = document.querySelector<HTMLInputElement>("#filter-title")!;
+const filterAuthorsEl = document.querySelector<HTMLInputElement>("#filter-authors")!;
+const filterArtistsEl = document.querySelector<HTMLInputElement>("#filter-artists")!;
+const filterStatusEl = document.querySelector<HTMLSelectElement>("#filter-status")!;
+const filterSummaryEl = document.querySelector<HTMLInputElement>("#filter-summary")!;
+const filterMatchOne = document.querySelector<HTMLInputElement>("#filter-match-one")!;
+const filterMatchAll = document.querySelector<HTMLInputElement>("#filter-match-all")!;
+const filterOnlyNew = document.querySelector<HTMLInputElement>("#filter-only-new")!;
+const filterAllSites = document.querySelector<HTMLInputElement>("#filter-all-sites")!;
+const filterRegex = document.querySelector<HTMLInputElement>("#filter-regex")!;
+const catalogModeLabel = document.querySelector<HTMLElement>("#catalog-mode-label")!;
+const filterHintEl = document.querySelector<HTMLElement>("#filter-hint")!;
+
+filterHintEl.title = FILTER_CUSTOM_HINT;
 
 function setBusy(_on: boolean, text?: string) {
   /* Mensajes de progreso → solo al log (sin barra en pantalla) */
@@ -1771,7 +1985,142 @@ function clearCatalogFilter() {
   void loadCatalog(true, true);
 }
 
+/** Quita filtro avanzado (UI) + limpia el buscador de título. */
+function clearAllFilters() {
+  window.clearTimeout(catalogSearchTimer);
+  catalogQ.value = "";
+  catalogQuery = "";
+  syncCatalogClear();
+  advFilter = emptyAdvFilter();
+  writeFilterStateToForm();
+  advFilterApplied = false;
+  syncCatalogModeLabel();
+  void loadCatalog(true, true);
+  log("Filtro quitado.", "ok");
+}
+
+const GENRE_TRI_CYCLE: GenreTri[] = ["ignore", "include", "exclude"];
+
+function syncCatalogModeLabel() {
+  if (advFilterApplied) {
+    catalogModeLabel.textContent = "filtro (UI)";
+  } else {
+    catalogModeLabel.textContent = "búsqueda individual";
+  }
+}
+
+function setInfoMode(mode: InfoMode) {
+  if (infoMode === mode) return;
+  infoMode = mode;
+  const filterOn = mode === "filter";
+  segSearchBtn.classList.toggle("active", !filterOn);
+  segFilterBtn.classList.toggle("active", filterOn);
+  filterPanel.hidden = !filterOn;
+  infoCenter.hidden = filterOn;
+  infoSidebar.hidden = filterOn;
+  document.querySelector(".info-top")!.classList.toggle("is-filter", filterOn);
+}
+
+function genreTriClass(state: GenreTri): string {
+  if (state === "include") return "is-include";
+  if (state === "exclude") return "is-exclude";
+  return "is-ignore";
+}
+
+function renderFilterGenres() {
+  filterGenresEl.innerHTML = "";
+  for (const g of DEFAULT_GENRES) {
+    const state = advFilter.genres[g.id] ?? "ignore";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `genre-tri ${genreTriClass(state)}`;
+    btn.dataset.genre = g.id;
+    btn.title =
+      state === "include"
+        ? "Incluir"
+        : state === "exclude"
+          ? "Excluir"
+          : "No importa (clic para cambiar)";
+    btn.innerHTML = `<span class="genre-tri-box" aria-hidden="true"></span><span class="genre-tri-label">${escapeHtml(g.label)}</span>`;
+    btn.addEventListener("click", () => {
+      const cur = advFilter.genres[g.id] ?? "ignore";
+      const next = GENRE_TRI_CYCLE[(GENRE_TRI_CYCLE.indexOf(cur) + 1) % GENRE_TRI_CYCLE.length]!;
+      advFilter.genres[g.id] = next;
+      btn.className = `genre-tri ${genreTriClass(next)}`;
+      btn.title =
+        next === "include"
+          ? "Incluir"
+          : next === "exclude"
+            ? "Excluir"
+            : "No importa (clic para cambiar)";
+    });
+    filterGenresEl.appendChild(btn);
+  }
+}
+
+function readFilterFormIntoState() {
+  advFilter.customGenres = filterCustomEl.value;
+  advFilter.title = filterTitleEl.value;
+  advFilter.authors = filterAuthorsEl.value;
+  advFilter.artists = filterArtistsEl.value;
+  advFilter.summary = filterSummaryEl.value;
+  const st = Number(filterStatusEl.value);
+  advFilter.status = (st === 0 || st === 1 || st === 2 || st === 3 || st === 4 ? st : 4) as
+    | 0
+    | 1
+    | 2
+    | 3
+    | 4;
+  advFilter.matchMode = filterMatchAll.checked ? "all" : "one";
+  advFilter.onlyNew = filterOnlyNew.checked;
+  advFilter.allSites = filterAllSites.checked;
+  advFilter.useRegex = filterRegex.checked;
+}
+
+function writeFilterStateToForm() {
+  filterCustomEl.value = advFilter.customGenres;
+  filterTitleEl.value = advFilter.title;
+  filterAuthorsEl.value = advFilter.authors;
+  filterArtistsEl.value = advFilter.artists;
+  filterSummaryEl.value = advFilter.summary;
+  filterStatusEl.value = String(advFilter.status);
+  filterMatchAll.checked = advFilter.matchMode === "all";
+  filterMatchOne.checked = advFilter.matchMode === "one";
+  filterOnlyNew.checked = advFilter.onlyNew;
+  filterAllSites.checked = advFilter.allSites;
+  filterRegex.checked = advFilter.useRegex;
+  renderFilterGenres();
+}
+
+function applyAdvFilterStub() {
+  readFilterFormIntoState();
+  advFilterApplied = true;
+  syncCatalogModeLabel();
+  log("Filtro preparado (UI; aún no aplica al catálogo).", "ok");
+}
+
+function removeAdvFilterStub() {
+  clearAllFilters();
+}
+
+function resetAdvFilterForm() {
+  advFilter = emptyAdvFilter();
+  writeFilterStateToForm();
+  log("Valores del filtro reiniciados.", "ok");
+}
+
+segSearchBtn.addEventListener("click", () => setInfoMode("search"));
+segFilterBtn.addEventListener("click", () => setInfoMode("filter"));
+document.querySelector("#filter-apply")!.addEventListener("click", applyAdvFilterStub);
+document.querySelector("#filter-remove")!.addEventListener("click", removeAdvFilterStub);
+document.querySelector("#filter-reset")!.addEventListener("click", resetAdvFilterForm);
+document.querySelector("#filter-back")!.addEventListener("click", () => setInfoMode("search"));
+
+writeFilterStateToForm();
+syncCatalogModeLabel();
+
 document.querySelector("#catalog-broom")!.addEventListener("click", clearCatalogFilter);
+document.querySelector("#catalog-clear-adv")!.addEventListener("click", clearAllFilters);
 catalogQ.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") {
     window.clearTimeout(catalogSearchTimer);
@@ -1804,30 +2153,6 @@ document.querySelector("#catalog-update")!.addEventListener("click", async () =>
     log(String(e), "err");
   } finally {
     catalogRefreshIco.classList.remove("ico-spin");
-    setBusy(false);
-  }
-});
-
-document.querySelector("#catalog-import")!.addEventListener("click", async () => {
-  const id = selectedModuleId();
-  if (!id) {
-    log("Elige un módulo antes de importar.", "err");
-    return;
-  }
-  const file = await open({
-    multiple: false,
-    filters: [{ name: "SQLite FMD", extensions: ["db"] }],
-  });
-  if (typeof file !== "string") return;
-  setBusy(true, "Importando .db…");
-  try {
-    const st = await invoke<CatalogStats>("catalog_import", { moduleId: id, path: file });
-    log(`Importado: ${st.count} títulos → ${st.path}`, "ok");
-    catalogLoadedKey = "";
-    await loadCatalog(true);
-  } catch (e) {
-    log(String(e), "err");
-  } finally {
     setBusy(false);
   }
 });
