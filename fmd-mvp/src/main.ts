@@ -287,6 +287,22 @@ const ICO = {
   terminal: svgIco(
     '<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
   ),
+  layout: svgIco(
+    '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
+  ),
+  link: svgIco(
+    '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  ),
+  globe: svgIco(
+    '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  ),
+  message: svgIco('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>'),
+  sliders: svgIco(
+    '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>',
+  ),
+  file: svgIco(
+    '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/>',
+  ),
 };
 
 let manga: MangaInfoResult | null = null;
@@ -644,29 +660,415 @@ app.innerHTML = `
         </div>
       </section>
 
-      <section id="view-options" class="view" hidden>
-        <div class="view-pad">
-          <div class="panel">
-            <h3>Descarga / red</h3>
-            <div class="row"><label>User-Agent</label><input id="set-ua" type="text" style="flex:1" placeholder="(default)" autocomplete="off" spellcheck="false" /></div>
-            <div class="row"><label>Proxy</label><input id="set-proxy" type="text" style="flex:1" placeholder="http://host:port" autocomplete="off" spellcheck="false" /></div>
-            <div class="row"><label>Threads/cap</label><input id="set-threads" type="number" min="1" max="16" value="1" autocomplete="off" /></div>
-            <div class="row">
-              <label>Pack</label>
-              <select id="set-pack"><option value="none">none</option><option value="cbz">cbz</option><option value="zip">zip</option></select>
-              <label><input id="set-pack-del" type="checkbox" /> borrar carpeta tras pack</label>
+            <section id="view-options" class="view" hidden>
+        <div class="options-shell">
+          <header class="options-header">
+            <div class="options-eyebrow">Preferencias</div>
+            <h1 class="options-title">Configuración</h1>
+          </header>
+          <div class="options-main">
+            <nav class="options-cats" role="tablist" aria-label="Categorías">
+              <button type="button" class="options-cat active" data-opt-tab="general" role="tab" aria-selected="true">
+                <span class="ico ico-sm" style="--ico:${ICO.settings}"></span><span>General</span>
+              </button>
+              <button type="button" class="options-cat" data-opt-tab="view" role="tab" aria-selected="false">
+                <span class="ico ico-sm" style="--ico:${ICO.layout}"></span><span>Vista</span>
+              </button>
+              <button type="button" class="options-cat" data-opt-tab="connections" role="tab" aria-selected="false">
+                <span class="ico ico-sm" style="--ico:${ICO.link}"></span><span>Conexiones</span>
+              </button>
+              <button type="button" class="options-cat" data-opt-tab="saveto" role="tab" aria-selected="false">
+                <span class="ico ico-sm" style="--ico:${ICO.folder}"></span><span>Guardar en</span>
+              </button>
+              <button type="button" class="options-cat" data-opt-tab="updates" role="tab" aria-selected="false">
+                <span class="ico ico-sm" style="--ico:${ICO.refresh}"></span><span>Actualizaciones</span>
+              </button>
+              <button type="button" class="options-cat" data-opt-tab="dialogs" role="tab" aria-selected="false">
+                <span class="ico ico-sm" style="--ico:${ICO.message}"></span><span>Diálogos</span>
+              </button>
+              <button type="button" class="options-cat" data-opt-tab="websites" role="tab" aria-selected="false">
+                <span class="ico ico-sm" style="--ico:${ICO.globe}"></span><span>Sitios</span>
+              </button>
+            </nav>
+            <div class="options-body">
+              <div class="options-panel active" id="opt-general" data-opt-panel="general" role="tabpanel">
+                <div class="opt-scroll">
+                  <div class="st-wrap">
+                    <section class="st-section">
+                      <div class="st-section-head">
+                        <span class="ico ico-sm" style="--ico:${ICO.settings}"></span>
+                        <h2>Aplicación</h2>
+                      </div>
+                      <div class="st-card">
+                        <div class="st-row">
+                          <div class="st-meta">
+                            <div class="st-label">Idioma</div>
+                            <div class="st-desc">Idioma de la interfaz</div>
+                          </div>
+                          <div class="st-select filter-select-wrap">
+                            <select class="opt-stub">
+                              <option value="de">Deutsch</option>
+                              <option value="en" selected>English</option>
+                              <option value="es">Español</option>
+                              <option value="fr">Français</option>
+                              <option value="id_ID">Bahasa Indonesia</option>
+                              <option value="pl_PL">Polski</option>
+                              <option value="pt_BR">Português (Brasil)</option>
+                              <option value="ru_RU">Русский</option>
+                              <option value="tr_TR">Türkçe</option>
+                              <option value="zh">中文</option>
+                              <option value="el_GR">Ελληνικά</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div class="st-row">
+                          <div class="st-meta">
+                            <div class="st-label">Tema</div>
+                            <div class="st-desc">Apariencia clara, oscura o según el sistema</div>
+                          </div>
+                          <div class="st-select filter-select-wrap">
+                            <select class="opt-stub"><option>Sistema</option><option>Claro</option><option>Oscuro</option></select>
+                          </div>
+                        </div>
+                        <div class="st-row">
+                          <div class="st-meta">
+                            <div class="st-label">Tras terminar</div>
+                            <div class="st-desc">Acción al completar todas las descargas</div>
+                          </div>
+                          <div class="st-select filter-select-wrap">
+                            <select class="opt-stub">
+                              <option>No hacer nada</option>
+                              <option>Salir</option>
+                              <option>Apagar</option>
+                              <option>Hibernar</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div class="st-row">
+                          <div class="st-meta">
+                            <div class="st-label">Marcar manga como nuevo</div>
+                            <div class="st-desc">Días desde la última actualización</div>
+                          </div>
+                          <div class="st-num-wrap">
+                            <div class="st-stepper" data-min="1">
+                              <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
+                              <input id="opt-new-days" class="st-stepper-input opt-stub" type="number" value="1" min="1" />
+                              <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
+                            </div>
+                            <span class="st-unit">días</span>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="st-section">
+                      <div class="st-section-head">
+                        <span class="ico ico-sm" style="--ico:${ICO.sliders}"></span>
+                        <h2>Comportamiento</h2>
+                      </div>
+                      <div class="st-card">
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Minimizar al iniciar</div><div class="st-desc">Arranca en la bandeja del sistema</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Minimizar a la bandeja</div><div class="st-desc">Al cerrar, oculta en la bandeja en vez de salir</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Permitir solo una instancia</div><div class="st-desc">Evita abrir la app dos veces</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Búsqueda en vivo</div><div class="st-desc">Filtra mientras escribes (lento en listas largas)</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Borrar tareas completadas al cerrar</div><div class="st-desc">Limpia la cola de descargas al salir</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Ordenar descargas al añadir tareas</div><div class="st-desc">Reordena la cola automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Vacuum de bases al salir</div><div class="st-desc">Compacta las bases de datos al cerrar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Rutas de nombre largo <span class="st-warn">Cuidado</span></div><div class="st-desc">Permite rutas &gt; 260 caracteres</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                      </div>
+                    </section>
+
+                    <section class="st-section">
+                      <div class="st-section-head">
+                        <span class="ico ico-sm" style="--ico:${ICO.external}"></span>
+                        <h2>Programa externo</h2>
+                      </div>
+                      <div class="st-card">
+                        <label class="st-row click">
+                          <div class="st-meta"><div class="st-label">Abrir manga con programa externo</div><div class="st-desc">Usa otra aplicación para abrir los capítulos</div></div>
+                          <span class="st-switch"><input class="opt-stub" type="checkbox" id="opt-external" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                        </label>
+                        <div class="st-row st-row-stack" id="opt-external-fields" hidden>
+                          <div class="st-form-grid">
+                            <label>Ruta</label>
+                            <input class="st-field st-mono opt-stub" type="text" placeholder="Ruta del programa" />
+                            <label>Parámetros</label>
+                            <input class="st-field st-mono opt-stub" type="text" placeholder="%PATH%" />
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="st-section">
+                      <div class="st-section-head">
+                        <span class="ico ico-sm" style="--ico:${ICO.file}"></span>
+                        <h2>Registro (log)</h2>
+                      </div>
+                      <div class="st-card">
+                        <label class="st-row click">
+                          <div class="st-meta"><div class="st-label">Activar registro</div><div class="st-desc">Guarda la actividad en un archivo de log</div></div>
+                          <span class="st-switch"><input class="opt-stub" type="checkbox" id="opt-log" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                        </label>
+                        <div id="opt-log-extra" hidden>
+                          <div class="st-row">
+                            <div class="st-form-inline">
+                              <span class="st-form-key">Archivo</span>
+                              <input class="st-field st-mono opt-stub" type="text" value="fmd.log" />
+                            </div>
+                          </div>
+                          <div class="st-row st-row-actions">
+                            <button type="button" class="secondary opt-stub">Borrar archivo de log</button>
+                            <button type="button" class="secondary opt-stub">Abrir log</button>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+
+              <div class="options-panel" id="opt-view" data-opt-panel="view" role="tabpanel" hidden>
+                <div class="opt-scroll">
+                  <div class="st-wrap">
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.layout}"></span><h2>Drop Box</h2></div>
+                      <div class="st-card">
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Mostrar Drop Box</div><div class="st-desc">Ventana flotante para soltar enlaces</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Modo</div><div class="st-desc">Qué hacer con los enlaces soltados</div></div><div class="st-select filter-select-wrap"><select class="opt-stub"><option>Descargar todo</option><option>Añadir a favoritos</option></select></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Opacidad</div><div class="st-desc">Transparencia de la ventana Drop Box</div></div><input class="st-range opt-stub" type="range" min="5" max="255" value="200" /></div>
+                      </div>
+                    </section>
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.sliders}"></span><h2>Interfaz</h2></div>
+                      <div class="st-card">
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Mostrar barra de descargas</div><div class="st-desc">Toolbar superior en la cola</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Botón borrar completadas</div><div class="st-desc">Mostrar «Borrar todas las tareas completadas»</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Barra izquierda de descargas</div><div class="st-desc">Controles adicionales a la izquierda</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Cargar portada del manga</div><div class="st-desc">Descarga y muestra la imagen de portada</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Globo de notificación</div><div class="st-desc">Avisos del sistema al completar tareas</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Ir a Descargas al añadir</div><div class="st-desc">Cambia a la vista Descargas al crear tareas</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Ir a Favoritos al añadir manga</div><div class="st-desc">Cambia a Favoritos al guardar un título</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+
+              <div class="options-panel" id="opt-connections" data-opt-panel="connections" role="tabpanel" hidden>
+                <div class="opt-scroll">
+                  <div class="st-wrap">
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.download}"></span><h2>Descargas</h2></div>
+                      <div class="st-card">
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Tareas en paralelo</div><div class="st-desc">Número de tareas descargando a la vez</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="8" value="1" /></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Archivos por tarea</div><div class="st-desc">Hilos de descarga por capítulo</div></div><div class="st-num-wrap"><input id="set-threads" class="st-field st-num" type="number" min="1" max="16" value="1" autocomplete="off" /></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Reintentos de tarea</div><div class="st-desc">Si la tarea falla, cuántas veces reintentar</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="0" value="1" /></div></div>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Reiniciar desde capítulos fallidos</div><div class="st-desc">Siempre continuar desde el último fallo</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                      </div>
+                    </section>
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.sliders}"></span><h2>Misceláneo</h2></div>
+                      <div class="st-card">
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Hilos de favoritos</div><div class="st-desc">Comprobaciones de favoritos a la vez</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="32" value="1" /></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Hilos de actualizar lista</div><div class="st-desc">Paralelismo al actualizar el catálogo</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="32" value="1" /></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Hilos en segundo plano</div><div class="st-desc">Cargas en background</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="32" value="1" /></div></div>
+                      </div>
+                    </section>
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.link}"></span><h2>Red</h2></div>
+                      <div class="st-card">
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Timeout</div><div class="st-desc">Segundos de espera de conexión</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="300" value="30" /><span class="st-unit">s</span></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Reintentos de conexión</div><div class="st-desc">−1 = reintentar siempre</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="-1" max="5" value="0" /></div></div>
+                        <div class="st-row st-row-stack">
+                          <div class="st-meta"><div class="st-label">User-Agent</div><div class="st-desc">Cabecera HTTP por defecto</div></div>
+                          <input id="set-ua" class="st-field st-mono" type="text" placeholder="(default)" autocomplete="off" spellcheck="false" />
+                        </div>
+                        <label class="st-row click">
+                          <div class="st-meta"><div class="st-label">Usar proxy</div><div class="st-desc">Enruta el tráfico HTTP por un proxy</div></div>
+                          <span class="st-switch"><input class="opt-stub" type="checkbox" id="set-use-proxy-stub" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                        </label>
+                        <div class="st-row st-row-stack" id="opt-proxy-fields">
+                          <div class="st-form-grid">
+                            <label>URL</label>
+                            <input id="set-proxy" class="st-field st-mono" type="text" placeholder="http://host:port" autocomplete="off" spellcheck="false" />
+                            <label>Tipo</label>
+                            <div class="st-select st-select-full filter-select-wrap">
+                              <select class="opt-stub"><option>HTTP</option><option>SOCKS4</option><option>SOCKS5</option></select>
+                            </div>
+                            <label>Host</label>
+                            <input class="st-field opt-stub" type="text" placeholder="Host/IP" />
+                            <label>Puerto</label>
+                            <input class="st-field st-num opt-stub" type="number" value="8080" />
+                            <label>Usuario</label>
+                            <input class="st-field opt-stub" type="text" />
+                            <label>Contraseña</label>
+                            <input class="st-field opt-stub" type="password" />
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+
+              <div class="options-panel" id="opt-saveto" data-opt-panel="saveto" role="tabpanel" hidden>
+                <div class="opt-scroll">
+                  <div class="st-wrap">
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.folder}"></span><h2>Ubicación</h2></div>
+                      <div class="st-card">
+                        <div class="st-row st-row-stack">
+                          <div class="st-meta"><div class="st-label">Ruta de descarga</div><div class="st-desc">Carpeta por defecto para nuevos títulos</div></div>
+                          <div class="path-field">
+                            <input id="set-output-dir" type="text" readonly placeholder="Sin carpeta de salida" autocomplete="off" />
+                            <button type="button" class="path-browse" id="set-output-browse" title="Examinar…">
+                              <span class="ico ico-sm" style="--ico:${ICO.folder}"></span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.download}"></span><h2>Empaquetado</h2></div>
+                      <div class="st-card">
+                        <div class="st-row">
+                          <div class="st-meta"><div class="st-label">Guardar capítulos como</div><div class="st-desc">Formato de archivo al terminar</div></div>
+                          <div class="st-select filter-select-wrap">
+                            <select id="set-pack">
+                              <option value="none">Ninguno</option>
+                              <option value="zip">ZIP</option>
+                              <option value="cbz">CBZ</option>
+                              <option value="pdf" disabled>PDF</option>
+                              <option value="epub" disabled>EPUB</option>
+                            </select>
+                          </div>
+                        </div>
+                        <label class="st-row click">
+                          <div class="st-meta"><div class="st-label">Borrar carpeta tras empaquetar</div><div class="st-desc">Elimina la carpeta de páginas al crear el archivo</div></div>
+                          <span class="st-switch"><input id="set-pack-del" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                        </label>
+                        <div class="st-row">
+                          <div class="st-meta"><div class="st-label">Convertir imágenes</div><div class="st-desc">Formato de salida de cada página</div></div>
+                          <div class="st-select filter-select-wrap">
+                            <select id="set-convert">
+                              <option value="keep">Mantener</option>
+                              <option value="jpg">JPG</option>
+                              <option value="png">PNG</option>
+                              <option value="webp">WebP</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Calidad PDF</div><div class="st-desc">Solo aplica si el empaquetado es PDF</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" value="95" min="1" max="100" /></div></div>
+                      </div>
+                    </section>
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.file}"></span><h2>Renombrado</h2></div>
+                      <div class="st-card">
+                        <label class="st-row click">
+                          <div class="st-meta"><div class="st-label">Reemplazar unicode</div><div class="st-desc">Sustituye caracteres problemáticos en rutas</div></div>
+                          <div class="st-inline-end">
+                            <input class="st-field st-char opt-stub" type="text" maxlength="4" placeholder="_" />
+                            <span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                          </div>
+                        </label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Carpeta por nombre de manga</div><div class="st-desc">Genera carpeta automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <div class="st-row st-row-stack">
+                          <div class="st-meta"><div class="st-label">Patrón carpeta manga</div></div>
+                          <input id="set-pat-manga" class="st-field st-mono" type="text" value="%Manga%" autocomplete="off" spellcheck="false" />
+                        </div>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Quitar nombre del manga del capítulo</div><div class="st-desc">Evita duplicar el título en la carpeta</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Carpeta de capítulo</div><div class="st-desc">Genera subcarpeta por capítulo</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <div class="st-row st-row-stack">
+                          <div class="st-meta"><div class="st-label">Patrón carpeta capítulo</div></div>
+                          <input id="set-pat-chapter" class="st-field st-mono" type="text" value="%ChapterIndex%_%Chapter%" autocomplete="off" spellcheck="false" />
+                        </div>
+                        <div class="st-row">
+                          <div class="st-meta"><div class="st-label">Relleno de dígitos</div><div class="st-desc">Padding numérico en volumen/capítulo</div></div>
+                          <div class="st-inline-end">
+                            <label class="st-mini"><input class="opt-stub" type="checkbox" /> Vol <input class="st-field st-num opt-stub" type="number" value="1" min="1" max="10" /></label>
+                            <label class="st-mini"><input class="opt-stub" type="checkbox" /> Cap <input class="st-field st-num opt-stub" type="number" value="1" min="1" max="10" /></label>
+                          </div>
+                        </div>
+                        <div class="st-row st-row-stack">
+                          <div class="st-meta"><div class="st-label">Patrón de página</div></div>
+                          <input id="set-pat-page" class="st-field st-mono" type="text" value="%Page%" autocomplete="off" spellcheck="false" />
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+
+              <div class="options-panel" id="opt-updates" data-opt-panel="updates" role="tabpanel" hidden>
+                <div class="opt-scroll">
+                  <div class="st-wrap">
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.refresh}"></span><h2>Actualizaciones</h2></div>
+                      <div class="st-card">
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar versión al iniciar</div><div class="st-desc">Busca actualizaciones de la app</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">No cargar info al actualizar lista</div><div class="st-desc">Más rápido; el filtro avanzado no funcionará</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                      </div>
+                    </section>
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.heart}"></span><h2>Favoritos</h2></div>
+                      <div class="st-card">
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar al iniciar</div><div class="st-desc">Busca capítulos nuevos al arrancar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Abrir Favoritos al iniciar</div><div class="st-desc">Muestra esa vista al abrir la app</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar en intervalo</div><div class="st-desc">Revisa favoritos periódicamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Intervalo</div><div class="st-desc">Minutos entre comprobaciones</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="1440" value="60" /><span class="st-unit">min</span></div></div>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Descargar tras comprobar</div><div class="st-desc">Encola capítulos nuevos automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Quitar mangas completados</div><div class="st-desc">Los elimina de Favoritos al terminar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+
+              <div class="options-panel" id="opt-dialogs" data-opt-panel="dialogs" role="tabpanel" hidden>
+                <div class="opt-scroll">
+                  <div class="st-wrap">
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.message}"></span><h2>Confirmaciones</h2></div>
+                      <div class="st-card">
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Salir</div><div class="st-desc">Pedir confirmación antes de cerrar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Borrar descarga / manga / favorito</div><div class="st-desc">Confirmar eliminaciones</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Descargar lista si está vacía</div><div class="st-desc">Preguntar antes de Update List</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+
+              <div class="options-panel" id="opt-websites" data-opt-panel="websites" role="tabpanel" hidden>
+                <div class="opt-scroll">
+                  <div class="st-wrap">
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.globe}"></span><h2>Sitios</h2></div>
+                      <div class="st-card">
+                        <div class="st-row st-row-actions">
+                          <p class="st-desc" style="margin:0;flex:1">Selección de módulos (diseño). Proceden de <code>lua/modules</code>.</p>
+                          <button type="button" class="secondary opt-stub">Todo</button>
+                          <button type="button" class="secondary opt-stub">Ninguno</button>
+                        </div>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">LoliVault</div><div class="st-desc">Ejemplo FoOlSlide</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">MangaDex</div><div class="st-desc">Ejemplo</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Otros módulos…</div><div class="st-desc">Placeholder</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="row">
-              <label>Convertir a</label>
-              <select id="set-convert"><option value="keep">keep</option><option value="jpg">jpg</option><option value="png">png</option><option value="webp">webp</option></select>
-            </div>
-            <div class="row"><label>Carpeta manga</label><input id="set-pat-manga" type="text" style="flex:1" value="%Manga%" autocomplete="off" spellcheck="false" /></div>
-            <div class="row"><label>Carpeta cap</label><input id="set-pat-chapter" type="text" style="flex:1" value="%ChapterIndex%_%Chapter%" autocomplete="off" spellcheck="false" /></div>
-            <div class="row"><label>Página</label><input id="set-pat-page" type="text" style="flex:1" value="%Page%" autocomplete="off" spellcheck="false" /></div>
-            <div class="toolbar"><button id="set-save" class="btn" type="button">Guardar ajustes</button></div>
           </div>
+          <footer class="options-footer">
+            <span class="options-dirty" id="opt-dirty" hidden>Cambios sin guardar</span>
+            <div class="options-footer-spacer"></div>
+            <button type="button" class="secondary" id="set-cancel">Cancelar</button>
+            <button type="button" class="btn" id="set-save">Aplicar</button>
+          </footer>
         </div>
       </section>
+
 
       <section id="view-about" class="view" hidden>
         <div class="view-pad">
@@ -2477,6 +2879,73 @@ void listen("queue-changed", () => {
   if (activeNav === "downloads") void refreshQueue();
 });
 
+function switchOptionsTab(tabId: string) {
+  document.querySelectorAll<HTMLButtonElement>(".options-cat").forEach((btn) => {
+    const on = btn.dataset.optTab === tabId;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll<HTMLElement>(".options-panel").forEach((panel) => {
+    const on = panel.dataset.optPanel === tabId;
+    panel.classList.toggle("active", on);
+    panel.hidden = !on;
+  });
+}
+
+function setOptionsDirty(dirty: boolean) {
+  const el = document.querySelector<HTMLElement>("#opt-dirty");
+  if (el) el.hidden = !dirty;
+}
+
+function syncOptReveal() {
+  const ext = document.querySelector<HTMLInputElement>("#opt-external");
+  const extFields = document.querySelector<HTMLElement>("#opt-external-fields");
+  if (ext && extFields) extFields.hidden = !ext.checked;
+  const logEl = document.querySelector<HTMLInputElement>("#opt-log");
+  const logExtra = document.querySelector<HTMLElement>("#opt-log-extra");
+  if (logEl && logExtra) logExtra.hidden = !logEl.checked;
+}
+
+function clampStepperInput(input: HTMLInputElement) {
+  const min = input.min !== "" ? Number(input.min) : 0;
+  const max = input.max !== "" ? Number(input.max) : Number.POSITIVE_INFINITY;
+  let v = Number(input.value);
+  if (!Number.isFinite(v)) v = min;
+  v = Math.min(max, Math.max(min, Math.trunc(v)));
+  input.value = String(v);
+}
+
+document.querySelector(".options-cats")!.addEventListener("click", (ev) => {
+  const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(".options-cat");
+  if (!btn?.dataset.optTab) return;
+  switchOptionsTab(btn.dataset.optTab);
+});
+
+document.querySelector("#view-options")!.addEventListener("click", (ev) => {
+  const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(".st-stepper-btn");
+  if (!btn) return;
+  ev.preventDefault();
+  const root = btn.closest(".st-stepper");
+  const input = root?.querySelector<HTMLInputElement>("input");
+  if (!input) return;
+  const step = Number(btn.dataset.step) || 0;
+  clampStepperInput(input);
+  input.value = String(Number(input.value) + step);
+  clampStepperInput(input);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  setOptionsDirty(true);
+});
+
+document.querySelector("#view-options")!.addEventListener("change", (ev) => {
+  const t = ev.target as HTMLElement;
+  if (t.id === "opt-external" || t.id === "opt-log") syncOptReveal();
+  if (t instanceof HTMLInputElement && t.classList.contains("st-stepper-input")) {
+    clampStepperInput(t);
+  }
+  setOptionsDirty(true);
+});
+document.querySelector("#view-options")!.addEventListener("input", () => setOptionsDirty(true));
+
 async function loadSettingsForm() {
   const get = (k: string) => invoke<string | null>("settings_get", { key: k });
   const ua = document.querySelector<HTMLInputElement>("#set-ua")!;
@@ -2488,10 +2957,12 @@ async function loadSettingsForm() {
   const patM = document.querySelector<HTMLInputElement>("#set-pat-manga")!;
   const patC = document.querySelector<HTMLInputElement>("#set-pat-chapter")!;
   const patP = document.querySelector<HTMLInputElement>("#set-pat-page")!;
+  const outDir = document.querySelector<HTMLInputElement>("#set-output-dir")!;
   ua.value = (await get("http.user_agent")) ?? "";
   proxy.value = (await get("http.proxy")) ?? "";
   threads.value = (await get("download.max_threads")) ?? "1";
-  pack.value = (await get("download.pack_format")) ?? "none";
+  const packVal = (await get("download.pack_format")) ?? "none";
+  pack.value = ["none", "zip", "cbz"].includes(packVal) ? packVal : "none";
   packDel.checked = ["1", "true", "yes"].includes(
     ((await get("download.pack_delete_folder")) ?? "").toLowerCase(),
   );
@@ -2499,7 +2970,25 @@ async function loadSettingsForm() {
   patM.value = (await get("download.manga_folder_pattern")) ?? "%Manga%";
   patC.value = (await get("download.chapter_folder_pattern")) ?? "%ChapterIndex%_%Chapter%";
   patP.value = (await get("download.page_name_pattern")) ?? "%Page%";
+  const savedDir = (await get("default_output_dir")) ?? outputDir ?? "";
+  outDir.value = savedDir;
+  outDir.placeholder = savedDir ? savedDir : "Sin carpeta de salida";
+  syncOptReveal();
+  setOptionsDirty(false);
 }
+
+document.querySelector("#set-output-browse")!.addEventListener("click", async () => {
+  const dir = await open({ directory: true, multiple: false });
+  if (typeof dir !== "string") return;
+  const outDir = document.querySelector<HTMLInputElement>("#set-output-dir")!;
+  outDir.value = dir;
+  outDir.placeholder = dir;
+  setOptionsDirty(true);
+});
+
+document.querySelector("#set-cancel")!.addEventListener("click", () => {
+  void loadSettingsForm();
+});
 
 document.querySelector("#set-save")!.addEventListener("click", async () => {
   const set = (key: string, value: string) => invoke("settings_set", { key, value });
@@ -2524,6 +3013,13 @@ document.querySelector("#set-save")!.addEventListener("click", async () => {
     "download.page_name_pattern",
     document.querySelector<HTMLInputElement>("#set-pat-page")!.value,
   );
+  const dir = document.querySelector<HTMLInputElement>("#set-output-dir")!.value.trim();
+  if (dir) {
+    await set("default_output_dir", dir);
+    outputDir = dir;
+    setPathDisplay(dir);
+  }
+  setOptionsDirty(false);
   log("Ajustes guardados", "ok");
 });
 
