@@ -205,7 +205,6 @@ type UpdateListStats = {
 
 type NavId = "downloads" | "info" | "favorites" | "about" | "options";
 
-const PAGE_SIZE = 80;
 const CATALOG_BATCH = 500;
 const LOLI_VAULT_ID = "218b722b1eb34f2aa3863f84538c5b08";
 const THEME_KEY = "fmd-theme-dark";
@@ -293,7 +292,6 @@ const ICO = {
 let manga: MangaInfoResult | null = null;
 let mangaUrl = "";
 let outputDir = "";
-let visibleCount = PAGE_SIZE;
 let selected = new Set<number>();
 let activeNav: NavId = "info";
 let expandedGroups = new Set<string>();
@@ -449,9 +447,6 @@ app.innerHTML = `
                   </div>
                 </div>
                 <div class="chapters-list" id="chapters"></div>
-                <div class="chapters-more" id="chapters-more-wrap">
-                  <button type="button" class="secondary" id="more" hidden>Mostrar más</button>
-                </div>
               </div>
             </div>
 
@@ -710,7 +705,6 @@ const chaptersHeadEl = document.querySelector<HTMLElement>("#chapters-head")!;
 const countEl = document.querySelector<HTMLElement>("#count")!;
 const pathInput = document.querySelector<HTMLInputElement>("#path-input")!;
 const logEl = document.querySelector<HTMLElement>("#log")!;
-const moreBtn = document.querySelector<HTMLButtonElement>("#more")!;
 const queueListEl = document.querySelector<HTMLTableSectionElement>("#queue-list")!;
 const queueEmptyEl = document.querySelector<HTMLElement>("#queue-empty")!;
 const queueTableEl = document.querySelector<HTMLTableElement>("#queue-table")!;
@@ -956,11 +950,16 @@ function refreshCount() {
   enqueueBtn.disabled = !hasManga || selected.size === 0;
 }
 
-function visibleSlice(): ChapterInfo[] {
-  if (!manga) return [];
-  const total = manga.chapters.length;
-  const start = Math.max(0, total - visibleCount);
-  return manga.chapters.slice(start).reverse();
+/** Vista de capítulos: más reciente arriba (sin copiar el array en cada paint). */
+function chaptersViewLen(): number {
+  return manga?.chapters.length ?? 0;
+}
+
+function chapterAtView(i: number): ChapterInfo | null {
+  if (!manga) return null;
+  const n = manga.chapters.length;
+  if (i < 0 || i >= n) return null;
+  return manga.chapters[n - 1 - i];
 }
 
 function chapterNum(index: number): string {
@@ -974,21 +973,13 @@ function renderChapters() {
       <img class="chapters-empty-art" src="${chaptersEmptyUrl}" alt="" />
       <p class="chapters-empty-text">Doble clic en un título del catálogo, o pega un enlace arriba.</p>
     </div>`;
-    moreBtn.hidden = true;
-    document.querySelector("#chapters-more-wrap")?.classList.remove("is-visible");
     refreshCount();
     return;
   }
 
-  const slice = visibleSlice();
-  const showMore = visibleCount < manga.chapters.length;
-  moreBtn.hidden = !showMore;
-  document.querySelector("#chapters-more-wrap")!.classList.toggle("is-visible", showMore);
-  const remaining = Math.max(0, manga.chapters.length - visibleCount);
-  moreBtn.textContent = `Mostrar más antiguos (${Math.min(PAGE_SIZE, remaining)})`;
   refreshCount();
-
-  if (!slice.length) {
+  const n = chaptersViewLen();
+  if (!n) {
     chaptersEl.onscroll = null;
     chaptersEl.innerHTML = `<div class="catalog-empty">Sin capítulos.</div>`;
     return;
@@ -1003,22 +994,22 @@ function renderChapters() {
     chaptersEl.onscroll = () => paintVirtualChapters();
   }
 
-  virtual.style.height = `${slice.length * CH_ROW_STRIDE - CH_ROW_GAP}px`;
+  virtual.style.height = `${n * CH_ROW_STRIDE - CH_ROW_GAP}px`;
   paintVirtualChapters();
 }
 
 function paintVirtualChapters() {
   if (!manga) return;
-  const slice = visibleSlice();
+  const n = chaptersViewLen();
   const virtual = chaptersEl.querySelector<HTMLDivElement>(".chapters-virtual");
-  if (!virtual) return;
+  if (!virtual || !n) return;
 
   const scrollTop = chaptersEl.scrollTop;
   const viewH = chaptersEl.clientHeight || 400;
   let start = Math.floor(scrollTop / CH_ROW_STRIDE) - CH_OVERSCAN;
   let end = Math.ceil((scrollTop + viewH) / CH_ROW_STRIDE) + CH_OVERSCAN;
   start = Math.max(0, start);
-  end = Math.min(slice.length, end);
+  end = Math.min(n, end);
 
   const existing = new Map<string, HTMLButtonElement>();
   virtual.querySelectorAll<HTMLButtonElement>(".ch-card").forEach((el) => {
@@ -1028,7 +1019,8 @@ function paintVirtualChapters() {
 
   const keep = new Set<string>();
   for (let i = start; i < end; i++) {
-    const c = slice[i];
+    const c = chapterAtView(i);
+    if (!c) continue;
     const key = String(c.index);
     keep.add(key);
     const on = selected.has(c.index);
@@ -1142,8 +1134,6 @@ function applyDefaultCover() {
 function setChaptersLoading(text = "Cargando capítulos…") {
   chaptersHeadEl.hidden = true;
   chaptersEl.onscroll = null;
-  moreBtn.hidden = true;
-  document.querySelector("#chapters-more-wrap")?.classList.remove("is-visible");
   chaptersEl.innerHTML = `<div class="panel-loading"><span class="spinner"></span>${escapeHtml(text)}</div>`;
 }
 
@@ -1724,7 +1714,7 @@ async function loadMangaInfo() {
     if (seq !== mangaLoadSeq) return;
     manga = result;
     selected = new Set();
-    visibleCount = PAGE_SIZE;
+    chaptersEl.scrollTop = 0;
     if (result.module_id && [...moduleSel.options].some((o) => o.value === result.module_id)) {
       moduleSel.value = result.module_id;
       updateSourceLabel();
@@ -1779,14 +1769,9 @@ selAllBtn.addEventListener("click", () => {
   } else {
     selected.clear();
     for (const c of manga.chapters) selected.add(c.index);
-    visibleCount = Math.max(visibleCount, manga.chapters.length);
   }
-  renderChapters();
-});
-
-moreBtn.addEventListener("click", () => {
-  visibleCount += PAGE_SIZE;
-  renderChapters();
+  refreshCount();
+  paintVirtualChapters();
 });
 
 document.querySelector("#pick")!.addEventListener("click", async () => {

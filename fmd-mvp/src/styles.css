@@ -1612,17 +1612,6 @@ button.secondary:hover:not(:disabled) {
   right: 0;
 }
 
-.chapters-more {
-  position: relative;
-  z-index: 1;
-  padding: 0 12px 12px;
-  flex: 0 0 auto;
-}
-
-.chapters-more:not(.is-visible) {
-  display: none;
-}
-
 /* Info sidebar (cover) */
 .info-sidebar {
   position: relative;
