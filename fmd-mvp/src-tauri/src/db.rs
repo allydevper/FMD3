@@ -99,6 +99,20 @@ pub fn open_db() -> Result<Db, String> {
             updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_items(status);
+        CREATE TABLE IF NOT EXISTS manga_cache (
+            module_id TEXT NOT NULL,
+            link TEXT NOT NULL,
+            authors TEXT,
+            artists TEXT,
+            genres TEXT,
+            status TEXT,
+            summary TEXT,
+            numchapter INTEGER NOT NULL DEFAULT 0,
+            cover TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (module_id, link)
+        );
+        CREATE INDEX IF NOT EXISTS idx_manga_cache_module ON manga_cache(module_id);
         "#,
     )
     .map_err(|e| e.to_string())?;
