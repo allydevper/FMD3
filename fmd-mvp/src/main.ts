@@ -303,6 +303,12 @@ const ICO = {
   file: svgIco(
     '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/>',
   ),
+  filter: svgIco('<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>'),
+  tag: svgIco(
+    '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="black"/>',
+  ),
+  text: svgIco('<path d="M17 6.1H3"/><path d="M21 12.1H3"/><path d="M15.1 18H3"/>'),
+  arrowLeft: svgIco('<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>'),
 };
 
 let manga: MangaInfoResult | null = null;
@@ -495,103 +501,151 @@ app.innerHTML = `
               </div>
             </aside>
 
-            <div class="filter-panel" id="filter-panel" hidden>
+                        <div class="filter-panel" id="filter-panel" hidden>
+              <header class="filter-head">
+                <div>
+                  <div class="filter-eyebrow">Búsqueda avanzada</div>
+                  <h1 class="filter-title">Filtro</h1>
+                </div>
+                <div class="filter-head-meta">
+                  <span class="ico ico-sm" style="--ico:${ICO.filter}"></span>
+                  <span><span class="filter-active-n" id="filter-active-count">0</span> filtros activos</span>
+                </div>
+              </header>
+
               <div class="filter-scroll">
-                <div class="filter-section">
-                  <div class="filter-section-head">
-                    <h2 class="filter-section-title">Géneros</h2>
-                    <span
-                      class="filter-hint ico ico-sm"
-                      id="filter-hint"
-                      style="--ico:${ICO.about}"
-                      role="img"
-                      aria-label="Ayuda de géneros"
-                    ></span>
-                  </div>
-                  <div class="filter-genres" id="filter-genres" role="group" aria-label="Géneros"></div>
-                </div>
-
-                <div class="filter-section filter-custom-row">
-                  <h2 class="filter-section-title" id="filter-custom-label">Géneros extra</h2>
-                  <input
-                    id="filter-custom"
-                    type="text"
-                    placeholder="Ej.: Aventura, !Ecchi, Comedia"
-                    autocomplete="off"
-                    spellcheck="false"
-                    aria-labelledby="filter-custom-label"
-                  />
-                </div>
-
-                <div class="filter-body">
-                  <div class="filter-fields">
-                    <label class="filter-field">
-                      <span class="filter-field-label">Título</span>
-                      <input id="filter-title" type="text" placeholder="Parte del título" autocomplete="off" spellcheck="false" />
-                    </label>
-                    <label class="filter-field">
-                      <span class="filter-field-label">Autor</span>
-                      <input id="filter-authors" type="text" placeholder="Nombre del autor" autocomplete="off" spellcheck="false" />
-                    </label>
-                    <label class="filter-field">
-                      <span class="filter-field-label">Artista</span>
-                      <input id="filter-artists" type="text" placeholder="Nombre del artista" autocomplete="off" spellcheck="false" />
-                    </label>
-                    <label class="filter-field">
-                      <span class="filter-field-label">Estado</span>
-                      <div class="filter-select-wrap">
-                        <select id="filter-status">
-                          <option value="0">Completado</option>
-                          <option value="1">En curso</option>
-                          <option value="2">En pausa</option>
-                          <option value="3">Cancelado</option>
-                          <option value="4" selected>Sin filtrar</option>
-                        </select>
+                <div class="filter-grid">
+                  <section class="filter-card filter-card-genres">
+                    <div class="filter-card-head">
+                      <div class="filter-card-title">
+                        <span class="ico ico-sm" style="--ico:${ICO.tag}"></span>
+                        <h2>Géneros</h2>
+                        <span
+                          class="filter-hint ico ico-sm"
+                          id="filter-hint"
+                          style="--ico:${ICO.about}"
+                          role="img"
+                          aria-label="Ayuda de géneros"
+                        ></span>
                       </div>
-                    </label>
-                    <label class="filter-field">
-                      <span class="filter-field-label">Sinopsis</span>
-                      <input id="filter-summary" type="text" placeholder="Texto en la sinopsis" autocomplete="off" spellcheck="false" />
-                    </label>
-                  </div>
+                      <div class="filter-legend" aria-hidden="true">
+                        <span class="filter-legend-item"><span class="filter-legend-dot inc"></span>Incluir</span>
+                        <span class="filter-legend-item"><span class="filter-legend-dot exc"></span>Excluir</span>
+                      </div>
+                    </div>
+                    <div class="filter-genres" id="filter-genres" role="group" aria-label="Géneros"></div>
+                    <div class="filter-extra">
+                      <label class="filter-extra-label" id="filter-custom-label" for="filter-custom">Géneros extra</label>
+                      <input
+                        id="filter-custom"
+                        class="st-field"
+                        type="text"
+                        placeholder="Ej.: Aventura, !Ecchi, Comedia"
+                        autocomplete="off"
+                        spellcheck="false"
+                      />
+                      <div class="filter-extra-hint">Antepón <code>!</code> para excluir un género</div>
+                    </div>
+                  </section>
 
-                  <div class="filter-options">
-                    <p class="filter-options-label">Coincidencia de géneros</p>
-                    <label class="filter-radio">
-                      <input type="radio" name="filter-match" id="filter-match-one" value="one" />
-                      <span class="filter-ctrl" aria-hidden="true"></span>
-                      <span>Cualquiera de los marcados</span>
-                    </label>
-                    <label class="filter-radio">
-                      <input type="radio" name="filter-match" id="filter-match-all" value="all" checked />
-                      <span class="filter-ctrl" aria-hidden="true"></span>
-                      <span>Todos los marcados</span>
-                    </label>
-                    <p class="filter-options-label">Opciones</p>
-                    <label class="filter-check">
-                      <input type="checkbox" id="filter-only-new" />
-                      <span class="filter-ctrl" aria-hidden="true"></span>
-                      <span>Solo mangas nuevos</span>
-                    </label>
-                    <label class="filter-check">
-                      <input type="checkbox" id="filter-all-sites" />
-                      <span class="filter-ctrl" aria-hidden="true"></span>
-                      <span>Buscar en todas las fuentes</span>
-                    </label>
-                    <label class="filter-check">
-                      <input type="checkbox" id="filter-regex" />
-                      <span class="filter-ctrl" aria-hidden="true"></span>
-                      <span>Usar expresión regular</span>
-                    </label>
+                  <section class="filter-card filter-card-details">
+                    <div class="filter-card-head">
+                      <div class="filter-card-title">
+                        <span class="ico ico-sm" style="--ico:${ICO.text}"></span>
+                        <h2>Detalles</h2>
+                      </div>
+                    </div>
+                    <div class="filter-details">
+                      <label for="filter-title">Título</label>
+                      <div class="fl-row">
+                        <input id="filter-title" class="st-field" type="text" placeholder="Parte del título" autocomplete="off" spellcheck="false" />
+                      </div>
+                      <label for="filter-authors">Autor</label>
+                      <div class="fl-row">
+                        <input id="filter-authors" class="st-field" type="text" placeholder="Nombre del autor" autocomplete="off" spellcheck="false" />
+                      </div>
+                      <label for="filter-artists">Artista</label>
+                      <div class="fl-row">
+                        <input id="filter-artists" class="st-field" type="text" placeholder="Nombre del artista" autocomplete="off" spellcheck="false" />
+                      </div>
+                      <label for="filter-status">Estado</label>
+                      <div class="fl-row">
+                        <div class="filter-select-wrap">
+                          <select id="filter-status" class="st-field">
+                            <option value="0">Completado</option>
+                            <option value="1">En curso</option>
+                            <option value="2">En pausa</option>
+                            <option value="3">Cancelado</option>
+                            <option value="4" selected>Sin filtrar</option>
+                          </select>
+                        </div>
+                      </div>
+                      <label for="filter-summary">Sinopsis</label>
+                      <div class="fl-row">
+                        <input id="filter-summary" class="st-field" type="text" placeholder="Texto en la sinopsis" autocomplete="off" spellcheck="false" />
+                      </div>
+                    </div>
+                  </section>
+
+                  <div class="filter-col filter-col-side">
+                    <section class="filter-card">
+                      <h2 class="filter-card-label">Coincidencia de géneros</h2>
+                      <label class="opt-row">
+                        <input type="radio" name="filter-match" id="filter-match-one" value="one" />
+                        <span class="radio" aria-hidden="true"></span>
+                        <div>
+                          <div class="opt-row-title">Cualquiera de los marcados</div>
+                          <div class="opt-row-desc">Coincide con al menos uno</div>
+                        </div>
+                      </label>
+                      <label class="opt-row">
+                        <input type="radio" name="filter-match" id="filter-match-all" value="all" checked />
+                        <span class="radio" aria-hidden="true"></span>
+                        <div>
+                          <div class="opt-row-title">Todos los marcados</div>
+                          <div class="opt-row-desc">Debe cumplir todos</div>
+                        </div>
+                      </label>
+                    </section>
+
+                    <section class="filter-card">
+                      <h2 class="filter-card-label">Opciones</h2>
+                      <label class="opt-row opt-row-switch">
+                        <div>
+                          <div class="opt-row-title">Solo mangas nuevos</div>
+                          <div class="opt-row-desc">Recién añadidos o actualizados</div>
+                        </div>
+                        <span class="st-switch"><input type="checkbox" id="filter-only-new" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                      </label>
+                      <label class="opt-row opt-row-switch">
+                        <div>
+                          <div class="opt-row-title">Buscar en todas las fuentes</div>
+                          <div class="opt-row-desc">Ignora la fuente seleccionada</div>
+                        </div>
+                        <span class="st-switch"><input type="checkbox" id="filter-all-sites" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                      </label>
+                      <label class="opt-row opt-row-switch">
+                        <div>
+                          <div class="opt-row-title">Usar expresión regular</div>
+                          <div class="opt-row-desc">Patrones avanzados en los campos de texto</div>
+                        </div>
+                        <span class="st-switch"><input type="checkbox" id="filter-regex" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                      </label>
+                    </section>
                   </div>
                 </div>
               </div>
 
               <div class="filter-actions">
-                <button type="button" class="btn" id="filter-apply">Aplicar filtro</button>
+                <button type="button" class="btn" id="filter-apply">
+                  <span class="ico ico-sm" style="--ico:${ICO.filter}"></span> Aplicar filtro
+                </button>
                 <button type="button" class="secondary" id="filter-remove">Quitar filtro</button>
                 <button type="button" class="secondary" id="filter-reset">Reiniciar</button>
-                <button type="button" class="secondary" id="filter-back">Regresar</button>
+                <div class="filter-actions-spacer"></div>
+                <button type="button" class="secondary" id="filter-back">
+                  <span class="ico ico-sm" style="--ico:${ICO.arrowLeft}"></span> Regresar
+                </button>
               </div>
             </div>
           </div>
@@ -2710,10 +2764,30 @@ function setInfoMode(mode: InfoMode) {
   document.querySelector(".info-top")!.classList.toggle("is-filter", filterOn);
 }
 
-function genreTriClass(state: GenreTri): string {
-  if (state === "include") return "is-include";
-  if (state === "exclude") return "is-exclude";
-  return "is-ignore";
+function genreChipClass(state: GenreTri): string {
+  if (state === "include") return "chip inc";
+  if (state === "exclude") return "chip exc";
+  return "chip";
+}
+
+function updateFilterActiveCount() {
+  const el = document.querySelector<HTMLElement>("#filter-active-count");
+  if (!el) return;
+  let n = 0;
+  for (const g of DEFAULT_GENRES) {
+    const st = advFilter.genres[g.id] ?? "ignore";
+    if (st !== "ignore") n += 1;
+  }
+  if (filterCustomEl.value.trim()) n += 1;
+  if (filterTitleEl.value.trim()) n += 1;
+  if (filterAuthorsEl.value.trim()) n += 1;
+  if (filterArtistsEl.value.trim()) n += 1;
+  if (filterSummaryEl.value.trim()) n += 1;
+  if (filterStatusEl.value !== "4") n += 1;
+  if (filterOnlyNew.checked) n += 1;
+  if (filterAllSites.checked) n += 1;
+  if (filterRegex.checked) n += 1;
+  el.textContent = String(n);
 }
 
 function renderFilterGenres() {
@@ -2722,7 +2796,7 @@ function renderFilterGenres() {
     const state = advFilter.genres[g.id] ?? "ignore";
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `genre-tri ${genreTriClass(state)}`;
+    btn.className = genreChipClass(state);
     btn.dataset.genre = g.id;
     btn.title =
       state === "include"
@@ -2730,21 +2804,23 @@ function renderFilterGenres() {
         : state === "exclude"
           ? "Excluir"
           : "No importa (clic para cambiar)";
-    btn.innerHTML = `<span class="genre-tri-box" aria-hidden="true"></span><span class="genre-tri-label">${escapeHtml(g.label)}</span>`;
+    btn.innerHTML = `<span class="dot" aria-hidden="true"></span>${escapeHtml(g.label)}`;
     btn.addEventListener("click", () => {
       const cur = advFilter.genres[g.id] ?? "ignore";
       const next = GENRE_TRI_CYCLE[(GENRE_TRI_CYCLE.indexOf(cur) + 1) % GENRE_TRI_CYCLE.length]!;
       advFilter.genres[g.id] = next;
-      btn.className = `genre-tri ${genreTriClass(next)}`;
+      btn.className = genreChipClass(next);
       btn.title =
         next === "include"
           ? "Incluir"
           : next === "exclude"
             ? "Excluir"
             : "No importa (clic para cambiar)";
+      updateFilterActiveCount();
     });
     filterGenresEl.appendChild(btn);
   }
+  updateFilterActiveCount();
 }
 
 function readFilterFormIntoState() {
@@ -2779,12 +2855,14 @@ function writeFilterStateToForm() {
   filterAllSites.checked = advFilter.allSites;
   filterRegex.checked = advFilter.useRegex;
   renderFilterGenres();
+  updateFilterActiveCount();
 }
 
 function applyAdvFilterStub() {
   readFilterFormIntoState();
   advFilterApplied = true;
   syncCatalogModeLabel();
+  updateFilterActiveCount();
   log("Filtro preparado (UI; aún no aplica al catálogo).", "ok");
 }
 
@@ -2804,6 +2882,8 @@ document.querySelector("#filter-apply")!.addEventListener("click", applyAdvFilte
 document.querySelector("#filter-remove")!.addEventListener("click", removeAdvFilterStub);
 document.querySelector("#filter-reset")!.addEventListener("click", resetAdvFilterForm);
 document.querySelector("#filter-back")!.addEventListener("click", () => setInfoMode("search"));
+document.querySelector("#filter-panel")!.addEventListener("change", updateFilterActiveCount);
+document.querySelector("#filter-panel")!.addEventListener("input", updateFilterActiveCount);
 
 writeFilterStateToForm();
 syncCatalogModeLabel();
