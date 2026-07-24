@@ -83,6 +83,25 @@ type CatalogEntry = {
   title: string;
   alttitles: string;
   authors: string;
+  artists: string;
+  genres: string;
+  status: string;
+  summary: string;
+  numchapter: number;
+  jdn: number;
+  cover: string;
+};
+
+type MangaCacheRow = {
+  link: string;
+  authors: string;
+  artists: string;
+  genres: string;
+  status: string;
+  summary: string;
+  numchapter: number;
+  cover: string;
+  updated_at: string;
 };
 
 type CatalogStats = {
@@ -194,7 +213,7 @@ const CH_ROW_H = 52;
 const CH_ROW_GAP = 8;
 const CH_ROW_STRIDE = CH_ROW_H + CH_ROW_GAP;
 const CH_OVERSCAN = 8;
-const CAT_ROW_H = 34;
+const CAT_ROW_H = 44;
 const CAT_OVERSCAN = 12;
 
 function svgIco(d: string): string {
@@ -297,7 +316,17 @@ let infoMode: InfoMode = "search";
 let advFilter = emptyAdvFilter();
 /** Stub: UI says filter is “applied” (no catalog SQL yet). */
 let advFilterApplied = false;
-
+/** Monotonic id so solo la última GetInfo aplica resultado. */
+let mangaLoadSeq = 0;
+/** URL en vuelo (evita reabrir el mismo título). */
+let mangaLoadingUrl = "";
+/** Cover local de respaldo para onerror. */
+let coverLocalFallback = "";
+let coverEnsureSeq = 0;
+/** Evita reasignar el mismo src (parpadeo). */
+let coverDisplayKey = "";
+/** Sidebar visible aunque GetInfo aún no haya terminado. */
+let infoPanelOpen = false;
 const app = document.querySelector("#app")!;
 app.className = `app${darkTheme ? " dark" : ""}`;
 
@@ -877,7 +906,7 @@ function updateResponsive() {
   const w = window.innerWidth;
   app.classList.toggle("narrow", w < 860);
   app.classList.toggle("hide-info", w < 1040);
-  app.classList.toggle("show-manga-info", !!manga);
+  app.classList.toggle("show-manga-info", !!manga || infoPanelOpen);
 }
 window.addEventListener("resize", updateResponsive);
 updateResponsive();
@@ -1060,20 +1089,37 @@ function resolveCover(cover: string, root: string): string {
   return maybeFillHost(root, c);
 }
 
-function setCover(url: string) {
+function setCover(url: string, opts?: { localFallback?: string; force?: boolean }) {
   coverImg.onerror = null;
   coverImg.onload = null;
+  if (opts && "localFallback" in opts) {
+    coverLocalFallback = opts.localFallback || "";
+  }
   if (!url) {
+    if (coverLocalFallback) {
+      setCover(coverLocalFallback, { force: opts?.force });
+      return;
+    }
     applyDefaultCover();
     return;
   }
+  if (!opts?.force && url === coverDisplayKey && !coverImg.classList.contains("is-default")) {
+    return;
+  }
+  coverDisplayKey = url;
   coverImg.classList.remove("is-default");
   coverImg.onload = () => {
     coverImg.hidden = false;
     coverPh.hidden = true;
     coverBlur.hidden = false;
   };
-  coverImg.onerror = () => applyDefaultCover();
+  coverImg.onerror = () => {
+    if (coverLocalFallback && url !== coverLocalFallback) {
+      setCover(coverLocalFallback, { force: true });
+      return;
+    }
+    applyDefaultCover();
+  };
   coverImg.src = url;
   coverBlurImg.src = url;
   coverImg.hidden = false;
@@ -1084,6 +1130,7 @@ function setCover(url: string) {
 function applyDefaultCover() {
   coverImg.onerror = null;
   coverImg.onload = null;
+  coverDisplayKey = "";
   coverImg.classList.add("is-default");
   coverImg.src = coverDefaultUrl;
   coverBlurImg.src = coverDefaultUrl;
@@ -1100,43 +1147,40 @@ function setChaptersLoading(text = "Cargando capítulos…") {
   chaptersEl.innerHTML = `<div class="panel-loading"><span class="spinner"></span>${escapeHtml(text)}</div>`;
 }
 
-function renderInfoSidebar() {
+type SidebarStub = {
+  title: string;
+  authors?: string;
+  artists?: string;
+  genres?: string;
+  status?: string;
+  summary?: string;
+  numchapter?: number;
+  moduleName?: string;
+  coverUrl?: string;
+};
+
+function paintSidebarContent(opts: SidebarStub) {
   updateResponsive();
-  if (!manga) {
-    titleEl.textContent = "";
-    altTitlesEl.textContent = "";
-    altTitlesEl.hidden = true;
-    setCover("");
-    infoRowsEl.innerHTML = "";
-    btnOnline.disabled = true;
-    favAddBtn.disabled = true;
-    isFavorite = false;
-    updateFavButton();
-    return;
-  }
-  titleEl.textContent = manga.title.trim() || "(sin título)";
-  const alt = manga.alt_titles.trim();
-  altTitlesEl.textContent = alt;
-  altTitlesEl.hidden = !alt;
-  setCover(resolveCover(manga.cover, manga.root_url));
-  btnOnline.disabled = !mangaUrl;
-  favAddBtn.disabled = false;
+  titleEl.textContent = opts.title.trim() || "(sin título)";
+  altTitlesEl.textContent = "";
+  altTitlesEl.hidden = true;
 
   const rows: { icon: string; label: string; value: string }[] = [];
-  const authors = manga.authors.trim();
-  const artists = manga.artists.trim();
-  const genres = manga.genres.trim();
-  const status = manga.status.trim();
-  const moduleName = manga.module_name.trim();
-  const summary = manga.summary.trim();
+  const authors = (opts.authors || "").trim();
+  const artists = (opts.artists || "").trim();
+  const genres = (opts.genres || "").trim();
+  const status = (opts.status || "").trim();
+  const summary = (opts.summary || "").trim();
+  const moduleName = (opts.moduleName || "").trim();
+  const capsN = opts.numchapter && opts.numchapter > 0 ? opts.numchapter : 0;
 
   if (authors) rows.push({ icon: ICO.user, label: "Autor", value: authors });
   if (artists) rows.push({ icon: ICO.brush, label: "Artista", value: artists });
   if (genres) rows.push({ icon: ICO.about, label: "Géneros", value: genres });
   if (status) rows.push({ icon: ICO.status, label: "Estado", value: status });
 
-  const fuente = moduleName || "—";
-  const caps = manga.chapters.length ? `caps. ${manga.chapters.length}` : "caps. —";
+  const fuente = moduleName || currentModule()?.name || "—";
+  const caps = capsN ? `caps. ${capsN}` : "caps. —";
 
   const rowHtml = (r: { icon: string; label: string; value: string }) => `
     <div class="info-row">
@@ -1156,7 +1200,117 @@ function renderInfoSidebar() {
         </div>`
       : "") +
     `<div class="info-meta-line">${escapeHtml(fuente)} <span class="info-meta-sep">—</span> ${escapeHtml(caps)}</div>`;
+}
+
+function renderInfoSidebar() {
+  updateResponsive();
+  if (!manga) {
+    if (!infoPanelOpen) {
+      titleEl.textContent = "";
+      altTitlesEl.textContent = "";
+      altTitlesEl.hidden = true;
+      setCover("", { localFallback: "" });
+      infoRowsEl.innerHTML = "";
+      btnOnline.disabled = true;
+      favAddBtn.disabled = true;
+      isFavorite = false;
+      updateFavButton();
+    }
+    return;
+  }
+  const alt = manga.alt_titles.trim();
+  paintSidebarContent({
+    title: manga.title,
+    authors: manga.authors,
+    artists: manga.artists,
+    genres: manga.genres,
+    status: manga.status,
+    summary: manga.summary,
+    numchapter: manga.chapters.length,
+    moduleName: manga.module_name,
+  });
+  altTitlesEl.textContent = alt;
+  altTitlesEl.hidden = !alt;
+  const remote = resolveCover(manga.cover, manga.root_url);
+  // Si ya hay cover local (data:), no la sustituyas por la remota.
+  if (coverLocalFallback) {
+    setCover(coverLocalFallback, { localFallback: coverLocalFallback });
+  } else if (remote) {
+    setCover(remote);
+  } else {
+    setCover("");
+  }
+  btnOnline.disabled = !mangaUrl;
+  favAddBtn.disabled = false;
   updateFavButton();
+}
+
+async function applyCachedCover(moduleId: string, link: string) {
+  const keys = [link.trim()].filter(Boolean);
+  const root = currentModule()?.root_url || "";
+  if (root) {
+    const full = maybeFillHost(root, link);
+    if (full && !keys.includes(full)) keys.push(full);
+  }
+  for (const key of keys) {
+    try {
+      const dataUrl = await invoke<string | null>("cover_local_path", { moduleId, link: key });
+      if (!dataUrl) continue;
+      coverLocalFallback = dataUrl;
+      setCover(dataUrl, { localFallback: dataUrl, force: true });
+      return;
+    } catch {
+      /* try next key */
+    }
+  }
+}
+
+async function ensureCoverAsync(
+  seq: number,
+  moduleId: string,
+  link: string,
+  coverUrl: string,
+  referer: string,
+) {
+  const ensureId = ++coverEnsureSeq;
+  if (!coverUrl.trim()) return;
+  try {
+    const dataUrl = await invoke<string>("cover_ensure", {
+      moduleId,
+      link,
+      coverUrl,
+      referer: referer || null,
+    });
+    if (seq !== mangaLoadSeq || ensureId !== coverEnsureSeq) return;
+    // Siempre preferir bytes locales (data:) frente a remota/default.
+    setCover(dataUrl, { localFallback: dataUrl, force: true });
+  } catch {
+    /* keep remote / default */
+  }
+}
+
+function applyCatalogStub(e: CatalogEntry) {
+  infoPanelOpen = true;
+  if (infoMode !== "filter") infoSidebar.hidden = false;
+  updateResponsive();
+  paintSidebarContent({
+    title: e.title || e.link,
+    authors: e.authors,
+    artists: e.artists,
+    genres: e.genres,
+    status: e.status,
+    summary: e.summary,
+    numchapter: e.numchapter,
+    moduleName: currentModule()?.name,
+  });
+  const root = currentModule()?.root_url || "";
+  const hint = resolveCover(e.cover || "", root);
+  // Mientras llega el data: local, intenta remota del catálogo (mejor que default).
+  if (!coverLocalFallback && hint) {
+    setCover(hint);
+  }
+  btnOnline.disabled = false;
+  favAddBtn.disabled = false;
 }
 
 function updateFavButton() {
@@ -1302,11 +1456,17 @@ function paintVirtualCatalog() {
       row = document.createElement("button");
       row.type = "button";
       row.dataset.i = key;
-      row.title = "Doble clic para abrir";
       virtual.appendChild(row);
     }
     row.className = `catalog-row${title === activeCatalogTitle ? " active" : ""}`;
     row.style.top = `${i * CAT_ROW_H}px`;
+    const caps =
+      e.numchapter > 0
+        ? e.numchapter
+        : manga && (e.title || e.link) === activeCatalogTitle
+          ? manga.chapters.length
+          : 0;
+    row.title = caps > 0 ? `${title} · ${caps} caps.` : title;
     let label = row.querySelector<HTMLElement>(".catalog-row-title");
     if (!label) {
       label = document.createElement("div");
@@ -1314,6 +1474,17 @@ function paintVirtualCatalog() {
       row.appendChild(label);
     }
     label.textContent = title;
+    let meta = row.querySelector<HTMLElement>(".catalog-row-meta");
+    if (caps > 0) {
+      if (!meta) {
+        meta = document.createElement("span");
+        meta.className = "catalog-row-meta";
+        row.appendChild(meta);
+      }
+      meta.textContent = String(caps);
+    } else if (meta) {
+      meta.remove();
+    }
   }
 
   existing.forEach((el, key) => {
@@ -1404,6 +1575,58 @@ async function loadCatalog(force = false, silent = false) {
   }
 }
 
+function catalogLinkKey(link: string): string {
+  const l = link.trim();
+  try {
+    if (l.startsWith("http://") || l.startsWith("https://")) {
+      const u = new URL(l);
+      return `${u.pathname}${u.search}`.replace(/\/$/, "") || "/";
+    }
+  } catch {
+    /* ignore */
+  }
+  return (l.startsWith("/") ? l : `/${l}`).replace(/\/$/, "") || "/";
+}
+
+/** Refresca meta en memoria + manga_cache (no escribe masterlist). */
+function syncMangaCacheFromInfo(mangaLink: string, info: MangaInfoResult) {
+  const count = info.chapters.length;
+  const cover = resolveCover(info.cover, info.root_url);
+  const key = catalogLinkKey(mangaLink);
+  const root = currentModule()?.root_url || info.root_url || "";
+  let touched = false;
+  for (const e of catalogEntries) {
+    const full = maybeFillHost(root, e.link);
+    if (catalogLinkKey(e.link) === key || catalogLinkKey(full) === key) {
+      e.numchapter = count;
+      e.authors = info.authors;
+      e.artists = info.artists;
+      e.genres = info.genres;
+      e.status = info.status;
+      e.summary = info.summary;
+      e.cover = cover;
+      touched = true;
+    }
+  }
+  if (touched) paintVirtualCatalog();
+  const moduleId = info.module_id || selectedModuleId();
+  if (moduleId) {
+    void invoke("manga_cache_upsert", {
+      moduleId,
+      link: mangaLink,
+      authors: info.authors,
+      artists: info.artists,
+      genres: info.genres,
+      status: info.status,
+      summary: info.summary,
+      numchapter: count,
+      cover,
+    }).catch(() => {
+      /* best-effort */
+    });
+  }
+}
+
 async function openCatalogEntry(e: CatalogEntry) {
   const root = currentModule()?.root_url || "";
   const url = maybeFillHost(root, e.link);
@@ -1411,6 +1634,31 @@ async function openCatalogEntry(e: CatalogEntry) {
   renderCatalogList();
   urlInput.value = url;
   syncUrlClear();
+  if (mangaLoadingUrl === url) {
+    log(`Ya se está cargando: ${e.title || e.link}`);
+    infoPanelOpen = true;
+    if (infoMode !== "filter") infoSidebar.hidden = false;
+    updateResponsive();
+    applyCatalogStub(e);
+    return;
+  }
+  // Nueva apertura: no heredar cover del título anterior.
+  coverEnsureSeq++;
+  setCover("", { localFallback: "" });
+  infoPanelOpen = true;
+  if (infoMode !== "filter") infoSidebar.hidden = false;
+  updateResponsive();
+  applyCatalogStub(e);
+  const moduleId = selectedModuleId();
+  if (moduleId) {
+    void applyCachedCover(moduleId, e.link);
+    const coverHint = resolveCover(e.cover || "", root);
+    if (coverHint) {
+      // Descarga/cache en paralelo a GetInfo (seq se valida dentro de loadMangaInfo+1).
+      const expectSeq = mangaLoadSeq + 1;
+      void ensureCoverAsync(expectSeq, moduleId, e.link, coverHint, root || url);
+    }
+  }
   log(`Abriendo ${e.title || e.link}…`);
   await loadMangaInfo();
 }
@@ -1424,18 +1672,60 @@ function syncCatalogClear() {
 }
 
 async function loadMangaInfo() {
+  const seq = ++mangaLoadSeq;
+  const url = urlInput.value.trim();
+  mangaUrl = url;
+  mangaLoadingUrl = url;
+  infoPanelOpen = true;
+  if (infoMode !== "filter") infoSidebar.hidden = false;
+  updateResponsive();
+
   clearLog();
   setBusy(true, "Cargando GetInfo… (Cloudflare puede tardar)");
   loadBtn.disabled = true;
   setChaptersLoading();
   log("Cargando info vía Lua GetInfo…");
+
+  const moduleId = selectedModuleId();
+  if (moduleId) {
+    void applyCachedCover(moduleId, url);
+    void (async () => {
+      try {
+        const cached = await invoke<MangaCacheRow | null>("manga_cache_get", {
+          moduleId,
+          link: url,
+        });
+        if (seq !== mangaLoadSeq || !cached) return;
+        if (!manga) {
+          paintSidebarContent({
+            title: activeCatalogTitle || cached.link,
+            authors: cached.authors,
+            artists: cached.artists,
+            genres: cached.genres,
+            status: cached.status,
+            summary: cached.summary,
+            numchapter: cached.numchapter,
+            moduleName: currentModule()?.name,
+          });
+        }
+        if (cached.cover && !coverLocalFallback) {
+          const remote = resolveCover(cached.cover, currentModule()?.root_url || "");
+          if (remote) setCover(remote);
+          void ensureCoverAsync(seq, moduleId, url, remote || cached.cover, currentModule()?.root_url || url);
+        }
+        await applyCachedCover(moduleId, url);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }
+
   try {
-    mangaUrl = urlInput.value.trim();
-    const moduleId = selectedModuleId();
     const result = await invoke<MangaInfoResult>("get_manga_info", {
-      url: mangaUrl,
+      url,
       moduleId,
     });
+    if (seq !== mangaLoadSeq) return;
     manga = result;
     selected = new Set();
     visibleCount = PAGE_SIZE;
@@ -1446,16 +1736,27 @@ async function loadMangaInfo() {
     if (!activeCatalogTitle) activeCatalogTitle = result.title;
     renderChapters();
     renderInfoSidebar();
+    syncMangaCacheFromInfo(url, result);
+    const coverUrl = resolveCover(result.cover, result.root_url);
+    const mid = result.module_id || selectedModuleId();
+    if (mid && coverUrl) {
+      void ensureCoverAsync(seq, mid, url, coverUrl, result.root_url || url);
+    }
     await syncFavoriteState();
+    if (seq !== mangaLoadSeq) return;
     log(`OK: ${result.chapters.length} capítulos (${result.module_name})`, "ok");
   } catch (e) {
+    if (seq !== mangaLoadSeq) return;
     manga = null;
     renderChapters();
     renderInfoSidebar();
     log(String(e), "err");
   } finally {
-    setBusy(false);
-    loadBtn.disabled = false;
+    if (seq === mangaLoadSeq) {
+      mangaLoadingUrl = "";
+      setBusy(false);
+      loadBtn.disabled = false;
+    }
   }
 }
 

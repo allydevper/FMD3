@@ -809,13 +809,15 @@ button.secondary:hover:not(:disabled) {
 }
 
 .catalog-row {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   box-sizing: border-box;
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  height: 34px;
-  padding: 0 14px;
+  height: 44px;
+  padding: 4px 14px;
   margin: 0;
   border-radius: 0;
   cursor: pointer;
@@ -825,7 +827,7 @@ button.secondary:hover:not(:disabled) {
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text);
-  line-height: 34px;
+  line-height: 1.25;
   flex: none;
   overflow: hidden;
   transition: background-color 0.12s ease;
@@ -863,14 +865,28 @@ button.secondary:hover:not(:disabled) {
 
 .catalog-row-title {
   display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
   font-size: 12.5px;
   font-weight: 500;
   color: inherit;
-  white-space: nowrap;
+  line-height: 1.25;
+  max-height: calc(1.25em * 2);
   overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-  line-height: 34px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.catalog-row-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  line-height: 1;
+  padding: 2px 0 2px 2px;
 }
 
 .catalog-empty {

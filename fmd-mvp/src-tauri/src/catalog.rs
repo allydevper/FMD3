@@ -1,4 +1,5 @@
 //! Per-module manga catalog (`data/<module_id>.db`), FMD2-compatible `masterlist`.
+//! MVP metadata/cover live in complementary `manga_cache` (never ALTER/UPDATE masterlist).
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,32 @@ pub struct CatalogEntry {
     pub summary: String,
     pub numchapter: i64,
     pub jdn: i64,
+    #[serde(default)]
+    pub cover: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MangaCacheRow {
+    pub link: String,
+    pub authors: String,
+    pub artists: String,
+    pub genres: String,
+    pub status: String,
+    pub summary: String,
+    pub numchapter: i64,
+    pub cover: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MangaCacheUpsert {
+    pub authors: String,
+    pub artists: String,
+    pub genres: String,
+    pub status: String,
+    pub summary: String,
+    pub numchapter: i64,
+    pub cover: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +77,17 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
             jdn INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_masterlist_title ON masterlist(title);
+        CREATE TABLE IF NOT EXISTS manga_cache (
+            link TEXT NOT NULL PRIMARY KEY,
+            authors TEXT,
+            artists TEXT,
+            genres TEXT,
+            status TEXT,
+            summary TEXT,
+            numchapter INTEGER NOT NULL DEFAULT 0,
+            cover TEXT,
+            updated_at TEXT
+        );
         "#,
     )
     .map_err(|e| e.to_string())?;
@@ -88,6 +126,23 @@ pub fn stats(module_id: &str) -> Result<CatalogStats, String> {
     })
 }
 
+const SEARCH_SELECT: &str = r#"
+SELECT
+  m.link,
+  COALESCE(m.title,''),
+  COALESCE(m.alttitles,''),
+  COALESCE(c.authors, m.authors, ''),
+  COALESCE(c.artists, m.artists, ''),
+  COALESCE(c.genres, m.genres, ''),
+  COALESCE(c.status, m.status, ''),
+  COALESCE(c.summary, m.summary, ''),
+  COALESCE(NULLIF(c.numchapter, 0), m.numchapter, 0),
+  COALESCE(m.jdn, 0),
+  COALESCE(c.cover, '')
+FROM masterlist m
+LEFT JOIN manga_cache c ON c.link = m.link
+"#;
+
 pub fn search(
     module_id: &str,
     query: &str,
@@ -104,16 +159,8 @@ pub fn search(
     let q = query.trim();
     let mut out = Vec::new();
     if q.is_empty() {
-        let mut stmt = conn
-            .prepare(
-                r#"SELECT link, COALESCE(title,''), COALESCE(alttitles,''), COALESCE(authors,''),
-                          COALESCE(artists,''), COALESCE(genres,''), COALESCE(status,''),
-                          COALESCE(summary,''), COALESCE(numchapter,0), COALESCE(jdn,0)
-                   FROM masterlist
-                   ORDER BY title COLLATE NOCASE
-                   LIMIT ?1 OFFSET ?2"#,
-            )
-            .map_err(|e| e.to_string())?;
+        let sql = format!("{SEARCH_SELECT} ORDER BY m.title COLLATE NOCASE LIMIT ?1 OFFSET ?2");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![limit, offset], map_entry)
             .map_err(|e| e.to_string())?;
@@ -127,18 +174,14 @@ pub fn search(
                 .replace('%', "\\%")
                 .replace('_', "\\_")
         );
-        let mut stmt = conn
-            .prepare(
-                r#"SELECT link, COALESCE(title,''), COALESCE(alttitles,''), COALESCE(authors,''),
-                          COALESCE(artists,''), COALESCE(genres,''), COALESCE(status,''),
-                          COALESCE(summary,''), COALESCE(numchapter,0), COALESCE(jdn,0)
-                   FROM masterlist
-                   WHERE lower(title) LIKE lower(?1) ESCAPE '\'
-                      OR lower(alttitles) LIKE lower(?1) ESCAPE '\'
-                   ORDER BY title COLLATE NOCASE
-                   LIMIT ?2 OFFSET ?3"#,
-            )
-            .map_err(|e| e.to_string())?;
+        let sql = format!(
+            "{SEARCH_SELECT}
+             WHERE lower(m.title) LIKE lower(?1) ESCAPE '\\'
+                OR lower(m.alttitles) LIKE lower(?1) ESCAPE '\\'
+             ORDER BY m.title COLLATE NOCASE
+             LIMIT ?2 OFFSET ?3"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![like, limit, offset], map_entry)
             .map_err(|e| e.to_string())?;
@@ -161,6 +204,7 @@ fn map_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
         summary: r.get(7)?,
         numchapter: r.get(8)?,
         jdn: r.get(9)?,
+        cover: r.get(10)?,
     })
 }
 
@@ -177,7 +221,7 @@ pub fn upsert_links(module_id: &str, pairs: &[(String, String)]) -> Result<usize
             )
             .map_err(|e| e.to_string())?;
         for (link, title) in pairs {
-            let link = strip_host(link);
+            let link = normalize_manga_link(link);
             if link.is_empty() {
                 continue;
             }
@@ -189,6 +233,88 @@ pub fn upsert_links(module_id: &str, pairs: &[(String, String)]) -> Result<usize
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(inserted)
+}
+
+pub fn manga_cache_get(module_id: &str, link: &str) -> Result<Option<MangaCacheRow>, String> {
+    let path = catalog_db_path(module_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conn = open_catalog(module_id)?;
+    let link = normalize_manga_link(link);
+    let row = conn
+        .query_row(
+            r#"SELECT link,
+                      COALESCE(authors,''), COALESCE(artists,''), COALESCE(genres,''),
+                      COALESCE(status,''), COALESCE(summary,''), COALESCE(numchapter,0),
+                      COALESCE(cover,''), COALESCE(updated_at,'')
+               FROM manga_cache WHERE link = ?1"#,
+            params![link],
+            |r| {
+                Ok(MangaCacheRow {
+                    link: r.get(0)?,
+                    authors: r.get(1)?,
+                    artists: r.get(2)?,
+                    genres: r.get(3)?,
+                    status: r.get(4)?,
+                    summary: r.get(5)?,
+                    numchapter: r.get(6)?,
+                    cover: r.get(7)?,
+                    updated_at: r.get(8)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+pub fn manga_cache_upsert(
+    module_id: &str,
+    link: &str,
+    data: &MangaCacheUpsert,
+) -> Result<(), String> {
+    let conn = open_catalog(module_id)?;
+    let link = normalize_manga_link(link);
+    if link.is_empty() {
+        return Err("link vacío".into());
+    }
+    let updated_at = chrono_now();
+    conn.execute(
+        r#"INSERT INTO manga_cache(link, authors, artists, genres, status, summary, numchapter, cover, updated_at)
+           VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+           ON CONFLICT(link) DO UPDATE SET
+             authors=excluded.authors,
+             artists=excluded.artists,
+             genres=excluded.genres,
+             status=excluded.status,
+             summary=excluded.summary,
+             numchapter=excluded.numchapter,
+             cover=excluded.cover,
+             updated_at=excluded.updated_at"#,
+        params![
+            link,
+            data.authors,
+            data.artists,
+            data.genres,
+            data.status,
+            data.summary,
+            data.numchapter.max(0),
+            data.cover,
+            updated_at,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    secs.to_string()
 }
 
 /// Wipe catalog rows (used by tests / force refresh).
@@ -251,7 +377,8 @@ pub fn import_file(module_id: &str, src: &Path) -> Result<CatalogStats, String> 
     stats(module_id)
 }
 
-fn strip_host(url: &str) -> String {
+/// Normalize manga URL/path like FMD2 strip-host for catalog keys.
+pub fn normalize_manga_link(url: &str) -> String {
     let url = url.trim();
     if let Ok(u) = url::Url::parse(url) {
         let path = u.path().to_string();

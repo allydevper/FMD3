@@ -21,7 +21,11 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/fmd-mvp/covers/**", "$APPDATA/**/fmd-mvp/covers/**"]
+      }
     }
   },
   "bundle": {

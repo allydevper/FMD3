@@ -1,4 +1,4 @@
-use crate::catalog::{self, CatalogEntry, CatalogStats};
+use crate::catalog::{self, CatalogEntry, CatalogStats, MangaCacheRow, MangaCacheUpsert};
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
     get_info, modules_list, modules_match_url, modules_refresh, update_list, ChapterInfo,
@@ -60,6 +60,62 @@ pub fn catalog_search(
 #[tauri::command]
 pub fn catalog_import(module_id: String, path: String) -> Result<CatalogStats, String> {
     catalog::import_file(&module_id, std::path::Path::new(&path))
+}
+
+#[tauri::command]
+pub fn manga_cache_upsert(
+    module_id: String,
+    link: String,
+    authors: String,
+    artists: String,
+    genres: String,
+    status: String,
+    summary: String,
+    numchapter: i64,
+    cover: String,
+) -> Result<(), String> {
+    catalog::manga_cache_upsert(
+        &module_id,
+        &link,
+        &MangaCacheUpsert {
+            authors,
+            artists,
+            genres,
+            status,
+            summary,
+            numchapter,
+            cover,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn manga_cache_get(module_id: String, link: String) -> Result<Option<MangaCacheRow>, String> {
+    catalog::manga_cache_get(&module_id, &link)
+}
+
+#[tauri::command]
+pub fn cover_local_path(module_id: String, link: String) -> Result<Option<String>, String> {
+    Ok(crate::cover_cache::local_data_url(&module_id, &link))
+}
+
+#[tauri::command]
+pub async fn cover_ensure(
+    module_id: String,
+    link: String,
+    cover_url: String,
+    referer: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::cover_cache::ensure(
+            &module_id,
+            &link,
+            &cover_url,
+            referer.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("tarea cancelada: {e}"))?
 }
 
 #[tauri::command]

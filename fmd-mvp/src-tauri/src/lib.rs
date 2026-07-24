@@ -1,5 +1,6 @@
 mod catalog;
 mod commands;
+mod cover_cache;
 mod db;
 mod download;
 pub mod lua_host;
@@ -127,6 +128,10 @@ pub fn run() {
             commands::catalog_stats,
             commands::catalog_search,
             commands::catalog_import,
+            commands::manga_cache_upsert,
+            commands::manga_cache_get,
+            commands::cover_local_path,
+            commands::cover_ensure,
             commands::catalog_update,
             commands::download_chapters,
             commands::settings_get,
