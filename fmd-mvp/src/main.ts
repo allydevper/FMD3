@@ -1282,8 +1282,13 @@ async function ensureCoverAsync(
       referer: referer || null,
     });
     if (seq !== mangaLoadSeq || ensureId !== coverEnsureSeq) return;
-    // Siempre preferir bytes locales (data:) frente a remota/default.
-    setCover(dataUrl, { localFallback: dataUrl, force: true });
+    coverLocalFallback = dataUrl;
+    // Solo pintar data: si no hay imagen útil (default / vacío). No pisar remota OK.
+    const needsPaint =
+      coverImg.classList.contains("is-default") || !coverDisplayKey;
+    if (needsPaint) {
+      setCover(dataUrl, { localFallback: dataUrl, force: true });
+    }
   } catch {
     /* keep remote / default */
   }
@@ -1650,15 +1655,7 @@ async function openCatalogEntry(e: CatalogEntry) {
   updateResponsive();
   applyCatalogStub(e);
   const moduleId = selectedModuleId();
-  if (moduleId) {
-    void applyCachedCover(moduleId, e.link);
-    const coverHint = resolveCover(e.cover || "", root);
-    if (coverHint) {
-      // Descarga/cache en paralelo a GetInfo (seq se valida dentro de loadMangaInfo+1).
-      const expectSeq = mangaLoadSeq + 1;
-      void ensureCoverAsync(expectSeq, moduleId, e.link, coverHint, root || url);
-    }
-  }
+  if (moduleId) void applyCachedCover(moduleId, e.link);
   log(`Abriendo ${e.title || e.link}…`);
   await loadMangaInfo();
 }
@@ -1711,7 +1708,6 @@ async function loadMangaInfo() {
         if (cached.cover && !coverLocalFallback) {
           const remote = resolveCover(cached.cover, currentModule()?.root_url || "");
           if (remote) setCover(remote);
-          void ensureCoverAsync(seq, moduleId, url, remote || cached.cover, currentModule()?.root_url || url);
         }
         await applyCachedCover(moduleId, url);
       } catch {
@@ -1739,8 +1735,13 @@ async function loadMangaInfo() {
     syncMangaCacheFromInfo(url, result);
     const coverUrl = resolveCover(result.cover, result.root_url);
     const mid = result.module_id || selectedModuleId();
-    if (mid && coverUrl) {
-      void ensureCoverAsync(seq, mid, url, coverUrl, result.root_url || url);
+    // Un solo ensure: cache en disco; no pisa remota si ya se ve.
+    const remoteShowing =
+      coverDisplayKey.startsWith("http://") || coverDisplayKey.startsWith("https://");
+    const toEnsure = coverUrl || (remoteShowing ? coverDisplayKey : "");
+    const alreadyLocal = coverLocalFallback.startsWith("data:");
+    if (mid && toEnsure && !alreadyLocal) {
+      void ensureCoverAsync(seq, mid, url, toEnsure, result.root_url || url);
     }
     await syncFavoriteState();
     if (seq !== mangaLoadSeq) return;

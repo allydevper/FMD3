@@ -74,7 +74,14 @@ fn path_to_data_url(path: &Path) -> Result<String, String> {
         .and_then(|e| e.to_str())
         .unwrap_or("jpg")
         .to_lowercase();
-    let mime = mime_for_ext(&ext);
+    bytes_to_data_url(&bytes, &ext)
+}
+
+fn bytes_to_data_url(bytes: &[u8], ext: &str) -> Result<String, String> {
+    if bytes.len() < 32 {
+        return Err("cover local inválida".into());
+    }
+    let mime = mime_for_ext(ext);
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:{mime};base64,{b64}"))
 }
@@ -163,7 +170,7 @@ pub fn ensure(
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let dest = dir.join(format!("{}.{}", hash_link(manga_link), ext));
     fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
-    path_to_data_url(&dest)
+    bytes_to_data_url(&bytes, ext)
 }
 
 /// Local cover as `data:` URL, if cached.
