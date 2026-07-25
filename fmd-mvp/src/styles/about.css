@@ -1,0 +1,291 @@
+﻿.about-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.about-header {
+  flex: 0 0 auto;
+  padding: 18px 26px 15px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.about-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+
+.about-title {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--text);
+}
+
+.about-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.about-meta-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.about-meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.about-meta-k {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.about-header-sep {
+  width: 1px;
+  height: 34px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+
+.about-btn-p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 15px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.about-btn-p:hover {
+  background: var(--accent-hover);
+}
+
+.about-btn-ghost {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 15px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-2);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.about-btn-ghost:hover {
+  background: var(--hover-tint);
+}
+
+.about-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.about-tab {
+  padding: 11px 15px 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.about-tab:hover {
+  color: var(--text);
+}
+
+.about-tab.on {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+.about-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+}
+
+.about-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.about-pane[hidden] {
+  display: none !important;
+}
+
+.about-scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 22px 26px 28px;
+  max-width: 760px;
+}
+
+.about-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--nest);
+  border: 1px solid var(--border);
+  margin-bottom: 18px;
+}
+
+.about-kv {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+}
+
+.about-kv-k {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.about-kv-v {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.about-link {
+  font-size: 13px;
+  text-align: left;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+}
+
+.about-lead {
+  margin: 0 0 22px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.about-h {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.about-list {
+  margin: 0 0 20px;
+  padding: 0 0 0 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.about-list-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  list-style: none;
+  padding-left: 0;
+}
+
+.about-list-inline li {
+  color: var(--muted);
+}
+
+.about-list-compact {
+  color: var(--muted);
+}
+
+.about-changelog {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 18px 26px;
+  overflow: auto;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: transparent;
+  border: none;
+}
+
+.about-footer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.about-footer-stat {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.about-footer-muted {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.about-footer-spacer {
+  flex: 1 1 auto;
+}
+
+/* Options â€” OmniManga Settings layout */

@@ -1,0 +1,164 @@
+﻿/* Solo variables de tema â€” no animar layout (evita â€œestironesâ€ en hover) */
+.app {
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input::placeholder {
+  color: var(--muted);
+}
+
+input:not([type="checkbox"]):not([type="number"]),
+input[type="number"],
+select,
+textarea {
+  background-color: var(--field-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 400;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+input:not([type="checkbox"]):focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 1px var(--focus);
+}
+
+/* Reset neutro: el hover accent NO debe aplicarse a filas/nav/iconos */
+button {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  line-height: inherit;
+  text-align: inherit;
+  box-shadow: none;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Botones de acciÃ³n explÃ­citos */
+.btn {
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--on-accent);
+  line-height: 1.2;
+  text-align: center;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn.secondary,
+button.secondary {
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  line-height: 1.2;
+  text-align: center;
+  transition: background-color 0.12s ease;
+}
+
+.btn.secondary:hover:not(:disabled),
+button.secondary:hover:not(:disabled) {
+  background: var(--hover-tint);
+}
+
+.ghost {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--btn-soft);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.ghost:hover:not(:disabled) {
+  background: var(--btn-soft-hover);
+  color: var(--text);
+}
+
+/* Icons via CSS mask */
+.ico {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  flex: 0 0 16px;
+  background: currentColor;
+  -webkit-mask: var(--ico) center / contain no-repeat;
+  mask: var(--ico) center / contain no-repeat;
+}
+.ico-lg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+.ico-sm {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
+.ico-spin {
+  animation: spin 0.8s linear infinite;
+}
+

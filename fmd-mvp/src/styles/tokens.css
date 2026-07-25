@@ -1,0 +1,135 @@
+﻿/* OmniManga shell â€” light / dark tokens */
+
+:root {
+  color-scheme: light;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: #fdfbf2;
+  color: #041d33;
+  font-size: 13px;
+}
+
+.app {
+  --bg: #edece8;
+  --field-bg: #ffffff;
+  --panel: #e2e1dc;
+  --btn-soft: #dcdbd5;
+  --btn-soft-hover: #cfcec7;
+  --card: #f4f3f0;
+  --card-hi: #d3dde9;
+  --text: #041d33;
+  --muted: #8a9099;
+  --accent: #041d33;
+  --accent-hover: #0a2a45;
+  --on-accent: #fdfbf2;
+  --border: rgba(4, 29, 51, 0.1);
+  --border-2: rgba(4, 29, 51, 0.14);
+  --hover-tint: rgba(4, 29, 51, 0.08);
+  --focus: #041d33;
+  --deep: #041d33;
+  --deep-hover: #0a2a45;
+  --on-deep: #fdfbf2;
+  --deep-line: rgba(253, 251, 242, 0.12);
+  --on-deep-dim: rgba(253, 251, 242, 0.62);
+  --on-deep-dimmer: rgba(253, 251, 242, 0.55);
+  --check-border: rgba(4, 29, 51, 0.28);
+  --scroll-thumb: rgba(4, 29, 51, 0.18);
+  --scroll-thumb-hover: rgba(4, 29, 51, 0.32);
+  --shadow: rgba(4, 29, 51, 0.18);
+  --row-line: rgba(4, 29, 51, 0.07);
+  --track: rgba(4, 29, 51, 0.16);
+  --knob: #ffffff;
+  --warn: #b4781e;
+  --warn-bg: #f3e8d6;
+  --inc: #1b7a4a;
+  --inc-bg: #e4f2ea;
+  --exc: #b4341e;
+  --exc-bg: #f3deda;
+  --nest: rgba(4, 29, 51, 0.035);
+  --tex-op: 0.1;
+  --tex-filter: grayscale(1);
+  --danger: #9b2c2c;
+  --ok: #2c6e52;
+  --ok-bg: #dce8e0;
+  --bad: #a8432c;
+  --bad-bg: #f0dcd6;
+  --sel: #d3dde9;
+  --ink: var(--text);
+  --line: var(--border);
+  --accent-ink: var(--on-accent);
+
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.app.dark {
+  color-scheme: dark;
+  --bg: #0f1319;
+  --field-bg: #171c24;
+  --panel: #12171e;
+  --btn-soft: #1b212b;
+  --btn-soft-hover: #232b36;
+  --card: #161b22;
+  --card-hi: #26323f;
+  --text: #e6e9ee;
+  --muted: #8891a0;
+  --accent: #e7eaef;
+  --accent-hover: #f3f5f8;
+  --on-accent: #0f1319;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-2: rgba(255, 255, 255, 0.14);
+  --hover-tint: rgba(255, 255, 255, 0.07);
+  --focus: #5a8fd0;
+  --deep: #0a0e13;
+  --deep-hover: #141b24;
+  --on-deep: #e6e9ee;
+  --deep-line: rgba(255, 255, 255, 0.1);
+  --on-deep-dim: rgba(230, 233, 238, 0.6);
+  --on-deep-dimmer: rgba(230, 233, 238, 0.46);
+  --check-border: rgba(255, 255, 255, 0.28);
+  --scroll-thumb: rgba(255, 255, 255, 0.16);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.3);
+  --shadow: rgba(0, 0, 0, 0.5);
+  --row-line: rgba(255, 255, 255, 0.06);
+  --track: rgba(255, 255, 255, 0.16);
+  --knob: #e6e9ee;
+  --warn: #e3bb6e;
+  --warn-bg: #2a2216;
+  --inc: #7be0a8;
+  --inc-bg: #16281f;
+  --exc: #e88a78;
+  --exc-bg: #2a1815;
+  --nest: rgba(255, 255, 255, 0.03);
+  --tex-op: 0.05;
+  --tex-filter: grayscale(1) invert(1);
+  --danger: #e07070;
+  --ok: #7fc0a0;
+  --ok-bg: #16261f;
+  --bad: #e09480;
+  --bad-bg: #2a1815;
+  --sel: #26323f;
+}
+

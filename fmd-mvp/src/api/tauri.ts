@@ -1,0 +1,156 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  CatalogEntry,
+  CatalogProgressEvent,
+  CatalogStats,
+  Favorite,
+  FavoriteAddRequest,
+  FavoriteCheckResult,
+  MangaCacheRow,
+  MangaInfoResult,
+  ModuleMeta,
+  QueueAddRequest,
+  QueueItem,
+  QueueProgressEvent,
+  UpdateListStats,
+} from "../types";
+
+export function settingsGet(key: string) {
+  return invoke<string | null>("settings_get", { key });
+}
+
+export function settingsSet(key: string, value: string) {
+  return invoke("settings_set", { key, value });
+}
+
+export function modulesList() {
+  return invoke<ModuleMeta[]>("modules_list_cmd");
+}
+
+export function modulesRefresh() {
+  return invoke<number>("modules_refresh_cmd");
+}
+
+export function catalogStats(moduleId: string) {
+  return invoke<CatalogStats>("catalog_stats", { moduleId });
+}
+
+export function catalogSearch(
+  moduleId: string,
+  query: string,
+  limit?: number,
+  offset?: number,
+) {
+  return invoke<CatalogEntry[]>("catalog_search", {
+    moduleId,
+    query,
+    limit,
+    offset,
+  });
+}
+
+export function catalogUpdate(moduleId: string) {
+  return invoke<UpdateListStats>("catalog_update", { moduleId });
+}
+
+export function mangaCacheUpsert(args: {
+  moduleId: string;
+  link: string;
+  authors: string;
+  artists: string;
+  genres: string;
+  status: string;
+  summary: string;
+  numchapter: number;
+  cover: string;
+}) {
+  return invoke("manga_cache_upsert", args);
+}
+
+export function mangaCacheGet(moduleId: string, link: string) {
+  return invoke<MangaCacheRow | null>("manga_cache_get", { moduleId, link });
+}
+
+export function coverLocalPath(moduleId: string, link: string) {
+  return invoke<string | null>("cover_local_path", { moduleId, link });
+}
+
+export function coverEnsure(
+  moduleId: string,
+  link: string,
+  coverUrl: string,
+  referer: string | null,
+) {
+  return invoke<string>("cover_ensure", { moduleId, link, coverUrl, referer });
+}
+
+export function getMangaInfo(url: string, moduleId: string | null) {
+  return invoke<MangaInfoResult>("get_manga_info", { url, moduleId });
+}
+
+export function queueList() {
+  return invoke<QueueItem[]>("queue_list");
+}
+
+export function queueAdd(req: QueueAddRequest) {
+  return invoke<number>("queue_add", { req });
+}
+
+export function queueStart() {
+  return invoke("queue_start");
+}
+
+export function queueCancel(id: number) {
+  return invoke("queue_cancel", { id });
+}
+
+export function queueRetry(id: number) {
+  return invoke("queue_retry", { id });
+}
+
+export function queueRemove(id: number) {
+  return invoke("queue_remove", { id });
+}
+
+export function queueClearFinished() {
+  return invoke<number>("queue_clear_finished");
+}
+
+export function favoritesList() {
+  return invoke<Favorite[]>("favorites_list");
+}
+
+export function favoritesAdd(req: FavoriteAddRequest) {
+  return invoke<Favorite>("favorites_add", { req });
+}
+
+export function favoritesRemove(id: number) {
+  return invoke("favorites_remove", { id });
+}
+
+export function favoritesCheck(id: number, enqueue: boolean) {
+  return invoke<FavoriteCheckResult>("favorites_check", { id, enqueue });
+}
+
+export function onQueueChanged(handler: () => void): Promise<UnlistenFn> {
+  return listen("queue-changed", handler);
+}
+
+export function onQueueProgress(
+  handler: (payload: QueueProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<QueueProgressEvent>("queue-progress", (e) => handler(e.payload));
+}
+
+export function onCatalogProgress(
+  handler: (payload: CatalogProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<CatalogProgressEvent>("catalog-progress", (e) =>
+    handler(e.payload),
+  );
+}
+
+export function onLuaLog(handler: (msg: string) => void): Promise<UnlistenFn> {
+  return listen<string>("lua-log", (e) => handler(e.payload));
+}
