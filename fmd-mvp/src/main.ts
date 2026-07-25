@@ -1755,13 +1755,121 @@ app.innerHTML = `
 
 
       <section id="view-about" class="view" hidden>
-        <div class="view-pad">
-          <div class="about-block">
-            <h2>FMD Host</h2>
-            <p>Cliente moderno (Rust + Tauri) que reutiliza los módulos Lua de Free Manga Downloader 2.</p>
-            <p>Descarga mangas/comics con la misma sesión HTTP y hooks por imagen que FMD2.</p>
-            <p class="muted">MVP · cola SQLite · favoritos · catálogo · Cloudflare bypass básico</p>
+        <div class="about-shell">
+          <header class="about-header">
+            <div>
+              <div class="about-eyebrow">Información del cliente</div>
+              <h1 class="about-title">Sobre</h1>
+            </div>
+            <div class="about-header-actions">
+              <div class="about-meta-block">
+                <div class="about-meta-row"><span class="about-meta-k">Versión</span><span class="mono" id="about-version">0.1.0</span></div>
+                <div class="about-meta-row"><span class="about-meta-k">Revisión</span><span class="mono" id="about-revision">MVP</span></div>
+              </div>
+              <div class="about-header-sep"></div>
+              <button type="button" class="about-btn-p" id="about-check-update">
+                <span class="ico ico-sm" style="--ico:${ICO.refresh}"></span>
+                Revisar última versión
+              </button>
+              <button type="button" class="about-btn-ghost" id="about-open-github">
+                <span class="ico ico-sm" style="--ico:${ICO.globe}"></span>
+                Proyecto FMD2
+              </button>
+            </div>
+          </header>
+
+          <div class="about-tabs" role="tablist" aria-label="Sobre">
+            <button type="button" class="about-tab on" data-about-tab="fmd" role="tab" aria-selected="true">Sobre FMD</button>
+            <button type="button" class="about-tab" data-about-tab="log" role="tab" aria-selected="false">Historial de cambios</button>
           </div>
+
+          <div class="about-body">
+            <div class="about-pane" id="about-pane-fmd" data-about-pane="fmd">
+              <div class="about-scroll">
+                <div class="about-card">
+                  <div class="about-kv">
+                    <span class="about-kv-k">Proyecto</span>
+                    <span class="about-kv-v">FMD Host</span>
+                  </div>
+                  <div class="about-kv">
+                    <span class="about-kv-k">Basado en</span>
+                    <span class="about-kv-v">Free Manga Downloader 2 (módulos Lua)</span>
+                  </div>
+                  <div class="about-kv">
+                    <span class="about-kv-k">Página</span>
+                    <button type="button" class="lnk about-link" data-about-url="https://github.com/dazedcat19/FMD2">https://github.com/dazedcat19/FMD2</button>
+                  </div>
+                  <div class="about-kv">
+                    <span class="about-kv-k">Licencia</span>
+                    <button type="button" class="lnk about-link" data-about-url="https://www.gnu.org/licenses/gpl-2.0.html">GPLv2</button>
+                  </div>
+                </div>
+
+                <p class="about-lead">
+                  Cliente moderno (Rust + Tauri) que reutiliza los módulos Lua de Free Manga Downloader 2:
+                  misma sesión HTTP, hooks por imagen y catálogo/favoritos/cola en SQLite.
+                </p>
+
+                <h2 class="about-h">Desarrolladores FMD2</h2>
+                <ul class="about-list">
+                  <li>NhKPaNdA</li>
+                  <li>dazedcat19</li>
+                </ul>
+
+                <h2 class="about-h">Desarrolladores anteriores</h2>
+                <ul class="about-list about-list-inline">
+                  <li>Akarin-K</li>
+                  <li>Anastasiadinara</li>
+                  <li>SDXC</li>
+                  <li>kavin-90</li>
+                  <li>kmvi</li>
+                  <li>riderkick</li>
+                </ul>
+
+                <h2 class="about-h">Stack de este cliente</h2>
+                <ul class="about-list">
+                  <li>Rust + Tauri 2</li>
+                  <li>Lua 5.4 (mlua) — módulos y plantillas FMD2</li>
+                  <li>SQLite — cola y favoritos</li>
+                  <li>reqwest — HTTP / cookies / compresión</li>
+                </ul>
+
+                <h2 class="about-h">Bibliotecas y herramientas (línea FMD2)</h2>
+                <ul class="about-list about-list-compact">
+                  <li>Lua · SQLite · OpenSSL · LibWebp · Brotli · Zstd · 7-Zip</li>
+                  <li>Plantillas y módulos del árbol FMD2 empaquetados con la app</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="about-pane" id="about-pane-log" data-about-pane="log" hidden>
+              <pre class="about-changelog" id="about-changelog">FMD Host
+Cliente Tauri + módulos Lua de Free Manga Downloader 2
+
+Changelog:
+([!] Importante, [+] Añadido, [-] Eliminado, [*] Cambio/corrección)
+
+0.1.0 (MVP)
+[+] Shell OmniManga: Descargas, Información, Favoritos, Opciones, Sobre
+[+] Cola de descarga con SQLite y progreso en vivo
+[+] Favoritos: revisar capítulos nuevos y encolar
+[+] Catálogo + filtro avanzado (UI) + GetInfo
+[+] Opciones alineadas a FMD2 (guardar en, renombrado, sitios, módulos)
+[+] Bypass Cloudflare básico / websitebypass de FMD2
+[*] Mismos módulos Lua que FMD2 (recursos empaquetados)
+
+— Historial completo de FMD2 —
+https://github.com/dazedcat19/FMD2</pre>
+            </div>
+          </div>
+
+          <footer class="about-footer">
+            <span class="about-footer-stat"><span class="fav-dot" style="background:var(--accent)"></span><span id="about-product">FMD Host</span></span>
+            <span class="about-footer-muted mono" id="about-runtime">Tauri 2 · Rust</span>
+            <span class="about-footer-muted mono" id="about-modules">0 módulos</span>
+            <div class="about-footer-spacer"></div>
+            <span class="about-footer-muted">Compatible con módulos Lua de FMD2</span>
+          </footer>
         </div>
       </section>
 
@@ -1959,6 +2067,7 @@ function switchNav(nav: NavId) {
   if (nav === "downloads") void refreshQueue();
   if (nav === "favorites") void refreshFavorites();
   if (nav === "options") void loadSettingsForm();
+  if (nav === "about") refreshAboutMeta();
 }
 
 document.querySelectorAll(".nav-item[data-nav]").forEach((el) => {
@@ -4006,6 +4115,58 @@ function initFavoritesUi() {
 }
 
 initFavoritesUi();
+
+function refreshAboutMeta() {
+  const ver = document.querySelector("#about-version");
+  if (ver) ver.textContent = "0.1.0";
+  const rev = document.querySelector("#about-revision");
+  if (rev) rev.textContent = "MVP";
+  const mods = document.querySelector("#about-modules");
+  if (mods) {
+    const n = modulesCache.length;
+    mods.textContent = n === 1 ? "1 módulo" : `${n} módulos`;
+  }
+  const runtime = document.querySelector("#about-runtime");
+  if (runtime) runtime.textContent = `Tauri 2 · Rust · ${navigator.platform || "web"}`;
+}
+
+function initAboutUi() {
+  const root = document.querySelector<HTMLElement>("#view-about");
+  if (!root || root.dataset.bound === "1") return;
+  root.dataset.bound = "1";
+
+  root.querySelector(".about-tabs")?.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-about-tab]");
+    if (!btn?.dataset.aboutTab) return;
+    const tab = btn.dataset.aboutTab;
+    for (const t of root.querySelectorAll<HTMLButtonElement>("[data-about-tab]")) {
+      const on = t.dataset.aboutTab === tab;
+      t.classList.toggle("on", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
+    }
+    for (const pane of root.querySelectorAll<HTMLElement>("[data-about-pane]")) {
+      pane.hidden = pane.dataset.aboutPane !== tab;
+    }
+  });
+
+  root.querySelector("#about-check-update")?.addEventListener("click", () => {
+    log("Comprobar actualizaciones: próximamente", "ok");
+  });
+
+  root.querySelector("#about-open-github")?.addEventListener("click", () => {
+    void openUrl("https://github.com/dazedcat19/FMD2");
+  });
+
+  root.addEventListener("click", (ev) => {
+    const link = (ev.target as HTMLElement).closest<HTMLElement>("[data-about-url]");
+    if (!link?.dataset.aboutUrl) return;
+    void openUrl(link.dataset.aboutUrl);
+  });
+
+  refreshAboutMeta();
+}
+
+initAboutUi();
 
 let catalogSearchTimer: number | undefined;
 
