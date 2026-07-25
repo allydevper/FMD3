@@ -1373,24 +1373,19 @@ fn chapter_output_dir(
     use crate::rename_patterns::{apply_pattern, format_chapter_index};
     use crate::settings_keys::{chapter_folder_pattern, manga_folder_pattern};
     let idx = format_chapter_index(chapter_index + 1);
-    let manga_folder = apply_pattern(
-        &manga_folder_pattern(),
-        &[
-            ("%Manga%", manga_title),
-            ("%Website%", website),
-            ("%Chapter%", chapter_name),
-            ("%ChapterIndex%", &idx),
-        ],
-    );
-    let chapter_folder = apply_pattern(
-        &chapter_folder_pattern(),
-        &[
-            ("%Manga%", manga_title),
-            ("%Website%", website),
-            ("%Chapter%", chapter_name),
-            ("%ChapterIndex%", &idx),
-        ],
-    );
+    // FMD2 tokens are uppercase (%MANGA%, %CHAPTER%, …); keep TitleCase aliases for older MVP settings.
+    let tokens = [
+        ("%MANGA%", manga_title),
+        ("%Manga%", manga_title),
+        ("%WEBSITE%", website),
+        ("%Website%", website),
+        ("%CHAPTER%", chapter_name),
+        ("%Chapter%", chapter_name),
+        ("%NUMBERING%", &idx),
+        ("%ChapterIndex%", &idx),
+    ];
+    let manga_folder = apply_pattern(&manga_folder_pattern(), &tokens);
+    let chapter_folder = apply_pattern(&chapter_folder_pattern(), &tokens);
     output_dir.join(manga_folder).join(chapter_folder)
 }
 
@@ -1406,7 +1401,10 @@ fn work_basename(file_names: &LuaStringList, work_id: usize, page_count: usize) 
     use crate::rename_patterns::{apply_pattern, format_page};
     use crate::settings_keys::page_name_pattern;
     let page = format_page(work_id + 1);
-    apply_pattern(&page_name_pattern(), &[("%Page%", &page)])
+    apply_pattern(
+        &page_name_pattern(),
+        &[("%FILENAME%", &page), ("%Page%", &page)],
+    )
 }
 
 fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {

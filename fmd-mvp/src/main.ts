@@ -126,6 +126,10 @@ type AdvFilterState = {
   useRegex: boolean;
 };
 
+/** Same as FMD2 `UserAgentDefault` (httpsendthread.pas). */
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+
 /** Canonical EN keys (FMD2 defaultGenres) + ES labels for UI. */
 const DEFAULT_GENRES: { id: string; label: string }[] = [
   { id: "Action", label: "Acción" },
@@ -792,9 +796,9 @@ app.innerHTML = `
                           <div class="st-select filter-select-wrap">
                             <select class="opt-stub">
                               <option>No hacer nada</option>
-                              <option>Salir</option>
-                              <option>Apagar</option>
-                              <option>Hibernar</option>
+                              <option>Salir del programa</option>
+                              <option>Apagar equipo</option>
+                              <option>Suspender</option>
                             </select>
                           </div>
                         </div>
@@ -806,7 +810,7 @@ app.innerHTML = `
                           <div class="st-num-wrap">
                             <div class="st-stepper" data-min="1">
                               <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
-                              <input id="opt-new-days" class="st-stepper-input opt-stub" type="number" value="1" min="1" />
+                              <input id="opt-new-days" class="st-stepper-input opt-stub" type="number" value="1" min="1" max="365" />
                               <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
                             </div>
                             <span class="st-unit">días</span>
@@ -824,11 +828,11 @@ app.innerHTML = `
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Minimizar al iniciar</div><div class="st-desc">Arranca en la bandeja del sistema</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Minimizar a la bandeja</div><div class="st-desc">Al cerrar, oculta en la bandeja en vez de salir</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Permitir solo una instancia</div><div class="st-desc">Evita abrir la app dos veces</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Búsqueda en vivo</div><div class="st-desc">Filtra mientras escribes (lento en listas largas)</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Búsqueda en vivo</div><div class="st-desc">Filtra mientras escribes (lento en listas largas)</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Borrar tareas completadas al cerrar</div><div class="st-desc">Limpia la cola de descargas al salir</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Ordenar descargas al añadir tareas</div><div class="st-desc">Reordena la cola automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Ordenar descargas al añadir tareas</div><div class="st-desc">Reordena la cola automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Vacuum de bases al salir</div><div class="st-desc">Compacta las bases de datos al cerrar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Rutas de nombre largo <span class="st-warn">Cuidado</span></div><div class="st-desc">Permite rutas &gt; 260 caracteres</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Rutas de nombre largo <span class="st-warn">Cuidado</span></div><div class="st-desc">Permite rutas de más de 260 caracteres</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                       </div>
                     </section>
 
@@ -845,9 +849,9 @@ app.innerHTML = `
                         <div class="st-row st-row-stack" id="opt-external-fields" hidden>
                           <div class="st-form-grid">
                             <label>Ruta</label>
-                            <input class="st-field st-mono opt-stub" type="text" placeholder="Ruta del programa" />
+                            <input class="st-field st-mono opt-stub" type="text" placeholder="C:\Program Files\...\visor.exe" />
                             <label>Parámetros</label>
-                            <input class="st-field st-mono opt-stub" type="text" placeholder="%PATH%" />
+                            <input class="st-field st-mono opt-stub" type="text" value="%PATH%%CHAPTER%" placeholder="%PATH%%CHAPTER%" />
                           </div>
                         </div>
                       </div>
@@ -889,18 +893,18 @@ app.innerHTML = `
                       <div class="st-card">
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Mostrar Drop Box</div><div class="st-desc">Ventana flotante para soltar enlaces</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <div class="st-row"><div class="st-meta"><div class="st-label">Modo</div><div class="st-desc">Qué hacer con los enlaces soltados</div></div><div class="st-select filter-select-wrap"><select class="opt-stub"><option>Descargar todo</option><option>Añadir a favoritos</option></select></div></div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Opacidad</div><div class="st-desc">Transparencia de la ventana Drop Box</div></div><input class="st-range opt-stub" type="range" min="5" max="255" value="200" /></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Opacidad</div><div class="st-desc">Transparencia de la ventana Drop Box</div></div><input class="st-range opt-stub" type="range" min="5" max="255" value="255" /></div>
                       </div>
                     </section>
                     <section class="st-section">
                       <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.sliders}"></span><h2>Interfaz</h2></div>
                       <div class="st-card">
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Mostrar barra de descargas</div><div class="st-desc">Toolbar superior en la cola</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Mostrar barra de descargas</div><div class="st-desc">Toolbar superior en la cola</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Botón borrar completadas</div><div class="st-desc">Mostrar «Borrar todas las tareas completadas»</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Barra izquierda de descargas</div><div class="st-desc">Controles adicionales a la izquierda</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Barra izquierda de descargas</div><div class="st-desc">Controles adicionales a la izquierda</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Cargar portada del manga</div><div class="st-desc">Descarga y muestra la imagen de portada</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Globo de notificación</div><div class="st-desc">Avisos del sistema al completar tareas</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Ir a Descargas al añadir</div><div class="st-desc">Cambia a la vista Descargas al crear tareas</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Globo de notificación</div><div class="st-desc">Avisos del sistema al completar tareas</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Ir a Descargas al añadir</div><div class="st-desc">Cambia a la vista Descargas al crear tareas</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Ir a Favoritos al añadir manga</div><div class="st-desc">Cambia a Favoritos al guardar un título</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                       </div>
                     </section>
@@ -914,10 +918,10 @@ app.innerHTML = `
                     <section class="st-section">
                       <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.download}"></span><h2>Descargas</h2></div>
                       <div class="st-card">
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Tareas en paralelo</div><div class="st-desc">Número de tareas descargando a la vez</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="1" max="8" value="1" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Archivos por tarea</div><div class="st-desc">Hilos de descarga por capítulo</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input id="set-threads" class="st-stepper-input" type="number" min="1" max="16" value="1" autocomplete="off" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Reintentos de tarea</div><div class="st-desc">Si la tarea falla, cuántas veces reintentar</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="0" value="1" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Reiniciar desde capítulos fallidos</div><div class="st-desc">Siempre continuar desde el último fallo</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Tareas en paralelo</div><div class="st-desc">Mangas descargando a la vez</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="1" max="8" value="1" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Archivos por tarea</div><div class="st-desc">Hilos de descarga dentro de un capítulo</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input id="set-threads" class="st-stepper-input" type="number" min="1" max="32" value="1" autocomplete="off" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Reintentos de tarea</div><div class="st-desc">Si la tarea falla, cuántas veces reintentar</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="0" max="10" value="1" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Reiniciar desde capítulos fallidos</div><div class="st-desc">Continúa siempre desde el último fallo</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                       </div>
                     </section>
                     <section class="st-section">
@@ -953,7 +957,7 @@ app.innerHTML = `
                           <div class="st-num-wrap">
                             <div class="st-stepper">
                               <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
-                              <input class="st-stepper-input opt-stub" type="number" min="-1" max="5" value="0" />
+                              <input class="st-stepper-input opt-stub" type="number" min="-1" max="5" value="5" />
                               <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
                             </div>
                           </div>
@@ -967,6 +971,7 @@ app.innerHTML = `
                             id="set-ua"
                             class="st-field st-mono st-field-ua"
                             type="text"
+                            value="${DEFAULT_USER_AGENT}"
                             placeholder="(por defecto)"
                             autocomplete="off"
                             spellcheck="false"
@@ -1098,7 +1103,7 @@ app.innerHTML = `
                             </select>
                           </div>
                         </div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Calidad PDF</div><div class="st-desc">Solo aplica si el empaquetado es PDF</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="95" min="1" max="100" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Calidad PDF</div><div class="st-desc">Solo aplica si el empaquetado es PDF</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="100" min="5" max="100" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
                       </div>
                     </section>
                     <section class="st-section">
@@ -1107,31 +1112,31 @@ app.innerHTML = `
                         <label class="st-row click">
                           <div class="st-meta"><div class="st-label">Reemplazar unicode</div><div class="st-desc">Sustituye caracteres problemáticos en rutas</div></div>
                           <div class="st-inline-end">
-                            <input class="st-field st-char opt-stub" type="text" maxlength="4" placeholder="_" />
+                            <input class="st-field st-char opt-stub" type="text" maxlength="4" value="_" placeholder="_" />
                             <span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
                           </div>
                         </label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Carpeta por nombre de manga</div><div class="st-desc">Genera carpeta automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <div class="st-row st-row-stack">
                           <div class="st-meta"><div class="st-label">Patrón carpeta manga</div></div>
-                          <input id="set-pat-manga" class="st-field st-mono" type="text" value="%Manga%" autocomplete="off" spellcheck="false" />
+                          <input id="set-pat-manga" class="st-field st-mono" type="text" value="%MANGA%" autocomplete="off" spellcheck="false" />
                         </div>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Quitar nombre del manga del capítulo</div><div class="st-desc">Evita duplicar el título en la carpeta</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Carpeta de capítulo</div><div class="st-desc">Genera subcarpeta por capítulo</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <div class="st-row st-row-stack">
                           <div class="st-meta"><div class="st-label">Patrón carpeta capítulo</div></div>
-                          <input id="set-pat-chapter" class="st-field st-mono" type="text" value="%ChapterIndex%_%Chapter%" autocomplete="off" spellcheck="false" />
+                          <input id="set-pat-chapter" class="st-field st-mono" type="text" value="%CHAPTER%" autocomplete="off" spellcheck="false" />
                         </div>
                         <div class="st-row">
                           <div class="st-meta"><div class="st-label">Relleno de dígitos</div><div class="st-desc">Padding numérico en volumen/capítulo</div></div>
                           <div class="st-inline-end">
-                            <label class="st-mini"><input class="opt-stub" type="checkbox" /> Vol <span class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="1" min="1" max="10" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></span></label>
-                            <label class="st-mini"><input class="opt-stub" type="checkbox" /> Cap <span class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="1" min="1" max="10" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></span></label>
+                            <label class="st-mini"><input class="opt-stub" type="checkbox" checked /> Vol <span class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="2" min="1" max="10" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></span></label>
+                            <label class="st-mini"><input class="opt-stub" type="checkbox" checked /> Cap <span class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="3" min="1" max="10" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></span></label>
                           </div>
                         </div>
                         <div class="st-row st-row-stack">
                           <div class="st-meta"><div class="st-label">Patrón de página</div></div>
-                          <input id="set-pat-page" class="st-field st-mono" type="text" value="%Page%" autocomplete="off" spellcheck="false" />
+                          <input id="set-pat-page" class="st-field st-mono" type="text" value="%FILENAME%" autocomplete="off" spellcheck="false" />
                         </div>
                       </div>
                     </section>
@@ -1145,16 +1150,16 @@ app.innerHTML = `
                     <section class="st-section">
                       <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.refresh}"></span><h2>Actualizaciones</h2></div>
                       <div class="st-card">
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar versión al iniciar</div><div class="st-desc">Busca actualizaciones de la app</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar versión al iniciar</div><div class="st-desc">Busca actualizaciones de la app</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">No cargar info al actualizar lista</div><div class="st-desc">Más rápido; el filtro avanzado no funcionará</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                       </div>
                     </section>
                     <section class="st-section">
                       <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.heart}"></span><h2>Favoritos</h2></div>
                       <div class="st-card">
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar al iniciar</div><div class="st-desc">Busca capítulos nuevos al arrancar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar al iniciar</div><div class="st-desc">Busca capítulos nuevos al arrancar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Abrir Favoritos al iniciar</div><div class="st-desc">Muestra esa vista al abrir la app</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar en intervalo</div><div class="st-desc">Revisa favoritos periódicamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
+                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar en intervalo</div><div class="st-desc">Revisa favoritos periódicamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <div class="st-row"><div class="st-meta"><div class="st-label">Intervalo</div><div class="st-desc">Minutos entre comprobaciones</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input st-stepper-wide opt-stub" type="number" min="1" max="1440" value="60" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div><span class="st-unit">min</span></div></div>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Descargar tras comprobar</div><div class="st-desc">Encola capítulos nuevos automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Quitar mangas completados</div><div class="st-desc">Los elimina de Favoritos al terminar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
@@ -3167,7 +3172,8 @@ async function loadSettingsForm() {
   const patC = document.querySelector<HTMLInputElement>("#set-pat-chapter")!;
   const patP = document.querySelector<HTMLInputElement>("#set-pat-page")!;
   const outDir = document.querySelector<HTMLInputElement>("#set-output-dir")!;
-  ua.value = (await get("http.user_agent")) ?? "";
+  const savedUa = ((await get("http.user_agent")) ?? "").trim();
+  ua.value = savedUa || DEFAULT_USER_AGENT;
   const proxyRaw = (await get("http.proxy")) ?? "";
   const parsed = parseProxyUrl(proxyRaw);
   document.querySelector<HTMLSelectElement>("#set-proxy-type")!.value = parsed.type;
@@ -3183,9 +3189,9 @@ async function loadSettingsForm() {
     ((await get("download.pack_delete_folder")) ?? "").toLowerCase(),
   );
   convert.value = (await get("download.convert_to")) ?? "keep";
-  patM.value = (await get("download.manga_folder_pattern")) ?? "%Manga%";
-  patC.value = (await get("download.chapter_folder_pattern")) ?? "%ChapterIndex%_%Chapter%";
-  patP.value = (await get("download.page_name_pattern")) ?? "%Page%";
+  patM.value = (await get("download.manga_folder_pattern")) ?? "%MANGA%";
+  patC.value = (await get("download.chapter_folder_pattern")) ?? "%CHAPTER%";
+  patP.value = (await get("download.page_name_pattern")) ?? "%FILENAME%";
   const savedDir = (await get("default_output_dir")) ?? outputDir ?? "";
   outDir.value = savedDir;
   outDir.placeholder = savedDir ? savedDir : "Sin carpeta de salida";
@@ -3208,7 +3214,8 @@ document.querySelector("#set-cancel")!.addEventListener("click", () => {
 
 document.querySelector("#set-save")!.addEventListener("click", async () => {
   const set = (key: string, value: string) => invoke("settings_set", { key, value });
-  await set("http.user_agent", document.querySelector<HTMLInputElement>("#set-ua")!.value);
+  const uaVal = document.querySelector<HTMLInputElement>("#set-ua")!.value.trim();
+  await set("http.user_agent", uaVal === DEFAULT_USER_AGENT ? "" : uaVal);
   const useProxy = document.querySelector<HTMLInputElement>("#set-use-proxy")!.checked;
   await set("http.proxy", useProxy ? composeProxyUrl() : "");
   await set("download.max_threads", document.querySelector<HTMLInputElement>("#set-threads")!.value);

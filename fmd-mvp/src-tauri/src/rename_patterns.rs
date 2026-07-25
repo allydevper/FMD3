@@ -23,11 +23,11 @@ mod tests {
     #[test]
     fn tokens() {
         let s = apply_pattern(
-            "%Manga%/%ChapterIndex%_%Chapter%",
+            "%MANGA%/%NUMBERING%_%CHAPTER%",
             &[
-                ("%Manga%", "One Piece"),
-                ("%ChapterIndex%", "001"),
-                ("%Chapter%", "Cap 1"),
+                ("%MANGA%", "One Piece"),
+                ("%NUMBERING%", "001"),
+                ("%CHAPTER%", "Cap 1"),
             ],
         );
         assert!(s.contains("One Piece") || s.contains("One_Piece") || !s.is_empty());

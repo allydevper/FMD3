@@ -16,7 +16,7 @@ pub fn max_threads() -> usize {
         .flatten()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1)
-        .clamp(1, 16)
+        .clamp(1, 32)
 }
 
 pub fn pack_format() -> String {
@@ -47,19 +47,19 @@ pub fn manga_folder_pattern() -> String {
     crate::db::settings_get_direct(DOWNLOAD_MANGA_FOLDER_PATTERN)
         .ok()
         .flatten()
-        .unwrap_or_else(|| "%Manga%".into())
+        .unwrap_or_else(|| "%MANGA%".into())
 }
 
 pub fn chapter_folder_pattern() -> String {
     crate::db::settings_get_direct(DOWNLOAD_CHAPTER_FOLDER_PATTERN)
         .ok()
         .flatten()
-        .unwrap_or_else(|| "%ChapterIndex%_%Chapter%".into())
+        .unwrap_or_else(|| "%CHAPTER%".into())
 }
 
 pub fn page_name_pattern() -> String {
     crate::db::settings_get_direct(DOWNLOAD_PAGE_NAME_PATTERN)
         .ok()
         .flatten()
-        .unwrap_or_else(|| "%Page%".into())
+        .unwrap_or_else(|| "%FILENAME%".into())
 }
