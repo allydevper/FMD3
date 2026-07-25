@@ -266,6 +266,18 @@ const ICO = {
   plus: svgIco('<path d="M5 12h14"/><path d="M12 5v14"/>'),
   minus: svgIco('<path d="M5 12h14"/>'),
   dash: svgIco('<path d="M5 12h14"/>'),
+  play: svgIco('<polygon points="6 3 20 12 6 21 6 3"/>'),
+  pause: svgIco('<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'),
+  trash: svgIco(
+    '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  ),
+  clock: svgIco(
+    '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  ),
+  arrowUp: svgIco('<path d="m18 15-6-6-6 6"/>'),
+  arrowDown: svgIco('<path d="m6 9 6 6 6-6"/>'),
+  arrowTop: svgIco('<path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/>'),
+  arrowBottom: svgIco('<path d="m7 6 5 5 5-5"/><path d="m7 13 5 5 5-5"/>'),
   external: svgIco(
     '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   ),
@@ -328,12 +340,70 @@ let mangaUrl = "";
 let outputDir = "";
 let selected = new Set<number>();
 let activeNav: NavId = "info";
-let expandedGroups = new Set<string>();
 let liveProgress = new Map<
   number,
   { page_current: number; page_total: number; message: string; chapter_name: string }
 >();
 let lastQueueItems: QueueItem[] = [];
+
+const DL_HIST = [
+  { id: "hoy", label: "Hoy", maxH: 24 },
+  { id: "ayer", label: "Ayer", maxH: 48 },
+  { id: "d7", label: "Últimos 7 días", maxH: 24 * 7 },
+  { id: "mes", label: "Este mes", maxH: 24 * 31 },
+  { id: "m6", label: "Últimos 6 meses", maxH: 24 * 183 },
+  { id: "old", label: "Más de 6 meses", maxH: Number.POSITIVE_INFINITY },
+] as const;
+
+const DL_ST: Record<
+  string,
+  { id: string; label: string; color: string; bg: string; bar: string }
+> = {
+  running: {
+    id: "active",
+    label: "En progreso",
+    color: "var(--text)",
+    bg: "transparent",
+    bar: "var(--accent)",
+  },
+  pending: {
+    id: "queued",
+    label: "En cola",
+    color: "var(--muted)",
+    bg: "transparent",
+    bar: "var(--muted)",
+  },
+  cancelled: {
+    id: "paused",
+    label: "Detenido",
+    color: "var(--warn)",
+    bg: "var(--warn-bg)",
+    bar: "var(--warn)",
+  },
+  failed: {
+    id: "failed",
+    label: "Falló",
+    color: "var(--bad)",
+    bg: "var(--bad-bg)",
+    bar: "var(--bad)",
+  },
+  done: {
+    id: "done",
+    label: "Completado",
+    color: "var(--ok)",
+    bg: "var(--ok-bg)",
+    bar: "var(--ok)",
+  },
+};
+
+const dlUi = {
+  cat: "all",
+  query: "",
+  sel: {} as Record<number, true>,
+  sortKey: "added",
+  sortDir: -1 as 1 | -1,
+  order: [] as number[],
+};
 let catalogEntries: CatalogEntry[] = [];
 let catalogQuery = "";
 let catalogLoadedKey = "";
@@ -689,28 +759,95 @@ app.innerHTML = `
       </section>
 
       <section id="view-downloads" class="view" hidden>
-        <div class="view-pad">
-          <div class="toolbar">
-            <button id="queue-refresh" class="secondary" type="button">Actualizar</button>
-            <button id="queue-clear" class="secondary" type="button">Limpiar terminados</button>
-            <button id="queue-start" class="secondary" type="button">Reanudar cola</button>
-            <span id="queue-status" class="path"></span>
-          </div>
-          <div class="dl-table-wrap">
-            <table class="dl-table" id="queue-table">
-              <thead>
-                <tr>
-                  <th class="col-exp"></th>
-                  <th class="col-manga">Manga</th>
-                  <th class="col-status">Status</th>
-                  <th class="col-progress">Progress</th>
-                  <th class="col-save">Save to</th>
-                  <th class="col-actions"></th>
-                </tr>
-              </thead>
-              <tbody id="queue-list"></tbody>
-            </table>
-            <div id="queue-empty" class="empty" hidden>Cola vacía</div>
+        <div class="dl-shell">
+          <header class="dl-header">
+            <div>
+              <div class="dl-eyebrow">Cola de trabajo</div>
+              <h1 class="dl-title">Descargas</h1>
+            </div>
+            <div class="dl-header-actions">
+              <div class="dl-speed-block">
+                <div class="dl-speed-value mono" id="dl-total-speed">0 KB/s</div>
+                <div class="dl-speed-label">Transferencia</div>
+              </div>
+              <div class="dl-header-sep"></div>
+              <button type="button" class="dl-btn-p" id="dl-resume-all">
+                <span class="ico ico-sm" style="--ico:${ICO.play}"></span>Reanudar todo
+              </button>
+              <button type="button" class="dl-btn-ghost" id="dl-stop-all">
+                <span class="ico ico-sm" style="--ico:${ICO.pause}"></span>Detener todo
+              </button>
+            </div>
+          </header>
+          <div class="dl-body">
+            <aside class="dl-tree" id="dl-tree" aria-label="Filtros de descargas"></aside>
+            <div class="dl-main">
+              <div class="dl-toolbar">
+                <div class="dl-search-wrap">
+                  <span class="ico ico-sm dl-search-ico" style="--ico:${ICO.search}"></span>
+                  <input id="dl-q" class="st-field" type="text" placeholder="Buscar descargas..." autocomplete="off" spellcheck="false" />
+                  <button type="button" class="sites-clear" id="dl-q-clear" hidden title="Limpiar">
+                    <span class="ico ico-sm" style="--ico:${ICO.x}"></span>
+                  </button>
+                </div>
+                <div class="dl-move-btns">
+                  <button type="button" class="dl-ibtn off" id="dl-move-top" title="Mover al inicio" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.arrowTop}"></span>
+                  </button>
+                  <button type="button" class="dl-ibtn off" id="dl-move-up" title="Subir" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.arrowUp}"></span>
+                  </button>
+                  <button type="button" class="dl-ibtn off" id="dl-move-down" title="Bajar" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.arrowDown}"></span>
+                  </button>
+                  <button type="button" class="dl-ibtn off" id="dl-move-bottom" title="Mover al final" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.arrowBottom}"></span>
+                  </button>
+                </div>
+                <div class="dl-toolbar-sep"></div>
+                <div class="dl-sel-actions">
+                  <button type="button" class="dl-tbtn off" id="dl-sel-resume" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.play}"></span>Reanudar
+                  </button>
+                  <button type="button" class="dl-tbtn off" id="dl-sel-pause" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.pause}"></span>Detener
+                  </button>
+                  <button type="button" class="dl-tbtn off" id="dl-sel-delete" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.trash}"></span>Quitar
+                  </button>
+                </div>
+                <div class="dl-toolbar-spacer"></div>
+                <span class="dl-sel-label" id="dl-sel-label">0 tareas</span>
+              </div>
+              <div class="dl-scroll">
+                <div class="dl-grid dl-head">
+                  <button type="button" class="sites-cb" id="dl-select-all" style="--ico:${ICO.check}" aria-label="Seleccionar todo">
+                    <span class="sites-cb-mk"></span>
+                  </button>
+                  <button type="button" class="dl-hc" data-sort="title">Manga<span class="ico dl-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="dl-hc" data-sort="status">Estado<span class="ico dl-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="dl-hc" data-sort="pct">Progreso<span class="ico dl-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="dl-hc" data-sort="speed" style="justify-content:flex-end">Ratio<span class="ico dl-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="dl-hc" data-sort="site">Sitio<span class="ico dl-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="dl-hc" data-sort="path">Guardado en<span class="ico dl-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="dl-hc on" data-sort="added">Agregado<span class="ico dl-sort-ico" style="--ico:${ICO.chevron};opacity:1;transform:rotate(180deg)"></span></button>
+                  <div></div>
+                </div>
+                <div id="dl-rows"></div>
+                <div id="dl-empty" class="dl-empty" hidden>
+                  <span class="ico" style="--ico:${ICO.download};width:26px;height:26px;color:var(--muted);opacity:.55"></span>
+                  <div class="dl-empty-title" id="dl-empty-title">Nada por aquí</div>
+                  <div class="dl-empty-desc" id="dl-empty-desc">Esta vista no tiene descargas en este momento.</div>
+                </div>
+              </div>
+              <footer class="dl-footer">
+                <span class="dl-footer-stat"><span class="dl-dot" style="background:var(--accent)"></span><span id="dl-active-label">0 descargas activas</span></span>
+                <span class="dl-footer-muted" id="dl-queue-label">0 en cola</span>
+                <span class="dl-footer-muted" id="dl-done-label">0 completadas</span>
+                <div class="dl-toolbar-spacer"></div>
+                <button type="button" class="lnk" id="dl-clear-done">Limpiar completadas</button>
+              </footer>
+            </div>
           </div>
         </div>
       </section>
@@ -1546,11 +1683,9 @@ const chaptersHeadEl = document.querySelector<HTMLElement>("#chapters-head")!;
 const countEl = document.querySelector<HTMLElement>("#count")!;
 const pathInput = document.querySelector<HTMLInputElement>("#path-input")!;
 const logEl = document.querySelector<HTMLElement>("#log")!;
-const queueListEl = document.querySelector<HTMLTableSectionElement>("#queue-list")!;
-const queueEmptyEl = document.querySelector<HTMLElement>("#queue-empty")!;
-const queueTableEl = document.querySelector<HTMLTableElement>("#queue-table")!;
+const queueRowsEl = document.querySelector<HTMLDivElement>("#dl-rows")!;
+const queueEmptyEl = document.querySelector<HTMLElement>("#dl-empty")!;
 const favListEl = document.querySelector<HTMLDivElement>("#fav-list")!;
-const queueStatusEl = document.querySelector<HTMLElement>("#queue-status")!;
 const sourceLabel = document.querySelector<HTMLElement>("#source-label")!;
 const sourceTrigger = document.querySelector<HTMLButtonElement>("#source-trigger")!;
 const sourceMenu = document.querySelector<HTMLDivElement>("#source-menu")!;
@@ -2692,249 +2827,340 @@ btnOnline.addEventListener("click", async () => {
   }
 });
 
-function statusBadge(status: string): string {
-  const map: Record<string, string> = {
-    pending: "badge pending",
-    running: "badge running",
-    done: "badge done",
-    failed: "badge failed",
-    cancelled: "badge cancelled",
-  };
-  return map[status] || "badge";
-}
-
-function groupKey(item: QueueItem): string {
-  return `${item.manga_title}||${item.output_dir}`;
-}
-
-type MangaGroup = {
-  key: string;
-  manga_title: string;
-  output_dir: string;
-  items: QueueItem[];
-};
-
-function groupQueueItems(items: QueueItem[]): MangaGroup[] {
-  const map = new Map<string, MangaGroup>();
-  for (const item of items) {
-    const key = groupKey(item);
-    let g = map.get(key);
-    if (!g) {
-      g = {
-        key,
-        manga_title: item.manga_title,
-        output_dir: item.output_dir,
-        items: [],
-      };
-      map.set(key, g);
+function dlStatusMeta(status: string) {
+  return (
+    DL_ST[status] || {
+      id: status,
+      label: status,
+      color: "var(--muted)",
+      bg: "transparent",
+      bar: "var(--muted)",
     }
-    g.items.push(item);
+  );
+}
+
+function dlSiteName(item: QueueItem): string {
+  const mod = modulesCache.find((m) => m.id === item.module_id);
+  if (mod?.name) return mod.name;
+  try {
+    return new URL(item.root_url).hostname.replace(/^www\./, "") || item.module_id;
+  } catch {
+    return item.module_id || "—";
   }
-  return [...map.values()];
 }
 
-function groupStatus(items: QueueItem[]): string {
-  if (items.some((i) => i.status === "running")) return "Downloading";
-  if (items.some((i) => i.status === "pending")) return "Waiting…";
-  if (items.every((i) => i.status === "done")) return "Completed";
-  if (items.some((i) => i.status === "failed")) return "Failed";
-  if (items.every((i) => i.status === "cancelled")) return "Stopped";
-  return "Mixed";
+function dlItemAgeHours(item: QueueItem): number {
+  const t = Date.parse(item.created_at || item.updated_at);
+  if (!Number.isFinite(t)) return 0;
+  return Math.max(0, (Date.now() - t) / 3600000);
 }
 
-function groupProgressClass(status: string): string {
-  if (status === "Downloading") return "dl-bar running";
-  if (status === "Completed") return "dl-bar done";
-  if (status === "Failed") return "dl-bar failed";
-  if (status === "Stopped") return "dl-bar stopped";
-  return "dl-bar waiting";
+function dlBucketId(item: QueueItem): string {
+  const h = dlItemAgeHours(item);
+  return (DL_HIST.find((b) => h < b.maxH) || DL_HIST[DL_HIST.length - 1]).id;
+}
+
+function dlFmtAdded(item: QueueItem): string {
+  const h = dlItemAgeHours(item);
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
+  if (h < 24) return `${Math.round(h)} h`;
+  if (h < 24 * 30) return `${Math.round(h / 24)} d`;
+  if (h < 24 * 365) return `${Math.round(h / 730)} mes`;
+  return `${(h / 8760).toFixed(1)} a`;
+}
+
+function dlItemPct(item: QueueItem): { pct: number; pages: string; label: string } {
+  const live = liveProgress.get(item.id);
+  if (item.status === "done") return { pct: 100, pages: "", label: "100%" };
+  if (item.status === "pending" || item.status === "cancelled") {
+    return { pct: 0, pages: "", label: "—" };
+  }
+  if (live && live.page_total > 0) {
+    const pct = Math.min(100, Math.round((live.page_current / live.page_total) * 100));
+    return {
+      pct,
+      pages: `${live.page_current}/${live.page_total} pág`,
+      label: `${pct}%`,
+    };
+  }
+  if (item.status === "running") return { pct: 8, pages: "", label: "…" };
+  if (item.status === "failed") return { pct: 0, pages: "", label: "—" };
+  return { pct: 0, pages: "", label: "—" };
+}
+
+function syncDlOrder(items: QueueItem[]) {
+  const ids = new Set(items.map((i) => i.id));
+  dlUi.order = dlUi.order.filter((id) => ids.has(id));
+  for (const it of items) {
+    if (!dlUi.order.includes(it.id)) dlUi.order.push(it.id);
+  }
+  for (const id of Object.keys(dlUi.sel)) {
+    if (!ids.has(Number(id))) delete dlUi.sel[Number(id)];
+  }
+}
+
+function orderedQueueItems(items: QueueItem[]): QueueItem[] {
+  const map = new Map(items.map((i) => [i.id, i]));
+  const out: QueueItem[] = [];
+  for (const id of dlUi.order) {
+    const it = map.get(id);
+    if (it) out.push(it);
+  }
+  for (const it of items) {
+    if (!out.includes(it)) out.push(it);
+  }
+  return out;
+}
+
+function filteredQueueItems(items: QueueItem[]): QueueItem[] {
+  const q = dlUi.query.trim().toLowerCase();
+  const cat = dlUi.cat;
+  let list = orderedQueueItems(items).filter((it) => {
+    const site = dlSiteName(it);
+    if (
+      q &&
+      !(it.manga_title + " " + it.chapter_name + " " + site).toLowerCase().includes(q)
+    ) {
+      return false;
+    }
+    if (cat === "all") return true;
+    if (cat === "hist") return it.status === "done";
+    if (DL_HIST.some((b) => b.id === cat)) return dlBucketId(it) === cat;
+    const meta = dlStatusMeta(it.status);
+    return meta.id === cat;
+  });
+
+  const key = dlUi.sortKey;
+  if (key !== "queue") {
+    const dir = dlUi.sortDir;
+    const val = (it: QueueItem) => {
+      if (key === "title") return it.manga_title.toLowerCase();
+      if (key === "status") return dlStatusMeta(it.status).label;
+      if (key === "pct") return dlItemPct(it).pct;
+      if (key === "speed") return it.status === "running" ? 1 : 0;
+      if (key === "site") return dlSiteName(it).toLowerCase();
+      if (key === "path") return it.output_dir.toLowerCase();
+      return Date.parse(it.created_at) || 0;
+    };
+    list = [...list].sort((a, b) => {
+      const va = val(a);
+      const vb = val(b);
+      if (va > vb) return dir;
+      if (va < vb) return -dir;
+      return 0;
+    });
+  }
+  return list;
+}
+
+function renderDlTree(items: QueueItem[]) {
+  const tree = document.querySelector<HTMLElement>("#dl-tree");
+  if (!tree) return;
+  const count = (f: (i: QueueItem) => boolean) => items.filter(f).length;
+  const statusNodes = [
+    { id: "done", label: "Completado", color: "var(--ok)" },
+    { id: "active", label: "En progreso", color: "var(--accent)" },
+    { id: "queued", label: "En cola", color: "var(--muted)" },
+    { id: "paused", label: "Detenido", color: "var(--warn)" },
+    { id: "failed", label: "Falló", color: "var(--bad)" },
+  ];
+  const parts: string[] = [];
+  const push = (
+    id: string,
+    label: string,
+    n: number,
+    opts: { group?: boolean; color?: string; icon?: string },
+  ) => {
+    const on = dlUi.cat === id;
+    const pad = opts.group ? "14px" : "34px";
+    parts.push(`
+      <button type="button" class="dl-trow${on ? " on" : ""}" data-dl-cat="${escapeHtml(id)}" style="padding-left:${pad}">
+        ${
+          opts.group
+            ? `<span class="ico ico-sm" style="--ico:${opts.icon || ICO.download};color:var(--muted)"></span>`
+            : `<span class="dl-dot" style="background:${opts.color || "var(--muted)"}"></span>`
+        }
+        <span class="ell" style="font-size:12.5px;font-weight:${on ? 600 : opts.group ? 600 : 500};color:${on ? "var(--text)" : opts.group ? "var(--text)" : "var(--muted)"}">${escapeHtml(label)}</span>
+        <div class="dl-toolbar-spacer"></div>
+        <span class="mono" style="font-size:11px;color:var(--muted)">${n}</span>
+      </button>
+    `);
+  };
+  push("all", "Todas las descargas", items.length, { group: true, icon: ICO.download });
+  for (const s of statusNodes) {
+    push(s.id, s.label, count((i) => dlStatusMeta(i.status).id === s.id), {
+      color: s.color,
+    });
+  }
+  push("hist", "Historial", count((i) => i.status === "done"), {
+    group: true,
+    icon: ICO.clock,
+  });
+  for (const b of DL_HIST) {
+    push(b.id, b.label, count((i) => dlBucketId(i) === b.id), {});
+  }
+  tree.innerHTML = parts.join("");
+}
+
+function syncDlToolbar(listLen: number, totalLen: number) {
+  const selIds = Object.keys(dlUi.sel)
+    .filter((k) => dlUi.sel[Number(k)])
+    .map(Number);
+  const hasSel = selIds.length > 0;
+  const selLabel = document.querySelector<HTMLElement>("#dl-sel-label");
+  if (selLabel) {
+    selLabel.textContent = hasSel
+      ? `${selIds.length} seleccionadas`
+      : `${listLen} de ${totalLen} tareas`;
+  }
+  for (const id of [
+    "dl-move-top",
+    "dl-move-up",
+    "dl-move-down",
+    "dl-move-bottom",
+    "dl-sel-resume",
+    "dl-sel-pause",
+    "dl-sel-delete",
+  ]) {
+    const el = document.querySelector<HTMLButtonElement>(`#${id}`);
+    if (!el) continue;
+    el.disabled = !hasSel;
+    el.classList.toggle("off", !hasSel);
+  }
+  const clearBtn = document.querySelector<HTMLButtonElement>("#dl-q-clear");
+  if (clearBtn) clearBtn.hidden = !dlUi.query.trim();
+}
+
+function syncDlSortHeaders() {
+  for (const btn of document.querySelectorAll<HTMLButtonElement>(".dl-hc[data-sort]")) {
+    const key = btn.dataset.sort || "";
+    const on = key === dlUi.sortKey;
+    btn.classList.toggle("on", on);
+    const ico = btn.querySelector<HTMLElement>(".dl-sort-ico");
+    if (!ico) continue;
+    ico.style.opacity = on ? "1" : "0";
+    ico.style.transform = on && dlUi.sortDir < 0 ? "rotate(180deg)" : "none";
+  }
 }
 
 function renderQueueTable(items: QueueItem[]) {
   lastQueueItems = items;
-  const pending = items.filter((i) => i.status === "pending" || i.status === "running").length;
-  queueStatusEl.textContent = `${pending} activos · ${items.length} caps`;
-  queueListEl.innerHTML = "";
+  syncDlOrder(items);
+  renderDlTree(items);
 
-  if (!items.length) {
-    queueTableEl.hidden = true;
+  const list = filteredQueueItems(items);
+  const activeN = items.filter((i) => i.status === "running").length;
+  const queuedN = items.filter((i) => i.status === "pending").length;
+  const doneN = items.filter((i) => i.status === "done").length;
+
+  const speedEl = document.querySelector<HTMLElement>("#dl-total-speed");
+  if (speedEl) speedEl.textContent = activeN ? "…" : "0 KB/s";
+
+  const activeLabel = document.querySelector<HTMLElement>("#dl-active-label");
+  if (activeLabel) {
+    activeLabel.textContent =
+      activeN === 1 ? "1 descarga activa" : `${activeN} descargas activas`;
+  }
+  const queueLabel = document.querySelector<HTMLElement>("#dl-queue-label");
+  if (queueLabel) queueLabel.textContent = `${queuedN} en cola`;
+  const doneLabel = document.querySelector<HTMLElement>("#dl-done-label");
+  if (doneLabel) doneLabel.textContent = `${doneN} completadas`;
+
+  syncDlToolbar(list.length, items.length);
+  syncDlSortHeaders();
+
+  const allBtn = document.querySelector<HTMLButtonElement>("#dl-select-all");
+  if (allBtn) {
+    const allOn = list.length > 0 && list.every((it) => dlUi.sel[it.id]);
+    const someOn = list.some((it) => dlUi.sel[it.id]);
+    allBtn.classList.toggle("on", allOn);
+    allBtn.classList.toggle("some", someOn && !allOn);
+    allBtn.style.setProperty("--ico", allOn || someOn ? (allOn ? ICO.check : ICO.dash) : ICO.check);
+  }
+
+  if (!list.length) {
+    queueRowsEl.innerHTML = "";
     queueEmptyEl.hidden = false;
+    const title = document.querySelector("#dl-empty-title");
+    const desc = document.querySelector("#dl-empty-desc");
+    if (title) {
+      title.textContent = dlUi.query.trim() ? "Sin coincidencias" : "Nada por aquí";
+    }
+    if (desc) {
+      desc.textContent = dlUi.query.trim()
+        ? `Ninguna tarea coincide con “${dlUi.query.trim()}”.`
+        : "Esta vista no tiene descargas en este momento.";
+    }
     return;
   }
-  queueTableEl.hidden = false;
   queueEmptyEl.hidden = true;
 
-  const groups = groupQueueItems(items);
-  for (const g of groups) {
-    const done = g.items.filter((i) => i.status === "done").length;
-    const total = g.items.length;
-    const status = groupStatus(g.items);
-    const running = g.items.find((i) => i.status === "running");
-    const live = running ? liveProgress.get(running.id) : undefined;
-
-    let pct = total ? Math.round((done / total) * 100) : 0;
-    let progressLabel = `${done}/${total}`;
-    if (live && live.page_total > 0) {
-      const chapterFrac = done / total;
-      const pageFrac = live.page_current / live.page_total / total;
-      pct = Math.min(100, Math.round((chapterFrac + pageFrac) * 100));
-      progressLabel = `${done}/${total} · ${live.page_current}/${live.page_total}`;
-    } else if (status === "Completed") {
-      pct = 100;
-    }
-
-    const statusText = running
-      ? `[${done + 1}/${total}] ${live?.message || running.chapter_name}`
-      : status === "Waiting…"
-        ? `[${done}/${total}] Waiting…`
-        : `[${done}/${total}] ${status}`;
-
-    const expanded = expandedGroups.has(g.key);
-    const tr = document.createElement("tr");
-    tr.className = `dl-row ${status.toLowerCase()}`;
-    tr.innerHTML = `
-      <td class="col-exp"><button type="button" class="exp-btn" title="Desglose">${expanded ? "▾" : "▸"}</button></td>
-      <td class="col-manga" title="${escapeHtml(g.manga_title)}">${escapeHtml(g.manga_title)}</td>
-      <td class="col-status">${escapeHtml(statusText)}</td>
-      <td class="col-progress">
-        <div class="dl-progress ${groupProgressClass(status)}">
-          <div class="dl-progress-fill" style="width:${pct}%"></div>
-          <span class="dl-progress-text">${progressLabel}</span>
+  queueRowsEl.innerHTML = list
+    .map((it) => {
+      const st = dlStatusMeta(it.status);
+      const on = !!dlUi.sel[it.id];
+      const prog = dlItemPct(it);
+      const canPlay = it.status !== "running" && it.status !== "done";
+      const site = dlSiteName(it);
+      return `
+      <div class="dl-grid dl-row${on ? " sel" : ""}" data-dl-id="${it.id}" style="height:46px">
+        <button type="button" class="sites-cb${on ? " on" : ""}" data-dl-check="${it.id}" style="--ico:${ICO.check}" aria-label="Seleccionar">
+          <span class="sites-cb-mk"></span>
+        </button>
+        <div class="dl-cell-title">
+          <span class="ell dl-manga">${escapeHtml(it.manga_title)}</span>
+          <span class="ell dl-chapter">${escapeHtml(it.chapter_name || it.error || "")}</span>
         </div>
-      </td>
-      <td class="col-save" title="${escapeHtml(g.output_dir)}">${escapeHtml(g.output_dir)}</td>
-      <td class="col-actions"></td>
-    `;
+        <span class="dl-badge" style="color:${st.color};background:${st.bg}">${escapeHtml(st.label)}</span>
+        <div class="dl-prog">
+          <div class="dl-bar"><i style="width:${prog.pct}%;background:${st.bar}"></i></div>
+          <div class="dl-prog-meta">
+            <span class="mono">${escapeHtml(prog.label)}</span>
+            <span class="mono">${escapeHtml(prog.pages)}</span>
+          </div>
+        </div>
+        <span class="mono dl-ratio" style="color:${it.status === "running" ? "var(--text)" : "var(--muted)"}">${it.status === "running" ? "…" : "—"}</span>
+        <span class="ell dl-site">${escapeHtml(site)}</span>
+        <span class="ell mono dl-path" title="${escapeHtml(it.output_dir)}">${escapeHtml(it.output_dir)}</span>
+        <span class="mono dl-added">${escapeHtml(dlFmtAdded(it))}</span>
+        <div class="dl-act">
+          <button type="button" class="dl-ibtn dl-row-toggle" data-dl-toggle="${it.id}" title="${canPlay ? "Reanudar" : "Detener"}" style="border-color:transparent;width:24px;height:24px">
+            <span class="ico ico-sm" style="--ico:${canPlay ? ICO.play : ICO.pause}"></span>
+          </button>
+          <button type="button" class="dl-ibtn dl-row-remove" data-dl-remove="${it.id}" title="Quitar" style="border-color:transparent;width:24px;height:24px">
+            <span class="ico ico-sm" style="--ico:${ICO.trash}"></span>
+          </button>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
 
-    const expBtn = tr.querySelector<HTMLButtonElement>(".exp-btn")!;
-    expBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (expandedGroups.has(g.key)) expandedGroups.delete(g.key);
-      else expandedGroups.add(g.key);
-      renderQueueTable(lastQueueItems);
-    });
-
-    const actions = tr.querySelector(".col-actions")!;
-    const activeItems = g.items.filter((i) => i.status === "pending" || i.status === "running");
-    if (activeItems.length) {
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.className = "row-btn";
-      cancel.textContent = "Stop";
-      cancel.addEventListener("click", async () => {
-        for (const it of activeItems) {
-          await invoke("queue_cancel", { id: it.id });
-        }
-        await refreshQueue();
-      });
-      actions.appendChild(cancel);
-    }
-    const retryItems = g.items.filter((i) => i.status === "cancelled" || i.status === "failed");
-    if (retryItems.length) {
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.className = "row-btn";
-      retry.textContent = "Retry";
-      retry.addEventListener("click", async () => {
-        for (const it of retryItems) {
-          await invoke("queue_retry", { id: it.id });
-        }
-        await refreshQueue();
-      });
-      actions.appendChild(retry);
-    }
-    const finished = g.items.filter((i) => i.status !== "running");
-    if (finished.length === g.items.length) {
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "row-btn";
-      remove.textContent = "Del";
-      remove.addEventListener("click", async () => {
-        for (const it of g.items) {
-          await invoke("queue_remove", { id: it.id });
-        }
-        await refreshQueue();
-      });
-      actions.appendChild(remove);
-    }
-
-    queueListEl.appendChild(tr);
-
-    if (expanded) {
-      for (const item of g.items) {
-        const liveItem = liveProgress.get(item.id);
-        let subPct = 0;
-        let subLabel = item.status;
-        if (item.status === "done") {
-          subPct = 100;
-          subLabel = "Completed";
-        } else if (item.status === "running" && liveItem && liveItem.page_total > 0) {
-          subPct = Math.round((liveItem.page_current / liveItem.page_total) * 100);
-          subLabel = `${liveItem.page_current}/${liveItem.page_total}`;
-        } else if (item.status === "pending") {
-          subLabel = "Waiting…";
-        }
-
-        const sub = document.createElement("tr");
-        sub.className = "dl-row dl-sub";
-        sub.innerHTML = `
-          <td></td>
-          <td class="col-manga sub-title">${escapeHtml(item.chapter_name)}</td>
-          <td class="col-status"><span class="${statusBadge(item.status)}">${item.status}</span></td>
-          <td class="col-progress">
-            <div class="dl-progress ${groupProgressClass(
-              item.status === "running"
-                ? "Downloading"
-                : item.status === "done"
-                  ? "Completed"
-                  : item.status === "failed"
-                    ? "Failed"
-                    : "Waiting…",
-            )}">
-              <div class="dl-progress-fill" style="width:${subPct}%"></div>
-              <span class="dl-progress-text">${escapeHtml(subLabel)}</span>
-            </div>
-          </td>
-          <td class="col-save muted">${escapeHtml(item.error || "")}</td>
-          <td class="col-actions"></td>
-        `;
-        const subActions = sub.querySelector(".col-actions")!;
-        if (item.status === "pending" || item.status === "running") {
-          const c = document.createElement("button");
-          c.type = "button";
-          c.className = "row-btn";
-          c.textContent = "Stop";
-          c.addEventListener("click", async () => {
-            await invoke("queue_cancel", { id: item.id });
-            await refreshQueue();
-          });
-          subActions.appendChild(c);
-        } else {
-          if (item.status === "cancelled" || item.status === "failed") {
-            const retry = document.createElement("button");
-            retry.type = "button";
-            retry.className = "row-btn";
-            retry.textContent = "Retry";
-            retry.addEventListener("click", async () => {
-              await invoke("queue_retry", { id: item.id });
-              await refreshQueue();
-            });
-            subActions.appendChild(retry);
-          }
-          const r = document.createElement("button");
-          r.type = "button";
-          r.className = "row-btn";
-          r.textContent = "Del";
-          r.addEventListener("click", async () => {
-            await invoke("queue_remove", { id: item.id });
-            await refreshQueue();
-          });
-          subActions.appendChild(r);
-        }
-        queueListEl.appendChild(sub);
+function dlMoveSelected(dir: -1 | 1, edge: boolean) {
+  const ids = Object.keys(dlUi.sel)
+    .filter((k) => dlUi.sel[Number(k)])
+    .map(Number);
+  if (!ids.length) return;
+  const order = [...dlUi.order];
+  if (edge) {
+    const picked = order.filter((id) => ids.includes(id));
+    const rest = order.filter((id) => !ids.includes(id));
+    dlUi.order = dir < 0 ? picked.concat(rest) : rest.concat(picked);
+  } else {
+    const idxs = dir < 0 ? [...order.keys()] : [...order.keys()].reverse();
+    for (const i of idxs) {
+      const j = i + dir;
+      if (j < 0 || j >= order.length) continue;
+      if (ids.includes(order[i]) && !ids.includes(order[j])) {
+        const t = order[i];
+        order[i] = order[j];
+        order[j] = t;
       }
     }
+    dlUi.order = order;
   }
+  dlUi.sortKey = "queue";
+  renderQueueTable(lastQueueItems);
 }
 
 async function refreshQueue() {
@@ -2946,17 +3172,163 @@ async function refreshQueue() {
   }
 }
 
-document.querySelector("#queue-refresh")!.addEventListener("click", () => void refreshQueue());
-document.querySelector("#queue-clear")!.addEventListener("click", async () => {
-  const n = await invoke<number>("queue_clear_finished");
-  log(`Eliminados ${n} terminados`, "ok");
-  await refreshQueue();
-});
-document.querySelector("#queue-start")!.addEventListener("click", async () => {
-  await invoke("queue_start");
-  log("Cola reanudada", "ok");
-  await refreshQueue();
-});
+function initDownloadsUi() {
+  const root = document.querySelector<HTMLElement>("#view-downloads");
+  if (!root || root.dataset.bound === "1") return;
+  root.dataset.bound = "1";
+
+  document.querySelector("#dl-tree")?.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLElement>("[data-dl-cat]");
+    if (!btn?.dataset.dlCat) return;
+    dlUi.cat = btn.dataset.dlCat;
+    renderQueueTable(lastQueueItems);
+  });
+
+  const q = document.querySelector<HTMLInputElement>("#dl-q");
+  const qClear = document.querySelector<HTMLButtonElement>("#dl-q-clear");
+  q?.addEventListener("input", () => {
+    dlUi.query = q.value;
+    renderQueueTable(lastQueueItems);
+  });
+  qClear?.addEventListener("click", () => {
+    if (!q) return;
+    q.value = "";
+    dlUi.query = "";
+    q.focus();
+    renderQueueTable(lastQueueItems);
+  });
+
+  document.querySelector("#dl-select-all")?.addEventListener("click", () => {
+    const list = filteredQueueItems(lastQueueItems);
+    const allOn = list.length > 0 && list.every((it) => dlUi.sel[it.id]);
+    if (allOn) {
+      for (const it of list) delete dlUi.sel[it.id];
+    } else {
+      for (const it of list) dlUi.sel[it.id] = true;
+    }
+    renderQueueTable(lastQueueItems);
+  });
+
+  document.querySelector(".dl-head")?.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(".dl-hc[data-sort]");
+    if (!btn?.dataset.sort) return;
+    const key = btn.dataset.sort;
+    if (dlUi.sortKey === key) dlUi.sortDir = dlUi.sortDir === 1 ? -1 : 1;
+    else {
+      dlUi.sortKey = key;
+      dlUi.sortDir = key === "added" ? -1 : 1;
+    }
+    renderQueueTable(lastQueueItems);
+  });
+
+  queueRowsEl.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement;
+    const check = t.closest<HTMLElement>("[data-dl-check]");
+    if (check?.dataset.dlCheck) {
+      ev.stopPropagation();
+      const id = Number(check.dataset.dlCheck);
+      if (dlUi.sel[id]) delete dlUi.sel[id];
+      else dlUi.sel[id] = true;
+      renderQueueTable(lastQueueItems);
+      return;
+    }
+    const toggle = t.closest<HTMLElement>("[data-dl-toggle]");
+    if (toggle?.dataset.dlToggle) {
+      ev.stopPropagation();
+      const id = Number(toggle.dataset.dlToggle);
+      const it = lastQueueItems.find((x) => x.id === id);
+      if (!it) return;
+      void (async () => {
+        if (it.status === "running" || it.status === "pending") {
+          await invoke("queue_cancel", { id });
+        } else if (it.status === "cancelled" || it.status === "failed") {
+          await invoke("queue_retry", { id });
+          await invoke("queue_start");
+        }
+        await refreshQueue();
+      })();
+      return;
+    }
+    const remove = t.closest<HTMLElement>("[data-dl-remove]");
+    if (remove?.dataset.dlRemove) {
+      ev.stopPropagation();
+      const id = Number(remove.dataset.dlRemove);
+      void (async () => {
+        await invoke("queue_remove", { id });
+        await refreshQueue();
+      })();
+      return;
+    }
+    const row = t.closest<HTMLElement>("[data-dl-id]");
+    if (row?.dataset.dlId) {
+      const id = Number(row.dataset.dlId);
+      if (dlUi.sel[id]) delete dlUi.sel[id];
+      else dlUi.sel[id] = true;
+      renderQueueTable(lastQueueItems);
+    }
+  });
+
+  document.querySelector("#dl-move-top")?.addEventListener("click", () => dlMoveSelected(-1, true));
+  document.querySelector("#dl-move-up")?.addEventListener("click", () => dlMoveSelected(-1, false));
+  document.querySelector("#dl-move-down")?.addEventListener("click", () => dlMoveSelected(1, false));
+  document
+    .querySelector("#dl-move-bottom")
+    ?.addEventListener("click", () => dlMoveSelected(1, true));
+
+  document.querySelector("#dl-sel-resume")?.addEventListener("click", async () => {
+    const ids = Object.keys(dlUi.sel).map(Number);
+    for (const id of ids) {
+      const it = lastQueueItems.find((x) => x.id === id);
+      if (!it) continue;
+      if (it.status === "cancelled" || it.status === "failed") {
+        await invoke("queue_retry", { id });
+      }
+    }
+    await invoke("queue_start");
+    await refreshQueue();
+  });
+  document.querySelector("#dl-sel-pause")?.addEventListener("click", async () => {
+    const ids = Object.keys(dlUi.sel).map(Number);
+    for (const id of ids) {
+      const it = lastQueueItems.find((x) => x.id === id);
+      if (it && (it.status === "running" || it.status === "pending")) {
+        await invoke("queue_cancel", { id });
+      }
+    }
+    await refreshQueue();
+  });
+  document.querySelector("#dl-sel-delete")?.addEventListener("click", async () => {
+    const ids = Object.keys(dlUi.sel).map(Number);
+    for (const id of ids) await invoke("queue_remove", { id });
+    await refreshQueue();
+  });
+
+  document.querySelector("#dl-resume-all")?.addEventListener("click", async () => {
+    for (const it of lastQueueItems) {
+      if (it.status === "cancelled" || it.status === "failed") {
+        await invoke("queue_retry", { id: it.id });
+      }
+    }
+    await invoke("queue_start");
+    log("Cola reanudada", "ok");
+    await refreshQueue();
+  });
+  document.querySelector("#dl-stop-all")?.addEventListener("click", async () => {
+    for (const it of lastQueueItems) {
+      if (it.status === "running" || it.status === "pending") {
+        await invoke("queue_cancel", { id: it.id });
+      }
+    }
+    await refreshQueue();
+  });
+  document.querySelector("#dl-clear-done")?.addEventListener("click", async () => {
+    const n = await invoke<number>("queue_clear_finished");
+    log(`Eliminados ${n} terminados`, "ok");
+    await refreshQueue();
+  });
+}
+
+initDownloadsUi();
 
 async function refreshFavorites() {
   try {
