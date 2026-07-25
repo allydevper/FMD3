@@ -307,6 +307,9 @@ const ICO = {
   file: svgIco(
     '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/>',
   ),
+  image: svgIco(
+    '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+  ),
   filter: svgIco('<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>'),
   tag: svgIco(
     '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="black"/>',
@@ -1060,83 +1063,265 @@ app.innerHTML = `
                 <div class="opt-scroll">
                   <div class="st-wrap">
                     <section class="st-section">
-                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.folder}"></span><h2>Ubicación</h2></div>
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.folder}"></span><h2>Destino</h2></div>
                       <div class="st-card">
                         <div class="st-row st-row-stack">
-                          <div class="st-meta"><div class="st-label">Ruta de descarga</div><div class="st-desc">Carpeta por defecto para nuevos títulos</div></div>
-                          <div class="path-field">
+                          <div class="st-meta">
+                            <div class="st-label">Ruta de descarga por defecto</div>
+                            <div class="st-desc">Carpeta raíz donde se guardan los capítulos</div>
+                          </div>
+                          <div class="path-field path-field-exam">
                             <input id="set-output-dir" type="text" readonly placeholder="Sin carpeta de salida" autocomplete="off" />
-                            <button type="button" class="path-browse" id="set-output-browse" title="Examinar…">
+                            <button type="button" class="path-browse path-browse-label" id="set-output-browse" title="Examinar…">
                               <span class="ico ico-sm" style="--ico:${ICO.folder}"></span>
+                              Examinar
                             </button>
                           </div>
                         </div>
                       </div>
                     </section>
                     <section class="st-section">
-                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.download}"></span><h2>Empaquetado</h2></div>
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.file}"></span><h2>Formato de salida</h2></div>
                       <div class="st-card">
                         <div class="st-row">
-                          <div class="st-meta"><div class="st-label">Guardar capítulos como</div><div class="st-desc">Formato de archivo al terminar</div></div>
-                          <div class="st-select filter-select-wrap">
-                            <select id="set-pack">
-                              <option value="none">Ninguno</option>
-                              <option value="zip">ZIP</option>
-                              <option value="cbz">CBZ</option>
-                              <option value="pdf" disabled>PDF</option>
-                              <option value="epub" disabled>EPUB</option>
-                            </select>
+                          <div class="st-meta">
+                            <div class="st-label">Guardar capítulos como</div>
+                            <div class="st-desc">Contenedor del capítulo descargado</div>
+                          </div>
+                          <div class="st-seg" id="set-pack" role="radiogroup" aria-label="Guardar capítulos como">
+                            <button type="button" class="st-seg-opt on" data-pack="none" aria-pressed="true">Ninguno</button>
+                            <button type="button" class="st-seg-opt" data-pack="zip" aria-pressed="false">ZIP</button>
+                            <button type="button" class="st-seg-opt" data-pack="cbz" aria-pressed="false">CBZ</button>
+                            <button type="button" class="st-seg-opt" data-pack="pdf" aria-pressed="false">PDF</button>
+                            <button type="button" class="st-seg-opt" data-pack="epub" aria-pressed="false">EPUB</button>
                           </div>
                         </div>
+                        <div class="st-row" id="set-pdf-quality-row" hidden>
+                          <div class="st-meta">
+                            <div class="st-label">Calidad del PDF</div>
+                            <div class="st-desc">Menor calidad, archivos más ligeros</div>
+                          </div>
+                          <div class="st-num-wrap">
+                            <div class="st-stepper">
+                              <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
+                              <input id="set-pdf-quality" class="st-stepper-input opt-stub" type="number" value="100" min="5" max="100" />
+                              <span class="st-stepper-suffix">%</span>
+                              <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                    <section class="st-section">
+                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.image}"></span><h2>Conversión de imagen</h2></div>
+                      <div class="st-card">
                         <label class="st-row click">
-                          <div class="st-meta"><div class="st-label">Borrar carpeta tras empaquetar</div><div class="st-desc">Elimina la carpeta de páginas al crear el archivo</div></div>
-                          <span class="st-switch"><input id="set-pack-del" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                          <div class="st-meta">
+                            <div class="st-label">Guardar PNG como JPEG</div>
+                            <div class="st-desc">Reduce mucho el peso; pierde la transparencia</div>
+                          </div>
+                          <span class="st-switch">
+                            <input class="opt-stub" type="checkbox" id="set-png-as-jpeg" />
+                            <span class="sw" aria-hidden="true"><span class="knob"></span></span>
+                          </span>
                         </label>
                         <div class="st-row">
-                          <div class="st-meta"><div class="st-label">Convertir imágenes</div><div class="st-desc">Formato de salida de cada página</div></div>
+                          <div class="st-meta">
+                            <div class="st-label">Guardar WebP como</div>
+                            <div class="st-desc">Formato al convertir imágenes WebP</div>
+                          </div>
                           <div class="st-select filter-select-wrap">
-                            <select id="set-convert">
-                              <option value="keep">Mantener</option>
-                              <option value="jpg">JPG</option>
-                              <option value="png">PNG</option>
-                              <option value="webp">WebP</option>
+                            <select id="set-webp-as" class="opt-stub">
+                              <option value="0">WebP</option>
+                              <option value="1" selected>PNG</option>
+                              <option value="2">JPEG</option>
                             </select>
                           </div>
                         </div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Calidad PDF</div><div class="st-desc">Solo aplica si el empaquetado es PDF</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="100" min="5" max="100" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
+                        <div class="st-row">
+                          <div class="st-meta">
+                            <div class="st-label">Compresión PNG</div>
+                            <div class="st-desc">Más compresión, guardado más lento</div>
+                          </div>
+                          <div class="st-select filter-select-wrap">
+                            <select id="set-png-level" class="opt-stub">
+                              <option value="0">Ninguno</option>
+                              <option value="1" selected>El más rápido</option>
+                              <option value="2">Predeterminado</option>
+                              <option value="3">Máximo</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div class="st-row">
+                          <div class="st-meta">
+                            <div class="st-label">Calidad JPEG</div>
+                            <div class="st-desc">Aplica a las imágenes convertidas a JPEG</div>
+                          </div>
+                          <div class="st-num-wrap">
+                            <div class="st-stepper">
+                              <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
+                              <input id="set-jpeg-quality" class="st-stepper-input opt-stub" type="number" value="80" min="1" max="100" />
+                              <span class="st-stepper-suffix">%</span>
+                              <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </section>
                     <section class="st-section">
                       <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.file}"></span><h2>Renombrado</h2></div>
                       <div class="st-card">
                         <label class="st-row click">
-                          <div class="st-meta"><div class="st-label">Reemplazar unicode</div><div class="st-desc">Sustituye caracteres problemáticos en rutas</div></div>
-                          <div class="st-inline-end">
-                            <input class="st-field st-char opt-stub" type="text" maxlength="4" value="_" placeholder="_" />
-                            <span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                          <div class="st-meta">
+                            <div class="st-label">Carpeta por manga</div>
+                            <div class="st-desc">Crea una carpeta con el nombre del manga</div>
                           </div>
+                          <span class="st-switch">
+                            <input class="opt-stub" type="checkbox" id="set-manga-folder" checked />
+                            <span class="sw" aria-hidden="true"><span class="knob"></span></span>
+                          </span>
                         </label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Carpeta por nombre de manga</div><div class="st-desc">Genera carpeta automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <div class="st-row st-row-stack">
-                          <div class="st-meta"><div class="st-label">Patrón carpeta manga</div></div>
+                        <div class="st-row st-row-stack" id="set-pat-manga-row">
+                          <div class="st-meta">
+                            <div class="st-label">Patrón de la carpeta</div>
+                            <div class="st-desc">Plantilla del nombre de carpeta del manga</div>
+                          </div>
                           <input id="set-pat-manga" class="st-field st-mono" type="text" value="%MANGA%" autocomplete="off" spellcheck="false" />
+                          <div class="st-token-insert" data-target="set-pat-manga">
+                            <span class="st-token-insert-label">Insertar:</span>
+                            <button type="button" class="st-token-chip" data-token="%WEBSITE%">%WEBSITE%</button>
+                            <button type="button" class="st-token-chip" data-token="%MANGA%">%MANGA%</button>
+                            <button type="button" class="st-token-chip" data-token="%AUTHOR%">%AUTHOR%</button>
+                            <button type="button" class="st-token-chip" data-token="%ARTIST%">%ARTIST%</button>
+                          </div>
                         </div>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Quitar nombre del manga del capítulo</div><div class="st-desc">Evita duplicar el título en la carpeta</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Carpeta de capítulo</div><div class="st-desc">Genera subcarpeta por capítulo</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <div class="st-row st-row-stack">
-                          <div class="st-meta"><div class="st-label">Patrón carpeta capítulo</div></div>
+                        <label class="st-row click">
+                          <div class="st-meta">
+                            <div class="st-label">Carpeta por capítulo</div>
+                            <div class="st-desc">Cada capítulo en su propia subcarpeta</div>
+                          </div>
+                          <span class="st-switch">
+                            <input class="opt-stub" type="checkbox" id="set-chapter-folder" checked />
+                            <span class="sw" aria-hidden="true"><span class="knob"></span></span>
+                          </span>
+                        </label>
+                        <div class="st-row st-row-stack" id="set-pat-chapter-row">
+                          <div class="st-meta">
+                            <div class="st-label">Patrón del capítulo</div>
+                            <div class="st-desc">Plantilla del nombre de carpeta del capítulo</div>
+                          </div>
                           <input id="set-pat-chapter" class="st-field st-mono" type="text" value="%CHAPTER%" autocomplete="off" spellcheck="false" />
-                        </div>
-                        <div class="st-row">
-                          <div class="st-meta"><div class="st-label">Relleno de dígitos</div><div class="st-desc">Padding numérico en volumen/capítulo</div></div>
-                          <div class="st-inline-end">
-                            <label class="st-mini"><input class="opt-stub" type="checkbox" checked /> Vol <span class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="2" min="1" max="10" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></span></label>
-                            <label class="st-mini"><input class="opt-stub" type="checkbox" checked /> Cap <span class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="3" min="1" max="10" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></span></label>
+                          <div class="st-token-insert" data-target="set-pat-chapter">
+                            <span class="st-token-insert-label">Insertar:</span>
+                            <button type="button" class="st-token-chip" data-token="%WEBSITE%">%WEBSITE%</button>
+                            <button type="button" class="st-token-chip" data-token="%MANGA%">%MANGA%</button>
+                            <button type="button" class="st-token-chip" data-token="%CHAPTER%">%CHAPTER%</button>
+                            <button type="button" class="st-token-chip" data-token="%AUTHOR%">%AUTHOR%</button>
+                            <button type="button" class="st-token-chip" data-token="%ARTIST%">%ARTIST%</button>
+                            <button type="button" class="st-token-chip" data-token="%NUMBERING%">%NUMBERING%</button>
                           </div>
                         </div>
                         <div class="st-row st-row-stack">
-                          <div class="st-meta"><div class="st-label">Patrón de página</div></div>
+                          <div class="st-meta">
+                            <div class="st-label">Nombre del archivo</div>
+                            <div class="st-desc">Plantilla del archivo final</div>
+                          </div>
                           <input id="set-pat-page" class="st-field st-mono" type="text" value="%FILENAME%" autocomplete="off" spellcheck="false" />
+                          <div class="st-token-insert" data-target="set-pat-page">
+                            <span class="st-token-insert-label">Insertar:</span>
+                            <button type="button" class="st-token-chip" data-token="%WEBSITE%">%WEBSITE%</button>
+                            <button type="button" class="st-token-chip" data-token="%MANGA%">%MANGA%</button>
+                            <button type="button" class="st-token-chip" data-token="%CHAPTER%">%CHAPTER%</button>
+                            <button type="button" class="st-token-chip" data-token="%FILENAME%">%FILENAME%</button>
+                          </div>
+                        </div>
+                        <label class="st-row click">
+                          <div class="st-meta">
+                            <div class="st-label">Quitar el nombre del manga del capítulo</div>
+                            <div class="st-desc">Evita repetir el título en cada capítulo</div>
+                          </div>
+                          <span class="st-switch">
+                            <input class="opt-stub" type="checkbox" id="set-remove-manga-name" />
+                            <span class="sw" aria-hidden="true"><span class="knob"></span></span>
+                          </span>
+                        </label>
+                        <label class="st-row click">
+                          <div class="st-meta">
+                            <div class="st-label">Rellenar el volumen con ceros</div>
+                            <div class="st-desc">v2 se convierte en v02</div>
+                          </div>
+                          <span class="st-switch">
+                            <input class="opt-stub" type="checkbox" id="set-vol-pad" checked />
+                            <span class="sw" aria-hidden="true"><span class="knob"></span></span>
+                          </span>
+                        </label>
+                        <div class="st-nest" id="opt-vol-pad-fields">
+                          <div class="st-nest-inner">
+                            <div class="st-nest-row">
+                              <label for="set-vol-digits">Dígitos</label>
+                              <div class="st-stepper">
+                                <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
+                                <input id="set-vol-digits" class="st-stepper-input opt-stub" type="number" value="2" min="1" max="4" />
+                                <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <label class="st-row click">
+                          <div class="st-meta">
+                            <div class="st-label">Rellenar el capítulo con ceros</div>
+                            <div class="st-desc">3 se convierte en 003</div>
+                          </div>
+                          <span class="st-switch">
+                            <input class="opt-stub" type="checkbox" id="set-chap-pad" checked />
+                            <span class="sw" aria-hidden="true"><span class="knob"></span></span>
+                          </span>
+                        </label>
+                        <div class="st-nest" id="opt-chap-pad-fields">
+                          <div class="st-nest-inner">
+                            <div class="st-nest-row">
+                              <label for="set-chap-digits">Dígitos</label>
+                              <div class="st-stepper">
+                                <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
+                                <input id="set-chap-digits" class="st-stepper-input opt-stub" type="number" value="3" min="1" max="5" />
+                                <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <label class="st-row click">
+                          <div class="st-meta">
+                            <div class="st-label">Reemplazar caracteres no ASCII</div>
+                            <div class="st-desc">Evita nombres inválidos en algunos sistemas</div>
+                          </div>
+                          <span class="st-switch">
+                            <input class="opt-stub" type="checkbox" id="set-replace-ascii" />
+                            <span class="sw" aria-hidden="true"><span class="knob"></span></span>
+                          </span>
+                        </label>
+                        <div class="st-nest" id="opt-replace-ascii-fields" hidden>
+                          <div class="st-nest-inner">
+                            <div class="st-nest-row st-nest-row-compact">
+                              <label for="set-replace-ascii-char">Reemplazar por</label>
+                              <input
+                                id="set-replace-ascii-char"
+                                class="st-field st-char opt-stub"
+                                type="text"
+                                maxlength="4"
+                                value="_"
+                                placeholder="_"
+                                autocomplete="off"
+                                spellcheck="false"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        <div class="st-row st-row-stack">
+                          <div class="st-meta">
+                            <div class="st-label">Resultado</div>
+                            <div class="st-desc">Ejemplo con el capítulo 3 de un manga de tu lista</div>
+                          </div>
+                          <div class="st-preview" id="set-rename-preview" aria-live="polite"></div>
                         </div>
                       </div>
                     </section>
@@ -1159,8 +1344,38 @@ app.innerHTML = `
                       <div class="st-card">
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar al iniciar</div><div class="st-desc">Busca capítulos nuevos al arrancar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Abrir Favoritos al iniciar</div><div class="st-desc">Muestra esa vista al abrir la app</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar en intervalo</div><div class="st-desc">Revisa favoritos periódicamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Intervalo</div><div class="st-desc">Minutos entre comprobaciones</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input st-stepper-wide opt-stub" type="number" min="1" max="1440" value="60" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div><span class="st-unit">min</span></div></div>
+                        <label class="st-row click">
+                          <div class="st-meta">
+                            <div class="st-label">Comprobar en intervalo</div>
+                            <div class="st-desc">Revisa favoritos periódicamente</div>
+                          </div>
+                          <span class="st-switch">
+                            <input class="opt-stub" type="checkbox" id="set-fav-interval" checked />
+                            <span class="sw" aria-hidden="true"><span class="knob"></span></span>
+                          </span>
+                        </label>
+                        <div class="st-nest" id="opt-fav-interval-fields">
+                          <div class="st-nest-inner">
+                            <div class="st-nest-row">
+                              <label for="set-fav-interval-min">Intervalo</label>
+                              <div class="st-inline-end">
+                                <div class="st-stepper">
+                                  <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
+                                  <input
+                                    id="set-fav-interval-min"
+                                    class="st-stepper-input st-stepper-wide opt-stub"
+                                    type="number"
+                                    min="1"
+                                    max="1440"
+                                    value="60"
+                                  />
+                                  <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
+                                </div>
+                                <span class="st-unit">min</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Descargar tras comprobar</div><div class="st-desc">Encola capítulos nuevos automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Quitar mangas completados</div><div class="st-desc">Los elimina de Favoritos al terminar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                       </div>
@@ -3068,6 +3283,23 @@ function setOptionsDirty(dirty: boolean) {
   if (el) el.hidden = !dirty;
 }
 
+function getPackFormat(): string {
+  return (
+    document.querySelector<HTMLElement>("#set-pack .st-seg-opt.on")?.dataset.pack ?? "none"
+  );
+}
+
+function setPackFormat(value: string) {
+  const v = ["none", "zip", "cbz", "pdf", "epub"].includes(value) ? value : "none";
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("#set-pack .st-seg-opt")) {
+    const on = btn.dataset.pack === v;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  const pdfRow = document.querySelector<HTMLElement>("#set-pdf-quality-row");
+  if (pdfRow) pdfRow.hidden = v !== "pdf";
+}
+
 function syncOptReveal() {
   const ext = document.querySelector<HTMLInputElement>("#opt-external");
   const extFields = document.querySelector<HTMLElement>("#opt-external-fields");
@@ -3078,6 +3310,90 @@ function syncOptReveal() {
   const proxyOn = document.querySelector<HTMLInputElement>("#set-use-proxy");
   const proxyFields = document.querySelector<HTMLElement>("#opt-proxy-fields");
   if (proxyOn && proxyFields) proxyFields.hidden = !proxyOn.checked;
+  const asciiOn = document.querySelector<HTMLInputElement>("#set-replace-ascii");
+  const asciiFields = document.querySelector<HTMLElement>("#opt-replace-ascii-fields");
+  if (asciiOn && asciiFields) asciiFields.hidden = !asciiOn.checked;
+  const mangaFolder = document.querySelector<HTMLInputElement>("#set-manga-folder");
+  const mangaPat = document.querySelector<HTMLElement>("#set-pat-manga-row");
+  if (mangaFolder && mangaPat) mangaPat.hidden = !mangaFolder.checked;
+  const chapterFolder = document.querySelector<HTMLInputElement>("#set-chapter-folder");
+  const chapterPat = document.querySelector<HTMLElement>("#set-pat-chapter-row");
+  if (chapterFolder && chapterPat) chapterPat.hidden = !chapterFolder.checked;
+  const volPad = document.querySelector<HTMLInputElement>("#set-vol-pad");
+  const volFields = document.querySelector<HTMLElement>("#opt-vol-pad-fields");
+  if (volPad && volFields) volFields.hidden = !volPad.checked;
+  const chapPad = document.querySelector<HTMLInputElement>("#set-chap-pad");
+  const chapFields = document.querySelector<HTMLElement>("#opt-chap-pad-fields");
+  if (chapPad && chapFields) chapFields.hidden = !chapPad.checked;
+  const favInterval = document.querySelector<HTMLInputElement>("#set-fav-interval");
+  const favIntervalFields = document.querySelector<HTMLElement>("#opt-fav-interval-fields");
+  if (favInterval && favIntervalFields) favIntervalFields.hidden = !favInterval.checked;
+  updateRenamePreview();
+}
+
+const RENAME_SAMPLE: Record<string, string> = {
+  "%MANGA%": "One Piece",
+  "%WEBSITE%": "MangaDex",
+  "%AUTHOR%": "Eiichiro Oda",
+  "%ARTIST%": "Eiichiro Oda",
+  "%NUMBERING%": "003",
+  "%CHAPTER%": "Chapter 3",
+  "%FILENAME%": "003",
+};
+
+const PACK_EXT: Record<string, string> = {
+  none: "",
+  zip: ".zip",
+  cbz: ".cbz",
+  pdf: ".pdf",
+  epub: ".epub",
+};
+
+function resolveRenamePattern(pattern: string): string {
+  let out = pattern || "";
+  for (const [token, value] of Object.entries(RENAME_SAMPLE)) {
+    out = out.split(token).join(value);
+  }
+  return out;
+}
+
+function updateRenamePreview() {
+  const el = document.querySelector<HTMLElement>("#set-rename-preview");
+  if (!el) return;
+  const root =
+    document.querySelector<HTMLInputElement>("#set-output-dir")?.value.trim() ||
+    "C:\\Users\\WILMER\\Desktop\\manga";
+  const parts = [root.replace(/[\\/]+$/, "")];
+  const mangaOn = document.querySelector<HTMLInputElement>("#set-manga-folder")?.checked;
+  const chapterOn = document.querySelector<HTMLInputElement>("#set-chapter-folder")?.checked;
+  if (mangaOn) {
+    parts.push(
+      resolveRenamePattern(
+        document.querySelector<HTMLInputElement>("#set-pat-manga")?.value || "%MANGA%",
+      ) || "Manga",
+    );
+  }
+  if (chapterOn) {
+    parts.push(
+      resolveRenamePattern(
+        document.querySelector<HTMLInputElement>("#set-pat-chapter")?.value || "%CHAPTER%",
+      ) || "003",
+    );
+  }
+  const leaf =
+    resolveRenamePattern(
+      document.querySelector<HTMLInputElement>("#set-pat-page")?.value || "%FILENAME%",
+    ) || "003";
+  const pack =
+    document.querySelector<HTMLElement>("#set-pack .st-seg-opt.on")?.dataset.pack ?? "none";
+  let out = `${parts.join("\\")}\\${leaf}${PACK_EXT[pack] ?? ""}`;
+  const asciiOn = document.querySelector<HTMLInputElement>("#set-replace-ascii")?.checked;
+  if (asciiOn) {
+    const repl =
+      document.querySelector<HTMLInputElement>("#set-replace-ascii-char")?.value || "_";
+    out = out.replace(/[^\x00-\x7F]/g, repl);
+  }
+  el.textContent = out;
 }
 
 function parseProxyUrl(raw: string): {
@@ -3137,6 +3453,34 @@ document.querySelector(".options-cats")!.addEventListener("click", (ev) => {
 });
 
 document.querySelector("#view-options")!.addEventListener("click", (ev) => {
+  const tokenChip = (ev.target as HTMLElement).closest<HTMLButtonElement>(".st-token-chip");
+  if (tokenChip?.dataset.token) {
+    const wrap = tokenChip.closest<HTMLElement>(".st-token-insert");
+    const inputId = wrap?.dataset.target;
+    const input = inputId
+      ? document.querySelector<HTMLInputElement>(`#${CSS.escape(inputId)}`)
+      : null;
+    if (input) {
+      const token = tokenChip.dataset.token;
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? input.value.length;
+      input.value = input.value.slice(0, start) + token + input.value.slice(end);
+      const caret = start + token.length;
+      input.focus();
+      input.setSelectionRange(caret, caret);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      setOptionsDirty(true);
+      updateRenamePreview();
+    }
+    return;
+  }
+  const packBtn = (ev.target as HTMLElement).closest<HTMLButtonElement>("#set-pack .st-seg-opt");
+  if (packBtn?.dataset.pack) {
+    setPackFormat(packBtn.dataset.pack);
+    setOptionsDirty(true);
+    updateRenamePreview();
+    return;
+  }
   const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(".st-stepper-btn");
   if (!btn) return;
   ev.preventDefault();
@@ -3153,21 +3497,50 @@ document.querySelector("#view-options")!.addEventListener("click", (ev) => {
 
 document.querySelector("#view-options")!.addEventListener("change", (ev) => {
   const t = ev.target as HTMLElement;
-  if (t.id === "opt-external" || t.id === "opt-log" || t.id === "set-use-proxy") syncOptReveal();
+  if (
+    t.id === "opt-external" ||
+    t.id === "opt-log" ||
+    t.id === "set-use-proxy" ||
+    t.id === "set-replace-ascii" ||
+    t.id === "set-manga-folder" ||
+    t.id === "set-chapter-folder" ||
+    t.id === "set-vol-pad" ||
+    t.id === "set-chap-pad" ||
+    t.id === "set-fav-interval"
+  ) {
+    syncOptReveal();
+  }
   if (t instanceof HTMLInputElement && t.classList.contains("st-stepper-input")) {
     clampStepperInput(t);
   }
   setOptionsDirty(true);
+  if (
+    t.id === "set-pat-manga" ||
+    t.id === "set-pat-chapter" ||
+    t.id === "set-pat-page" ||
+    t.id === "set-replace-ascii-char" ||
+    t.id === "set-output-dir"
+  ) {
+    updateRenamePreview();
+  }
 });
-document.querySelector("#view-options")!.addEventListener("input", () => setOptionsDirty(true));
+document.querySelector("#view-options")!.addEventListener("input", (ev) => {
+  setOptionsDirty(true);
+  const t = ev.target as HTMLElement;
+  if (
+    t.id === "set-pat-manga" ||
+    t.id === "set-pat-chapter" ||
+    t.id === "set-pat-page" ||
+    t.id === "set-replace-ascii-char"
+  ) {
+    updateRenamePreview();
+  }
+});
 
 async function loadSettingsForm() {
   const get = (k: string) => invoke<string | null>("settings_get", { key: k });
   const ua = document.querySelector<HTMLInputElement>("#set-ua")!;
   const threads = document.querySelector<HTMLInputElement>("#set-threads")!;
-  const pack = document.querySelector<HTMLSelectElement>("#set-pack")!;
-  const packDel = document.querySelector<HTMLInputElement>("#set-pack-del")!;
-  const convert = document.querySelector<HTMLSelectElement>("#set-convert")!;
   const patM = document.querySelector<HTMLInputElement>("#set-pat-manga")!;
   const patC = document.querySelector<HTMLInputElement>("#set-pat-chapter")!;
   const patP = document.querySelector<HTMLInputElement>("#set-pat-page")!;
@@ -3184,11 +3557,8 @@ async function loadSettingsForm() {
   document.querySelector<HTMLInputElement>("#set-use-proxy")!.checked = Boolean(proxyRaw.trim());
   threads.value = (await get("download.max_threads")) ?? "1";
   const packVal = (await get("download.pack_format")) ?? "none";
-  pack.value = ["none", "zip", "cbz"].includes(packVal) ? packVal : "none";
-  packDel.checked = ["1", "true", "yes"].includes(
-    ((await get("download.pack_delete_folder")) ?? "").toLowerCase(),
-  );
-  convert.value = (await get("download.convert_to")) ?? "keep";
+  const packOk = ["none", "zip", "cbz", "pdf", "epub"].includes(packVal) ? packVal : "none";
+  setPackFormat(packOk);
   patM.value = (await get("download.manga_folder_pattern")) ?? "%MANGA%";
   patC.value = (await get("download.chapter_folder_pattern")) ?? "%CHAPTER%";
   patP.value = (await get("download.page_name_pattern")) ?? "%FILENAME%";
@@ -3206,6 +3576,7 @@ document.querySelector("#set-output-browse")!.addEventListener("click", async ()
   outDir.value = dir;
   outDir.placeholder = dir;
   setOptionsDirty(true);
+  updateRenamePreview();
 });
 
 document.querySelector("#set-cancel")!.addEventListener("click", () => {
@@ -3219,12 +3590,8 @@ document.querySelector("#set-save")!.addEventListener("click", async () => {
   const useProxy = document.querySelector<HTMLInputElement>("#set-use-proxy")!.checked;
   await set("http.proxy", useProxy ? composeProxyUrl() : "");
   await set("download.max_threads", document.querySelector<HTMLInputElement>("#set-threads")!.value);
-  await set("download.pack_format", document.querySelector<HTMLSelectElement>("#set-pack")!.value);
-  await set(
-    "download.pack_delete_folder",
-    document.querySelector<HTMLInputElement>("#set-pack-del")!.checked ? "true" : "false",
-  );
-  await set("download.convert_to", document.querySelector<HTMLSelectElement>("#set-convert")!.value);
+  const packSel = getPackFormat();
+  await set("download.pack_format", packSel);
   await set(
     "download.manga_folder_pattern",
     document.querySelector<HTMLInputElement>("#set-pat-manga")!.value,
