@@ -931,32 +931,118 @@ app.innerHTML = `
                     <section class="st-section">
                       <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.link}"></span><h2>Red</h2></div>
                       <div class="st-card">
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Timeout</div><div class="st-desc">Segundos de espera de conexión</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="1" max="300" value="30" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div><span class="st-unit">s</span></div></div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Reintentos de conexión</div><div class="st-desc">−1 = reintentar siempre</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="-1" max="5" value="0" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
-                        <div class="st-row st-row-stack">
-                          <div class="st-meta"><div class="st-label">User-Agent</div><div class="st-desc">Cabecera HTTP por defecto</div></div>
-                          <input id="set-ua" class="st-field st-mono" type="text" placeholder="(default)" autocomplete="off" spellcheck="false" />
+                        <div class="st-row">
+                          <div class="st-meta">
+                            <div class="st-label">Timeout</div>
+                            <div class="st-desc">Segundos de espera de conexión</div>
+                          </div>
+                          <div class="st-num-wrap">
+                            <div class="st-stepper">
+                              <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
+                              <input class="st-stepper-input opt-stub" type="number" min="1" max="300" value="30" />
+                              <span class="st-stepper-suffix">s</span>
+                              <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="st-row">
+                          <div class="st-meta">
+                            <div class="st-label">Reintentos de conexión</div>
+                            <div class="st-desc">−1 = reintentar siempre</div>
+                          </div>
+                          <div class="st-num-wrap">
+                            <div class="st-stepper">
+                              <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
+                              <input class="st-stepper-input opt-stub" type="number" min="-1" max="5" value="0" />
+                              <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="st-row">
+                          <div class="st-meta">
+                            <div class="st-label">User-Agent</div>
+                            <div class="st-desc">Cabecera HTTP enviada por defecto</div>
+                          </div>
+                          <input
+                            id="set-ua"
+                            class="st-field st-mono st-field-ua"
+                            type="text"
+                            placeholder="(por defecto)"
+                            autocomplete="off"
+                            spellcheck="false"
+                          />
                         </div>
                         <label class="st-row click">
-                          <div class="st-meta"><div class="st-label">Usar proxy</div><div class="st-desc">Enruta el tráfico HTTP por un proxy</div></div>
-                          <span class="st-switch"><input class="opt-stub" type="checkbox" id="set-use-proxy-stub" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span>
+                          <div class="st-meta">
+                            <div class="st-label">Usar proxy</div>
+                            <div class="st-desc">Enruta el tráfico HTTP por un proxy</div>
+                          </div>
+                          <span class="st-switch">
+                            <input class="opt-stub" type="checkbox" id="set-use-proxy" />
+                            <span class="sw" aria-hidden="true"><span class="knob"></span></span>
+                          </span>
                         </label>
-                        <div class="st-row st-row-stack" id="opt-proxy-fields">
-                          <div class="st-form-grid">
-                            <label>URL</label>
-                            <input id="set-proxy" class="st-field st-mono" type="text" placeholder="http://host:port" autocomplete="off" spellcheck="false" />
-                            <label>Tipo</label>
-                            <div class="st-select st-select-full filter-select-wrap">
-                              <select class="opt-stub"><option>HTTP</option><option>SOCKS4</option><option>SOCKS5</option></select>
+                        <div class="st-nest" id="opt-proxy-fields" hidden>
+                          <div class="st-nest-inner">
+                            <div class="st-nest-row">
+                              <label for="set-proxy-type">Tipo</label>
+                              <div class="st-select st-select-full filter-select-wrap">
+                                <select id="set-proxy-type" class="opt-stub">
+                                  <option value="http">HTTP</option>
+                                  <option value="socks4">SOCKS4</option>
+                                  <option value="socks5">SOCKS5</option>
+                                </select>
+                              </div>
                             </div>
-                            <label>Host</label>
-                            <input class="st-field opt-stub" type="text" placeholder="Host/IP" />
-                            <label>Puerto</label>
-                            <div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input st-stepper-wide opt-stub" type="number" min="1" max="65535" value="8080" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div>
-                            <label>Usuario</label>
-                            <input class="st-field opt-stub" type="text" />
-                            <label>Contraseña</label>
-                            <input class="st-field opt-stub" type="password" />
+                            <div class="st-nest-row">
+                              <label for="set-proxy-host">Host</label>
+                              <input
+                                id="set-proxy-host"
+                                class="st-field st-mono"
+                                type="text"
+                                placeholder="host o IP"
+                                autocomplete="off"
+                                spellcheck="false"
+                              />
+                            </div>
+                            <div class="st-nest-row">
+                              <label for="set-proxy-port">Puerto</label>
+                              <div>
+                                <div class="st-stepper">
+                                  <button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button>
+                                  <input
+                                    id="set-proxy-port"
+                                    class="st-stepper-input st-stepper-wide"
+                                    type="number"
+                                    min="1"
+                                    max="65535"
+                                    value="8080"
+                                  />
+                                  <button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button>
+                                </div>
+                              </div>
+                            </div>
+                            <div class="st-nest-row">
+                              <label for="set-proxy-user">Usuario</label>
+                              <input
+                                id="set-proxy-user"
+                                class="st-field st-mono opt-stub"
+                                type="text"
+                                placeholder="opcional"
+                                autocomplete="off"
+                                spellcheck="false"
+                              />
+                            </div>
+                            <div class="st-nest-row">
+                              <label for="set-proxy-pass">Contraseña</label>
+                              <input
+                                id="set-proxy-pass"
+                                class="st-field st-mono opt-stub"
+                                type="password"
+                                placeholder="opcional"
+                                autocomplete="off"
+                              />
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -2984,6 +3070,50 @@ function syncOptReveal() {
   const logEl = document.querySelector<HTMLInputElement>("#opt-log");
   const logExtra = document.querySelector<HTMLElement>("#opt-log-extra");
   if (logEl && logExtra) logExtra.hidden = !logEl.checked;
+  const proxyOn = document.querySelector<HTMLInputElement>("#set-use-proxy");
+  const proxyFields = document.querySelector<HTMLElement>("#opt-proxy-fields");
+  if (proxyOn && proxyFields) proxyFields.hidden = !proxyOn.checked;
+}
+
+function parseProxyUrl(raw: string): {
+  type: string;
+  host: string;
+  port: string;
+  user: string;
+  pass: string;
+} {
+  const empty = { type: "http", host: "", port: "8080", user: "", pass: "" };
+  const s = raw.trim();
+  if (!s) return empty;
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`;
+    const u = new URL(withScheme);
+    const proto = (u.protocol.replace(":", "") || "http").toLowerCase();
+    const type = proto === "socks4" || proto === "socks5" ? proto : "http";
+    return {
+      type,
+      host: u.hostname || "",
+      port: u.port || (type === "http" ? "8080" : "1080"),
+      user: decodeURIComponent(u.username || ""),
+      pass: decodeURIComponent(u.password || ""),
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function composeProxyUrl(): string {
+  const host = document.querySelector<HTMLInputElement>("#set-proxy-host")!.value.trim();
+  if (!host) return "";
+  const type = document.querySelector<HTMLSelectElement>("#set-proxy-type")!.value || "http";
+  const port = document.querySelector<HTMLInputElement>("#set-proxy-port")!.value.trim() || "8080";
+  const user = document.querySelector<HTMLInputElement>("#set-proxy-user")!.value.trim();
+  const pass = document.querySelector<HTMLInputElement>("#set-proxy-pass")!.value;
+  const auth =
+    user || pass
+      ? `${encodeURIComponent(user)}${pass ? `:${encodeURIComponent(pass)}` : ""}@`
+      : "";
+  return `${type}://${auth}${host}:${port}`;
 }
 
 function clampStepperInput(input: HTMLInputElement) {
@@ -3018,7 +3148,7 @@ document.querySelector("#view-options")!.addEventListener("click", (ev) => {
 
 document.querySelector("#view-options")!.addEventListener("change", (ev) => {
   const t = ev.target as HTMLElement;
-  if (t.id === "opt-external" || t.id === "opt-log") syncOptReveal();
+  if (t.id === "opt-external" || t.id === "opt-log" || t.id === "set-use-proxy") syncOptReveal();
   if (t instanceof HTMLInputElement && t.classList.contains("st-stepper-input")) {
     clampStepperInput(t);
   }
@@ -3029,7 +3159,6 @@ document.querySelector("#view-options")!.addEventListener("input", () => setOpti
 async function loadSettingsForm() {
   const get = (k: string) => invoke<string | null>("settings_get", { key: k });
   const ua = document.querySelector<HTMLInputElement>("#set-ua")!;
-  const proxy = document.querySelector<HTMLInputElement>("#set-proxy")!;
   const threads = document.querySelector<HTMLInputElement>("#set-threads")!;
   const pack = document.querySelector<HTMLSelectElement>("#set-pack")!;
   const packDel = document.querySelector<HTMLInputElement>("#set-pack-del")!;
@@ -3039,7 +3168,14 @@ async function loadSettingsForm() {
   const patP = document.querySelector<HTMLInputElement>("#set-pat-page")!;
   const outDir = document.querySelector<HTMLInputElement>("#set-output-dir")!;
   ua.value = (await get("http.user_agent")) ?? "";
-  proxy.value = (await get("http.proxy")) ?? "";
+  const proxyRaw = (await get("http.proxy")) ?? "";
+  const parsed = parseProxyUrl(proxyRaw);
+  document.querySelector<HTMLSelectElement>("#set-proxy-type")!.value = parsed.type;
+  document.querySelector<HTMLInputElement>("#set-proxy-host")!.value = parsed.host;
+  document.querySelector<HTMLInputElement>("#set-proxy-port")!.value = parsed.port;
+  document.querySelector<HTMLInputElement>("#set-proxy-user")!.value = parsed.user;
+  document.querySelector<HTMLInputElement>("#set-proxy-pass")!.value = parsed.pass;
+  document.querySelector<HTMLInputElement>("#set-use-proxy")!.checked = Boolean(proxyRaw.trim());
   threads.value = (await get("download.max_threads")) ?? "1";
   const packVal = (await get("download.pack_format")) ?? "none";
   pack.value = ["none", "zip", "cbz"].includes(packVal) ? packVal : "none";
@@ -3073,7 +3209,8 @@ document.querySelector("#set-cancel")!.addEventListener("click", () => {
 document.querySelector("#set-save")!.addEventListener("click", async () => {
   const set = (key: string, value: string) => invoke("settings_set", { key, value });
   await set("http.user_agent", document.querySelector<HTMLInputElement>("#set-ua")!.value);
-  await set("http.proxy", document.querySelector<HTMLInputElement>("#set-proxy")!.value);
+  const useProxy = document.querySelector<HTMLInputElement>("#set-use-proxy")!.checked;
+  await set("http.proxy", useProxy ? composeProxyUrl() : "");
   await set("download.max_threads", document.querySelector<HTMLInputElement>("#set-threads")!.value);
   await set("download.pack_format", document.querySelector<HTMLSelectElement>("#set-pack")!.value);
   await set(
