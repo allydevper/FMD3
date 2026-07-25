@@ -13,6 +13,8 @@ pub struct ModuleMeta {
     pub root_url: String,
     pub category: String,
     pub file_path: String,
+    /// Unix seconds; file mtime for modules updater UI.
+    pub mtime: Option<i64>,
     pub on_get_info: String,
     pub on_get_page_number: String,
     pub on_get_image_url: String,
@@ -47,12 +49,18 @@ fn host_from_url(url: &str) -> Option<String> {
 }
 
 fn meta_from_state(state: &ModuleState, file_path: &PathBuf) -> ModuleMeta {
+    let mtime = std::fs::metadata(file_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
     ModuleMeta {
         id: state.id.clone(),
         name: state.name.clone(),
         root_url: state.root_url.clone(),
         category: state.category.clone(),
         file_path: file_path.to_string_lossy().to_string(),
+        mtime,
         on_get_info: state.on_get_info.clone(),
         on_get_page_number: state.on_get_page_number.clone(),
         on_get_image_url: state.on_get_image_url.clone(),

@@ -47,6 +47,8 @@ type ModuleMeta = {
   name: string;
   root_url: string;
   category: string;
+  file_path?: string;
+  mtime?: number | null;
 };
 
 type Favorite = {
@@ -261,6 +263,9 @@ const ICO = {
   ),
   x: svgIco('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
   check: svgIco('<path d="M20 6 9 17l-5-5"/>'),
+  plus: svgIco('<path d="M5 12h14"/><path d="M12 5v14"/>'),
+  minus: svgIco('<path d="M5 12h14"/>'),
+  dash: svgIco('<path d="M5 12h14"/>'),
   external: svgIco(
     '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   ),
@@ -748,7 +753,7 @@ app.innerHTML = `
                 <span class="ico ico-sm" style="--ico:${ICO.message}"></span><span>Diálogos</span>
               </button>
               <button type="button" class="options-cat" data-opt-tab="websites" role="tab" aria-selected="false">
-                <span class="ico ico-sm" style="--ico:${ICO.globe}"></span><span>Sitios</span>
+                <span class="ico ico-sm" style="--ico:${ICO.globe}"></span><span>Sitios Web</span>
               </button>
             </nav>
             <div class="options-body">
@@ -1400,21 +1405,95 @@ app.innerHTML = `
               </div>
 
               <div class="options-panel" id="opt-websites" data-opt-panel="websites" role="tabpanel" hidden>
-                <div class="opt-scroll">
-                  <div class="st-wrap">
-                    <section class="st-section">
-                      <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.globe}"></span><h2>Sitios</h2></div>
-                      <div class="st-card">
-                        <div class="st-row st-row-actions">
-                          <p class="st-desc" style="margin:0;flex:1">Selección de módulos (diseño). Proceden de <code>lua/modules</code>.</p>
-                          <button type="button" class="secondary opt-stub">Todo</button>
-                          <button type="button" class="secondary opt-stub">Ninguno</button>
-                        </div>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">LoliVault</div><div class="st-desc">Ejemplo FoOlSlide</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" checked /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">MangaDex</div><div class="st-desc">Ejemplo</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <label class="st-row click"><div class="st-meta"><div class="st-label">Otros módulos…</div><div class="st-desc">Placeholder</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                      </div>
-                    </section>
+                <div class="sites-tabs" role="tablist" aria-label="Sitios Web">
+                  <button type="button" class="sites-tab on" data-sites-tab="list" role="tab" aria-selected="true">Sitios Web</button>
+                  <button type="button" class="sites-tab" data-sites-tab="mods" role="tab" aria-selected="false">Módulos</button>
+                </div>
+                <div class="sites-pane" id="sites-pane-list" data-sites-pane="list">
+                  <div class="sites-toolbar">
+                    <div class="sites-search-wrap">
+                      <span class="ico ico-sm sites-search-ico" style="--ico:${ICO.search}"></span>
+                      <input
+                        id="sites-q"
+                        class="st-field"
+                        type="text"
+                        placeholder="Buscar sitio web..."
+                        autocomplete="off"
+                        spellcheck="false"
+                      />
+                      <button type="button" class="sites-clear" id="sites-clear" hidden title="Limpiar">
+                        <span class="ico ico-sm" style="--ico:${ICO.x}"></span>
+                      </button>
+                    </div>
+                    <div class="sites-toolbar-spacer"></div>
+                    <div class="sites-toolbar-actions">
+                      <button type="button" class="sites-tbtn" id="sites-all">
+                        <span class="ico ico-sm" style="--ico:${ICO.check}"></span>Seleccionar todo
+                      </button>
+                      <button type="button" class="sites-tbtn" id="sites-none">
+                        <span class="ico ico-sm" style="--ico:${ICO.x}"></span>Deseleccionar todo
+                      </button>
+                      <button type="button" class="sites-tbtn" id="sites-expand">
+                        <span class="ico ico-sm" style="--ico:${ICO.plus}"></span>Expandir todo
+                      </button>
+                      <button type="button" class="sites-tbtn" id="sites-collapse">
+                        <span class="ico ico-sm" style="--ico:${ICO.minus}"></span>Contraer todo
+                      </button>
+                    </div>
+                  </div>
+                  <div class="sites-tree" id="sites-tree" role="tree"></div>
+                  <div class="sites-footer">
+                    <span class="ico ico-sm" style="--ico:${ICO.globe}"></span>
+                    <span id="sites-active-label">0 de 0 sitios activos</span>
+                    <div class="sites-footer-spacer"></div>
+                    <button type="button" class="lnk" id="sites-only-active">Mostrar solo activos</button>
+                  </div>
+                </div>
+                <div class="sites-pane" id="sites-pane-mods" data-sites-pane="mods" hidden>
+                  <div class="mods-toolbar">
+                    <button type="button" class="mods-btn-p" id="mods-check">
+                      <span class="ico ico-sm" id="mods-check-ico" style="--ico:${ICO.refresh}"></span>
+                      <span id="mods-check-label">Revisar actualización</span>
+                    </button>
+                    <div class="mods-checks">
+                      <button type="button" class="mods-chk" id="mods-warn" aria-pressed="true">
+                        <span class="sites-cb on" style="--ico:${ICO.check}"><span class="sites-cb-mk"></span></span>
+                        Mostrar advertencia de actualización
+                      </button>
+                      <button type="button" class="mods-chk" id="mods-autorestart" aria-pressed="false">
+                        <span class="sites-cb" style="--ico:${ICO.check}"><span class="sites-cb-mk"></span></span>
+                        Auto reinicio
+                      </button>
+                    </div>
+                    <div class="sites-toolbar-spacer"></div>
+                    <div class="sites-search-wrap mods-search-wrap">
+                      <span class="ico ico-sm sites-search-ico" style="--ico:${ICO.search}"></span>
+                      <input
+                        id="mods-q"
+                        class="st-field"
+                        type="text"
+                        placeholder="Buscar módulo..."
+                        autocomplete="off"
+                        spellcheck="false"
+                      />
+                      <button type="button" class="sites-clear" id="mods-clear" hidden title="Limpiar">
+                        <span class="ico ico-sm" style="--ico:${ICO.x}"></span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="mods-list-wrap">
+                    <div class="mods-head">
+                      <span>Nombre del archivo (modules/)</span>
+                      <span>Última modificación</span>
+                      <span>Último mensaje</span>
+                    </div>
+                    <div class="mods-list" id="mods-list"></div>
+                  </div>
+                  <div class="sites-footer">
+                    <span class="ico ico-sm" style="--ico:${ICO.terminal}"></span>
+                    <span id="mods-summary">0 módulos</span>
+                    <div class="sites-footer-spacer"></div>
+                    <button type="button" class="lnk" id="mods-only-updated">Mostrar solo actualizados</button>
                   </div>
                 </div>
               </div>
@@ -2143,6 +2222,8 @@ async function loadModules() {
       moduleSel.value = sorted[0].id;
     }
     updateSourceLabel();
+    rebuildSitesFromModules();
+    rebuildModulesFromFiles();
     log(`Módulos cargados: ${mods.length}`, "ok");
   } catch (e) {
     log(`No se pudo listar módulos: ${e}`, "err");
@@ -3445,6 +3526,644 @@ function clampStepperInput(input: HTMLInputElement) {
   v = Math.min(max, Math.max(min, Math.trunc(v)));
   input.value = String(v);
 }
+
+type SiteMod = { id: string; name: string; domain: string };
+type SiteGroup = { id: string; label: string; sites: SiteMod[] };
+
+type SitesFlatRow =
+  | {
+      kind: "group";
+      key: string;
+      groupId: string;
+      label: string;
+      total: number;
+      onCount: number;
+      open: boolean;
+    }
+  | {
+      kind: "site";
+      key: string;
+      groupId: string;
+      id: string;
+      name: string;
+      domain: string;
+      on: boolean;
+    };
+
+const SITE_ROW_H = 31;
+const SITE_OVERSCAN = 10;
+
+const sitesState = {
+  tab: "list" as string,
+  query: "",
+  onlyActive: false,
+  /** module ids explicitly enabled (FMD2: MangaListSelect; vacío = todo desmarcado). */
+  siteOn: {} as Record<string, true>,
+  expanded: {} as Record<string, boolean>,
+  groups: [] as SiteGroup[],
+  flat: [] as SitesFlatRow[],
+  total: 0,
+  totalOn: 0,
+};
+
+function moduleDomain(rootUrl: string): string {
+  return rootUrl
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/+$/, "")
+    .replace(/^www\./i, "");
+}
+
+/** Agrupa módulos por `category` como FMD2 (`vtOptionMangaSiteSelection`). */
+function rebuildSitesFromModules() {
+  const byCat = new Map<string, SiteMod[]>();
+  for (const m of modulesCache) {
+    const label = (m.category || "").trim() || "Other";
+    let list = byCat.get(label);
+    if (!list) {
+      list = [];
+      byCat.set(label, list);
+    }
+    list.push({ id: m.id, name: m.name, domain: moduleDomain(m.root_url) });
+  }
+  const labels = [...byCat.keys()].sort((a, b) => a.localeCompare(b));
+  sitesState.groups = labels.map((label) => {
+    const sites = (byCat.get(label) || []).sort((a, b) => a.name.localeCompare(b.name));
+    return { id: label, label, sites };
+  });
+  // Drop stale on flags for removed modules
+  const alive = new Set(modulesCache.map((m) => m.id));
+  for (const id of Object.keys(sitesState.siteOn)) {
+    if (!alive.has(id)) delete sitesState.siteOn[id];
+  }
+  renderSitesTree();
+}
+
+function siteIsOn(id: string): boolean {
+  return !!sitesState.siteOn[id];
+}
+
+function setSitesOn(ids: string[], on: boolean) {
+  for (const id of ids) {
+    if (on) sitesState.siteOn[id] = true;
+    else delete sitesState.siteOn[id];
+  }
+  setOptionsDirty(true);
+  renderSitesTree();
+}
+
+function allSiteIds(): string[] {
+  const out: string[] = [];
+  for (const g of sitesState.groups) for (const st of g.sites) out.push(st.id);
+  return out;
+}
+
+function switchSitesTab(tab: string) {
+  sitesState.tab = tab;
+  for (const btn of document.querySelectorAll<HTMLButtonElement>(".sites-tab")) {
+    const on = btn.dataset.sitesTab === tab;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  }
+  for (const pane of document.querySelectorAll<HTMLElement>("[data-sites-pane]")) {
+    pane.hidden = pane.dataset.sitesPane !== tab;
+  }
+}
+
+function syncSitesClear() {
+  const q = document.querySelector<HTMLInputElement>("#sites-q");
+  const btn = document.querySelector<HTMLButtonElement>("#sites-clear");
+  if (btn) btn.hidden = !(q?.value.trim());
+}
+
+function buildSitesFlat(): SitesFlatRow[] {
+  const sq = sitesState.query.trim().toLowerCase();
+  const flat: SitesFlatRow[] = [];
+  let total = 0;
+  let totalOn = 0;
+
+  for (const g of sitesState.groups) {
+    for (const st of g.sites) {
+      total++;
+      if (siteIsOn(st.id)) totalOn++;
+    }
+    const gMatch = g.label.toLowerCase().includes(sq);
+    let sites =
+      sq && !gMatch
+        ? g.sites.filter(
+            (st) =>
+              st.name.toLowerCase().includes(sq) ||
+              st.domain.toLowerCase().includes(sq) ||
+              st.id.toLowerCase().includes(sq),
+          )
+        : g.sites.slice();
+    if (sitesState.onlyActive) sites = sites.filter((st) => siteIsOn(st.id));
+    if (!sites.length) continue;
+
+    const onCount = g.sites.filter((st) => siteIsOn(st.id)).length;
+    const open = !!sitesState.expanded[g.id] || !!sq || sitesState.onlyActive;
+    flat.push({
+      kind: "group",
+      key: `g:${g.id}`,
+      groupId: g.id,
+      label: g.label,
+      total: g.sites.length,
+      onCount,
+      open,
+    });
+    if (!open) continue;
+    for (const st of sites) {
+      flat.push({
+        kind: "site",
+        key: `s:${st.id}`,
+        groupId: g.id,
+        id: st.id,
+        name: st.name,
+        domain: st.domain,
+        on: siteIsOn(st.id),
+      });
+    }
+  }
+
+  sitesState.total = total;
+  sitesState.totalOn = totalOn;
+  sitesState.flat = flat;
+  return flat;
+}
+
+function renderSitesTree() {
+  const tree = document.querySelector<HTMLElement>("#sites-tree");
+  const activeLabel = document.querySelector<HTMLElement>("#sites-active-label");
+  const onlyBtn = document.querySelector<HTMLButtonElement>("#sites-only-active");
+  if (!tree) return;
+
+  const flat = buildSitesFlat();
+  if (activeLabel) {
+    activeLabel.textContent = `${sitesState.totalOn} de ${sitesState.total} sitios activos`;
+  }
+  if (onlyBtn) {
+    onlyBtn.textContent = sitesState.onlyActive ? "Mostrar todos" : "Mostrar solo activos";
+  }
+  syncSitesClear();
+
+  if (!modulesCache.length) {
+    tree.onscroll = null;
+    tree.innerHTML = `
+      <div class="sites-tree-empty">
+        <div class="sites-empty-title">Sin módulos</div>
+        <div class="sites-empty-desc">Aún no se cargaron módulos de <code>lua/modules</code>.</div>
+      </div>
+    `;
+    return;
+  }
+
+  if (!flat.length) {
+    tree.onscroll = null;
+    tree.innerHTML = `
+      <div class="sites-tree-empty">
+        <div class="sites-empty-title">Sin coincidencias</div>
+        <div class="sites-empty-desc">Ningún sitio coincide con “${escapeHtml(sitesState.query)}”.</div>
+      </div>
+    `;
+    return;
+  }
+
+  let virtual = tree.querySelector<HTMLDivElement>(".sites-virtual");
+  if (!virtual) {
+    tree.innerHTML = "";
+    virtual = document.createElement("div");
+    virtual.className = "sites-virtual";
+    tree.appendChild(virtual);
+    tree.onscroll = () => paintVirtualSites();
+  }
+  virtual.style.height = `${flat.length * SITE_ROW_H}px`;
+  paintVirtualSites();
+}
+
+function paintVirtualSites() {
+  const tree = document.querySelector<HTMLElement>("#sites-tree");
+  const virtual = tree?.querySelector<HTMLDivElement>(".sites-virtual");
+  const flat = sitesState.flat;
+  if (!tree || !virtual || !flat.length) return;
+
+  const scrollTop = tree.scrollTop;
+  const viewH = tree.clientHeight || 400;
+  let start = Math.floor(scrollTop / SITE_ROW_H) - SITE_OVERSCAN;
+  let end = Math.ceil((scrollTop + viewH) / SITE_ROW_H) + SITE_OVERSCAN;
+  start = Math.max(0, start);
+  end = Math.min(flat.length, end);
+
+  const existing = new Map<string, HTMLElement>();
+  virtual.querySelectorAll<HTMLElement>(".sites-trow").forEach((el) => {
+    const key = el.dataset.rowKey;
+    if (key) existing.set(key, el);
+  });
+
+  const keep = new Set<string>();
+  for (let i = start; i < end; i++) {
+    const row = flat[i];
+    keep.add(row.key);
+    let el = existing.get(row.key);
+    if (!el) {
+      el = document.createElement("div");
+      el.dataset.rowKey = row.key;
+      virtual.appendChild(el);
+    }
+    el.style.top = `${i * SITE_ROW_H}px`;
+    if (row.kind === "group") {
+      const cbCls =
+        row.onCount === 0 ? "" : row.onCount === row.total ? "on" : "some";
+      const summary =
+        row.onCount === row.total
+          ? "Todos activos"
+          : row.onCount === 0
+            ? "Ninguno"
+            : `${row.onCount} de ${row.total} activos`;
+      el.className = "sites-trow sites-trow-group";
+      el.dataset.group = row.groupId;
+      el.style.background = "var(--card)";
+      el.innerHTML = `
+        <button type="button" class="sites-tw" data-sites-action="expand" data-group="${escapeHtml(row.groupId)}" aria-label="Expandir o contraer">
+          <span class="ico ico-sm" style="--ico:${ICO.chevron};transform:${row.open ? "rotate(0deg)" : "rotate(-90deg)"}"></span>
+        </button>
+        <button type="button" class="sites-cb ${cbCls}" data-sites-action="group-check" data-group="${escapeHtml(row.groupId)}" style="--ico:${cbCls === "some" ? ICO.dash : ICO.check}" aria-label="Activar grupo">
+          <span class="sites-cb-mk"></span>
+        </button>
+        <span class="sites-group-label">${escapeHtml(row.label)}</span>
+        <span class="sites-group-count">(${row.total})</span>
+        <div class="sites-row-spacer"></div>
+        <span class="sites-group-summary">${escapeHtml(summary)}</span>
+      `;
+    } else {
+      el.className = "sites-trow sites-trow-site";
+      el.dataset.siteKey = row.id;
+      el.dataset.sitesAction = "site-check";
+      el.style.background = "";
+      el.innerHTML = `
+        <button type="button" class="sites-cb ${row.on ? "on" : ""}" data-sites-action="site-check" data-site-key="${escapeHtml(row.id)}" style="--ico:${ICO.check}" aria-label="Activar sitio">
+          <span class="sites-cb-mk"></span>
+        </button>
+        <span class="sites-site-label" style="color:${row.on ? "var(--text)" : "var(--muted)"}">${escapeHtml(row.name)}</span>
+        <div class="sites-row-spacer"></div>
+        <span class="sites-site-domain">${escapeHtml(row.domain)}</span>
+      `;
+    }
+  }
+
+  for (const [key, el] of existing) {
+    if (!keep.has(key)) el.remove();
+  }
+}
+
+function initSitesPanel() {
+  const root = document.querySelector<HTMLElement>("#opt-websites");
+  if (!root || root.dataset.bound === "1") return;
+  root.dataset.bound = "1";
+
+  root.querySelector(".sites-tabs")?.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(".sites-tab");
+    if (!btn?.dataset.sitesTab) return;
+    switchSitesTab(btn.dataset.sitesTab);
+  });
+
+  const sitesQ = document.querySelector<HTMLInputElement>("#sites-q");
+  const sitesClear = document.querySelector<HTMLButtonElement>("#sites-clear");
+  sitesQ?.addEventListener("input", () => {
+    sitesState.query = sitesQ.value;
+    syncSitesClear();
+    renderSitesTree();
+  });
+  sitesClear?.addEventListener("click", () => {
+    if (!sitesQ) return;
+    sitesQ.value = "";
+    sitesState.query = "";
+    syncSitesClear();
+    sitesQ.focus();
+    renderSitesTree();
+  });
+
+  document.querySelector("#sites-all")?.addEventListener("click", () => {
+    setSitesOn(allSiteIds(), true);
+  });
+  document.querySelector("#sites-none")?.addEventListener("click", () => {
+    setSitesOn(allSiteIds(), false);
+  });
+  document.querySelector("#sites-expand")?.addEventListener("click", () => {
+    sitesState.expanded = Object.fromEntries(
+      sitesState.groups.map((g) => [g.id, true]),
+    );
+    renderSitesTree();
+  });
+  document.querySelector("#sites-collapse")?.addEventListener("click", () => {
+    sitesState.expanded = {};
+    sitesState.query = "";
+    sitesState.onlyActive = false;
+    if (sitesQ) sitesQ.value = "";
+    syncSitesClear();
+    renderSitesTree();
+  });
+  document.querySelector("#sites-only-active")?.addEventListener("click", () => {
+    sitesState.onlyActive = !sitesState.onlyActive;
+    renderSitesTree();
+  });
+
+  document.querySelector("#sites-tree")?.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement;
+    const actionEl = t.closest<HTMLElement>("[data-sites-action]");
+    const action = actionEl?.dataset.sitesAction;
+
+    if (action === "group-check") {
+      const gid = actionEl!.dataset.group;
+      const g = sitesState.groups.find((x) => x.id === gid);
+      if (!g) return;
+      const ids = g.sites.map((st) => st.id);
+      const onCount = g.sites.filter((st) => siteIsOn(st.id)).length;
+      setSitesOn(ids, onCount !== g.sites.length);
+      return;
+    }
+
+    if (action === "site-check") {
+      const id =
+        actionEl!.dataset.siteKey ||
+        actionEl!.closest<HTMLElement>("[data-site-key]")?.dataset.siteKey;
+      if (!id) return;
+      setSitesOn([id], !siteIsOn(id));
+      return;
+    }
+
+    if (action === "expand" || t.closest(".sites-trow-group")) {
+      const row = t.closest<HTMLElement>(".sites-trow-group");
+      const gid = actionEl?.dataset.group || row?.dataset.group;
+      if (!gid) return;
+      sitesState.expanded[gid] = !sitesState.expanded[gid];
+      renderSitesTree();
+    }
+  });
+
+  renderSitesTree();
+}
+
+/* ---- Módulos (Lua updater UI / OmniManga) ---- */
+
+type ModRow = {
+  key: string;
+  file: string;
+  mtime: number | null;
+  when: string;
+  dateTitle: string;
+  msg: string;
+  updated: boolean;
+};
+
+const MOD_ROW_H = 32;
+const MOD_OVERSCAN = 10;
+/** Highlight as "Nuevo" if mtime within this many days (local scan; GitHub updater pending). */
+const MOD_NEW_DAYS = 14;
+
+const modsState = {
+  query: "",
+  onlyUpdated: false,
+  warn: true,
+  autoRestart: false,
+  checking: false,
+  rows: [] as ModRow[],
+  flat: [] as ModRow[],
+};
+
+function moduleFileName(m: ModuleMeta): string {
+  const p = (m.file_path || "").replace(/\\/g, "/");
+  const base = p.split("/").pop() || "";
+  return base || `${m.id}.lua`;
+}
+
+function relDateFromUnix(sec: number | null | undefined): { when: string; title: string } {
+  if (sec == null || !Number.isFinite(sec)) return { when: "—", title: "" };
+  const d = new Date(sec * 1000);
+  const title = d.toLocaleString();
+  const days = Math.round((Date.now() - d.getTime()) / 86400000);
+  if (days <= 0) return { when: "hoy", title };
+  if (days === 1) return { when: "ayer", title };
+  if (days < 30) return { when: `hace ${days} días`, title };
+  if (days < 365) return { when: `hace ${Math.round(days / 30)} meses`, title };
+  return { when: `hace ${(days / 365).toFixed(1)} años`, title };
+}
+
+function rebuildModulesFromFiles() {
+  const byFile = new Map<string, ModRow>();
+  const newCut = Date.now() - MOD_NEW_DAYS * 86400000;
+  for (const m of modulesCache) {
+    const file = moduleFileName(m);
+    const mtime = m.mtime ?? null;
+    const prev = byFile.get(file);
+    if (prev && (prev.mtime ?? 0) >= (mtime ?? 0)) continue;
+    const { when, title } = relDateFromUnix(mtime);
+    byFile.set(file, {
+      key: file,
+      file,
+      mtime,
+      when,
+      dateTitle: title,
+      msg: "—",
+      updated: mtime != null && mtime * 1000 >= newCut,
+    });
+  }
+  modsState.rows = [...byFile.values()].sort((a, b) =>
+    a.file.localeCompare(b.file, undefined, { sensitivity: "base" }),
+  );
+  renderModulesList();
+}
+
+function syncModsClear() {
+  const q = document.querySelector<HTMLInputElement>("#mods-q");
+  const btn = document.querySelector<HTMLButtonElement>("#mods-clear");
+  if (btn) btn.hidden = !(q?.value.trim());
+}
+
+function syncModsChk(id: string, on: boolean) {
+  const el = document.querySelector<HTMLButtonElement>(`#${id}`);
+  if (!el) return;
+  el.setAttribute("aria-pressed", on ? "true" : "false");
+  const cb = el.querySelector(".sites-cb");
+  cb?.classList.toggle("on", on);
+}
+
+function buildModsFlat(): ModRow[] {
+  const mq = modsState.query.trim().toLowerCase();
+  let rows = modsState.rows;
+  if (mq) {
+    rows = rows.filter(
+      (r) => r.file.toLowerCase().includes(mq) || r.msg.toLowerCase().includes(mq),
+    );
+  }
+  if (modsState.onlyUpdated) rows = rows.filter((r) => r.updated);
+  modsState.flat = rows;
+  return rows;
+}
+
+function renderModulesList() {
+  const list = document.querySelector<HTMLElement>("#mods-list");
+  const summary = document.querySelector<HTMLElement>("#mods-summary");
+  const onlyBtn = document.querySelector<HTMLButtonElement>("#mods-only-updated");
+  if (!list) return;
+
+  const flat = buildModsFlat();
+  const updCount = modsState.rows.filter((r) => r.updated).length;
+  if (summary) {
+    summary.textContent = `${modsState.rows.length} módulos · ${updCount} actualizados recientemente`;
+  }
+  if (onlyBtn) {
+    onlyBtn.textContent = modsState.onlyUpdated
+      ? "Mostrar todos"
+      : "Mostrar solo actualizados";
+  }
+  syncModsClear();
+
+  if (!modsState.rows.length) {
+    list.onscroll = null;
+    list.innerHTML = `
+      <div class="sites-tree-empty">
+        <div class="sites-empty-title">Sin módulos</div>
+        <div class="sites-empty-desc">No hay archivos en <code>lua/modules</code>.</div>
+      </div>
+    `;
+    return;
+  }
+
+  if (!flat.length) {
+    list.onscroll = null;
+    list.innerHTML = `
+      <div class="sites-tree-empty">
+        <div class="sites-empty-title">Sin coincidencias</div>
+        <div class="sites-empty-desc">Ningún módulo coincide con la búsqueda.</div>
+      </div>
+    `;
+    return;
+  }
+
+  let virtual = list.querySelector<HTMLDivElement>(".mods-virtual");
+  if (!virtual) {
+    list.innerHTML = "";
+    virtual = document.createElement("div");
+    virtual.className = "mods-virtual";
+    list.appendChild(virtual);
+    list.onscroll = () => paintVirtualMods();
+  }
+  virtual.style.height = `${flat.length * MOD_ROW_H}px`;
+  paintVirtualMods();
+}
+
+function paintVirtualMods() {
+  const list = document.querySelector<HTMLElement>("#mods-list");
+  const virtual = list?.querySelector<HTMLDivElement>(".mods-virtual");
+  const flat = modsState.flat;
+  if (!list || !virtual || !flat.length) return;
+
+  const scrollTop = list.scrollTop;
+  const viewH = list.clientHeight || 400;
+  let start = Math.floor(scrollTop / MOD_ROW_H) - MOD_OVERSCAN;
+  let end = Math.ceil((scrollTop + viewH) / MOD_ROW_H) + MOD_OVERSCAN;
+  start = Math.max(0, start);
+  end = Math.min(flat.length, end);
+
+  const existing = new Map<string, HTMLElement>();
+  virtual.querySelectorAll<HTMLElement>(".mods-row").forEach((el) => {
+    const key = el.dataset.rowKey;
+    if (key) existing.set(key, el);
+  });
+
+  const keep = new Set<string>();
+  for (let i = start; i < end; i++) {
+    const row = flat[i];
+    keep.add(row.key);
+    let el = existing.get(row.key);
+    if (!el) {
+      el = document.createElement("div");
+      el.dataset.rowKey = row.key;
+      virtual.appendChild(el);
+    }
+    el.className = `mods-row${row.updated ? " updated" : ""}`;
+    el.style.top = `${i * MOD_ROW_H}px`;
+    el.innerHTML = `
+      <div class="mods-name">
+        <span class="ico ico-sm" style="--ico:${ICO.file};color:var(--muted)"></span>
+        <span class="ell mods-file">${escapeHtml(row.file)}</span>
+        ${row.updated ? '<span class="mods-new">Nuevo</span>' : ""}
+      </div>
+      <span class="mods-when" title="${escapeHtml(row.dateTitle)}">${escapeHtml(row.when)}</span>
+      <span class="ell mods-msg ${row.msg === "—" ? "muted" : ""}">${escapeHtml(row.msg)}</span>
+    `;
+  }
+  for (const [key, el] of existing) {
+    if (!keep.has(key)) el.remove();
+  }
+}
+
+async function runModulesCheck() {
+  if (modsState.checking) return;
+  modsState.checking = true;
+  const label = document.querySelector<HTMLElement>("#mods-check-label");
+  const ico = document.querySelector<HTMLElement>("#mods-check-ico");
+  if (label) label.textContent = "Revisando...";
+  if (ico) ico.style.transform = "rotate(180deg)";
+  try {
+    const n = await invoke<number>("modules_refresh_cmd");
+    await loadModules();
+    log(`Módulos reescaneados: ${n}`, "ok");
+  } catch (e) {
+    log(`No se pudo revisar módulos: ${e}`, "err");
+  } finally {
+    modsState.checking = false;
+    if (label) label.textContent = "Revisar actualización";
+    if (ico) ico.style.transform = "";
+  }
+}
+
+function initModulesPanel() {
+  const root = document.querySelector<HTMLElement>("#opt-websites");
+  if (!root || root.dataset.modsBound === "1") return;
+  root.dataset.modsBound = "1";
+
+  syncModsChk("mods-warn", modsState.warn);
+  syncModsChk("mods-autorestart", modsState.autoRestart);
+
+  document.querySelector("#mods-check")?.addEventListener("click", () => {
+    void runModulesCheck();
+  });
+  document.querySelector("#mods-warn")?.addEventListener("click", () => {
+    modsState.warn = !modsState.warn;
+    syncModsChk("mods-warn", modsState.warn);
+    setOptionsDirty(true);
+  });
+  document.querySelector("#mods-autorestart")?.addEventListener("click", () => {
+    modsState.autoRestart = !modsState.autoRestart;
+    syncModsChk("mods-autorestart", modsState.autoRestart);
+    setOptionsDirty(true);
+  });
+
+  const modsQ = document.querySelector<HTMLInputElement>("#mods-q");
+  const modsClear = document.querySelector<HTMLButtonElement>("#mods-clear");
+  modsQ?.addEventListener("input", () => {
+    modsState.query = modsQ.value;
+    syncModsClear();
+    renderModulesList();
+  });
+  modsClear?.addEventListener("click", () => {
+    if (!modsQ) return;
+    modsQ.value = "";
+    modsState.query = "";
+    syncModsClear();
+    modsQ.focus();
+    renderModulesList();
+  });
+  document.querySelector("#mods-only-updated")?.addEventListener("click", () => {
+    modsState.onlyUpdated = !modsState.onlyUpdated;
+    renderModulesList();
+  });
+
+  renderModulesList();
+}
+
+initSitesPanel();
+initModulesPanel();
 
 document.querySelector(".options-cats")!.addEventListener("click", (ev) => {
   const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(".options-cat");
