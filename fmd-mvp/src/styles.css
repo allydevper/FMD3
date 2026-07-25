@@ -2833,6 +2833,10 @@ button.secondary:hover:not(:disabled) {
   -moz-appearance: textfield;
 }
 
+.st-stepper-input.st-stepper-wide {
+  width: 64px;
+}
+
 .st-stepper-input::-webkit-outer-spin-button,
 .st-stepper-input::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -2992,6 +2996,20 @@ button.secondary:hover:not(:disabled) {
 .st-mini .st-num {
   width: 52px;
   height: 30px;
+}
+
+.st-mini .st-stepper {
+  height: 30px;
+}
+
+.st-mini .st-stepper-btn {
+  flex-basis: 26px;
+  font-size: 14px;
+}
+
+.st-mini .st-stepper-input {
+  width: 36px;
+  font-size: 12px;
 }
 
 .options-footer {

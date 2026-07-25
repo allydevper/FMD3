@@ -914,25 +914,25 @@ app.innerHTML = `
                     <section class="st-section">
                       <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.download}"></span><h2>Descargas</h2></div>
                       <div class="st-card">
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Tareas en paralelo</div><div class="st-desc">Número de tareas descargando a la vez</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="8" value="1" /></div></div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Archivos por tarea</div><div class="st-desc">Hilos de descarga por capítulo</div></div><div class="st-num-wrap"><input id="set-threads" class="st-field st-num" type="number" min="1" max="16" value="1" autocomplete="off" /></div></div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Reintentos de tarea</div><div class="st-desc">Si la tarea falla, cuántas veces reintentar</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="0" value="1" /></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Tareas en paralelo</div><div class="st-desc">Número de tareas descargando a la vez</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="1" max="8" value="1" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Archivos por tarea</div><div class="st-desc">Hilos de descarga por capítulo</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input id="set-threads" class="st-stepper-input" type="number" min="1" max="16" value="1" autocomplete="off" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Reintentos de tarea</div><div class="st-desc">Si la tarea falla, cuántas veces reintentar</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="0" value="1" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Reiniciar desde capítulos fallidos</div><div class="st-desc">Siempre continuar desde el último fallo</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                       </div>
                     </section>
                     <section class="st-section">
                       <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.sliders}"></span><h2>Misceláneo</h2></div>
                       <div class="st-card">
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Hilos de favoritos</div><div class="st-desc">Comprobaciones de favoritos a la vez</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="32" value="1" /></div></div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Hilos de actualizar lista</div><div class="st-desc">Paralelismo al actualizar el catálogo</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="32" value="1" /></div></div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Hilos en segundo plano</div><div class="st-desc">Cargas en background</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="32" value="1" /></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Hilos de favoritos</div><div class="st-desc">Comprobaciones de favoritos a la vez</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="1" max="32" value="1" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Hilos de actualizar lista</div><div class="st-desc">Paralelismo al actualizar el catálogo</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="1" max="32" value="1" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Hilos en segundo plano</div><div class="st-desc">Cargas en background</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="1" max="32" value="1" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
                       </div>
                     </section>
                     <section class="st-section">
                       <div class="st-section-head"><span class="ico ico-sm" style="--ico:${ICO.link}"></span><h2>Red</h2></div>
                       <div class="st-card">
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Timeout</div><div class="st-desc">Segundos de espera de conexión</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="300" value="30" /><span class="st-unit">s</span></div></div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Reintentos de conexión</div><div class="st-desc">−1 = reintentar siempre</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="-1" max="5" value="0" /></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Timeout</div><div class="st-desc">Segundos de espera de conexión</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="1" max="300" value="30" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div><span class="st-unit">s</span></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Reintentos de conexión</div><div class="st-desc">−1 = reintentar siempre</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" min="-1" max="5" value="0" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
                         <div class="st-row st-row-stack">
                           <div class="st-meta"><div class="st-label">User-Agent</div><div class="st-desc">Cabecera HTTP por defecto</div></div>
                           <input id="set-ua" class="st-field st-mono" type="text" placeholder="(default)" autocomplete="off" spellcheck="false" />
@@ -952,7 +952,7 @@ app.innerHTML = `
                             <label>Host</label>
                             <input class="st-field opt-stub" type="text" placeholder="Host/IP" />
                             <label>Puerto</label>
-                            <input class="st-field st-num opt-stub" type="number" value="8080" />
+                            <div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input st-stepper-wide opt-stub" type="number" min="1" max="65535" value="8080" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div>
                             <label>Usuario</label>
                             <input class="st-field opt-stub" type="text" />
                             <label>Contraseña</label>
@@ -1012,7 +1012,7 @@ app.innerHTML = `
                             </select>
                           </div>
                         </div>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Calidad PDF</div><div class="st-desc">Solo aplica si el empaquetado es PDF</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" value="95" min="1" max="100" /></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Calidad PDF</div><div class="st-desc">Solo aplica si el empaquetado es PDF</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="95" min="1" max="100" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div></div></div>
                       </div>
                     </section>
                     <section class="st-section">
@@ -1039,8 +1039,8 @@ app.innerHTML = `
                         <div class="st-row">
                           <div class="st-meta"><div class="st-label">Relleno de dígitos</div><div class="st-desc">Padding numérico en volumen/capítulo</div></div>
                           <div class="st-inline-end">
-                            <label class="st-mini"><input class="opt-stub" type="checkbox" /> Vol <input class="st-field st-num opt-stub" type="number" value="1" min="1" max="10" /></label>
-                            <label class="st-mini"><input class="opt-stub" type="checkbox" /> Cap <input class="st-field st-num opt-stub" type="number" value="1" min="1" max="10" /></label>
+                            <label class="st-mini"><input class="opt-stub" type="checkbox" /> Vol <span class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="1" min="1" max="10" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></span></label>
+                            <label class="st-mini"><input class="opt-stub" type="checkbox" /> Cap <span class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input opt-stub" type="number" value="1" min="1" max="10" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></span></label>
                           </div>
                         </div>
                         <div class="st-row st-row-stack">
@@ -1069,7 +1069,7 @@ app.innerHTML = `
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar al iniciar</div><div class="st-desc">Busca capítulos nuevos al arrancar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Abrir Favoritos al iniciar</div><div class="st-desc">Muestra esa vista al abrir la app</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Comprobar en intervalo</div><div class="st-desc">Revisa favoritos periódicamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
-                        <div class="st-row"><div class="st-meta"><div class="st-label">Intervalo</div><div class="st-desc">Minutos entre comprobaciones</div></div><div class="st-num-wrap"><input class="st-field st-num opt-stub" type="number" min="1" max="1440" value="60" /><span class="st-unit">min</span></div></div>
+                        <div class="st-row"><div class="st-meta"><div class="st-label">Intervalo</div><div class="st-desc">Minutos entre comprobaciones</div></div><div class="st-num-wrap"><div class="st-stepper"><button type="button" class="st-stepper-btn" data-step="-1" aria-label="Menos">−</button><input class="st-stepper-input st-stepper-wide opt-stub" type="number" min="1" max="1440" value="60" /><button type="button" class="st-stepper-btn" data-step="1" aria-label="Más">+</button></div><span class="st-unit">min</span></div></div>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Descargar tras comprobar</div><div class="st-desc">Encola capítulos nuevos automáticamente</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                         <label class="st-row click"><div class="st-meta"><div class="st-label">Quitar mangas completados</div><div class="st-desc">Los elimina de Favoritos al terminar</div></div><span class="st-switch"><input class="opt-stub" type="checkbox" /><span class="sw" aria-hidden="true"><span class="knob"></span></span></span></label>
                       </div>
