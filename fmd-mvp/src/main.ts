@@ -302,6 +302,9 @@ const ICO = {
   import: svgIco(
     '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
   ),
+  power: svgIco(
+    '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
+  ),
   filterOff: svgIco(
     '<path d="M13.013 3H2l8 9.06V21l4-2v-3.5"/><path d="m22 3-5 5"/><path d="m17 3 5 5"/>',
   ),
@@ -403,6 +406,23 @@ const dlUi = {
   sortKey: "added",
   sortDir: -1 as 1 | -1,
   order: [] as number[],
+};
+
+let lastFavorites: Favorite[] = [];
+const favNewCounts = new Map<number, number>();
+const favEnabled = new Map<number, boolean>();
+const favCheckedAt = new Map<number, number>();
+const favUi = {
+  cat: "all",
+  filter: "Todo" as "Todo" | "Habilitado" | "Deshabilitado",
+  query: "",
+  sel: {} as Record<number, true>,
+  sortKey: "new",
+  sortDir: -1 as 1 | -1,
+  scanning: false,
+  scanTarget: "",
+  scanCount: "",
+  auto: true,
 };
 let catalogEntries: CatalogEntry[] = [];
 let catalogQuery = "";
@@ -853,13 +873,101 @@ app.innerHTML = `
       </section>
 
       <section id="view-favorites" class="view" hidden>
-        <div class="view-pad">
-          <div class="toolbar">
-            <button id="fav-refresh" class="secondary" type="button">Actualizar</button>
-            <button id="fav-check-all" class="secondary" type="button">Check todos</button>
-            <button id="fav-check-enqueue-all" class="btn" type="button">Check + encolar</button>
+        <div class="fav-shell">
+          <header class="fav-header">
+            <div>
+              <div class="fav-eyebrow">Biblioteca seguida</div>
+              <h1 class="fav-title">Favoritos</h1>
+            </div>
+            <div class="fav-header-actions">
+              <div class="fav-stat-block">
+                <div class="fav-stat-value mono" id="fav-new-total">0</div>
+                <div class="fav-stat-label">Capítulos nuevos</div>
+              </div>
+              <div class="fav-header-sep"></div>
+              <button type="button" class="fav-btn-p" id="fav-check-all">
+                <span class="ico ico-sm" id="fav-check-ico" style="--ico:${ICO.refresh}"></span>
+                <span id="fav-check-label">Revisar capítulos nuevos</span>
+              </button>
+              <button type="button" class="fav-btn-ghost" id="fav-import" title="Próximamente">
+                <span class="ico ico-sm" style="--ico:${ICO.import}"></span>Importar lista
+              </button>
+            </div>
+          </header>
+          <div class="fav-scan" id="fav-scan" hidden>
+            <span class="fav-scan-title">Revisando favoritos</span>
+            <span class="ell mono fav-scan-target" id="fav-scan-target"></span>
+            <span class="mono fav-scan-count" id="fav-scan-count"></span>
           </div>
-          <div id="fav-list" class="list"></div>
+          <div class="fav-body">
+            <aside class="fav-tree" id="fav-tree" aria-label="Filtros de favoritos"></aside>
+            <div class="fav-main">
+              <div class="fav-toolbar">
+                <div class="fav-search-wrap">
+                  <span class="ico ico-sm fav-search-ico" style="--ico:${ICO.search}"></span>
+                  <input id="fav-q" class="st-field" type="text" placeholder="Buscar favoritos..." autocomplete="off" spellcheck="false" />
+                  <button type="button" class="sites-clear" id="fav-q-clear" hidden title="Limpiar">
+                    <span class="ico ico-sm" style="--ico:${ICO.x}"></span>
+                  </button>
+                </div>
+                <div class="fav-seg" id="fav-seg" role="group" aria-label="Filtro de estado">
+                  <button type="button" class="on" data-fav-filter="Todo">Todo</button>
+                  <button type="button" data-fav-filter="Habilitado">Habilitado</button>
+                  <button type="button" data-fav-filter="Deshabilitado">Deshabilitado</button>
+                </div>
+                <div class="fav-toolbar-sep"></div>
+                <div class="fav-sel-actions">
+                  <button type="button" class="fav-tbtn off" id="fav-sel-check" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.refresh}"></span>Revisar
+                  </button>
+                  <button type="button" class="fav-tbtn off" id="fav-sel-download" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.download}"></span>Descargar nuevos
+                  </button>
+                  <button type="button" class="fav-tbtn off" id="fav-sel-toggle" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.power}"></span>Habilitar / deshabilitar
+                  </button>
+                  <button type="button" class="fav-tbtn off" id="fav-sel-delete" disabled>
+                    <span class="ico ico-sm" style="--ico:${ICO.trash}"></span>Quitar
+                  </button>
+                </div>
+                <div class="fav-toolbar-spacer"></div>
+                <span class="fav-sel-label" id="fav-sel-label">0 obras</span>
+              </div>
+              <div class="fav-scroll">
+                <div class="fav-grid fav-head">
+                  <button type="button" class="sites-cb" id="fav-select-all" style="--ico:${ICO.check}" aria-label="Seleccionar todo">
+                    <span class="sites-cb-mk"></span>
+                  </button>
+                  <button type="button" class="fav-hc on" data-sort="new">#<span class="ico fav-sort-ico" style="--ico:${ICO.chevron};opacity:1;transform:rotate(180deg)"></span></button>
+                  <button type="button" class="fav-hc" data-sort="title">Título<span class="ico fav-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="fav-hc" data-sort="cur">Capítulo actual<span class="ico fav-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="fav-hc" data-sort="site">Sitio web<span class="ico fav-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="fav-hc" data-sort="status">Estado<span class="ico fav-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="fav-hc" data-sort="path">Guardado en<span class="ico fav-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="fav-hc" data-sort="added">Agregado<span class="ico fav-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <button type="button" class="fav-hc" data-sort="checked">Última rev.<span class="ico fav-sort-ico" style="--ico:${ICO.chevron}"></span></button>
+                  <div></div>
+                </div>
+                <div id="fav-rows"></div>
+                <div id="fav-empty" class="fav-empty" hidden>
+                  <span class="ico" style="--ico:${ICO.heart};width:26px;height:26px;color:var(--muted);opacity:.55"></span>
+                  <div class="fav-empty-title" id="fav-empty-title">Nada por aquí</div>
+                  <div class="fav-empty-desc" id="fav-empty-desc">Esta vista no tiene favoritos en este momento.</div>
+                </div>
+              </div>
+              <footer class="fav-footer">
+                <span class="fav-footer-stat"><span class="fav-dot" style="background:var(--accent)"></span><span id="fav-new-label">Todo al día</span></span>
+                <span class="fav-footer-muted" id="fav-enabled-label">0 habilitados · 0 deshabilitados</span>
+                <span class="fav-footer-muted" id="fav-last-scan">Última revisión —</span>
+                <div class="fav-toolbar-spacer"></div>
+                <span class="fav-auto-wrap">
+                  Revisión automática
+                  <button type="button" class="fav-sw on" id="fav-auto" aria-pressed="true"><i></i></button>
+                </span>
+                <button type="button" class="lnk" id="fav-queue-all">Encolar todos los nuevos</button>
+              </footer>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1685,7 +1793,8 @@ const pathInput = document.querySelector<HTMLInputElement>("#path-input")!;
 const logEl = document.querySelector<HTMLElement>("#log")!;
 const queueRowsEl = document.querySelector<HTMLDivElement>("#dl-rows")!;
 const queueEmptyEl = document.querySelector<HTMLElement>("#dl-empty")!;
-const favListEl = document.querySelector<HTMLDivElement>("#fav-list")!;
+const favRowsEl = document.querySelector<HTMLDivElement>("#fav-rows")!;
+const favEmptyEl = document.querySelector<HTMLElement>("#fav-empty")!;
 const sourceLabel = document.querySelector<HTMLElement>("#source-label")!;
 const sourceTrigger = document.querySelector<HTMLButtonElement>("#source-trigger")!;
 const sourceMenu = document.querySelector<HTMLDivElement>("#source-menu")!;
@@ -3330,133 +3439,573 @@ function initDownloadsUi() {
 
 initDownloadsUi();
 
+function favNewOf(id: number): number {
+  return favNewCounts.get(id) || 0;
+}
+
+function favIsEnabled(id: number): boolean {
+  return favEnabled.get(id) !== false;
+}
+
+function favAgeHours(iso: string | undefined, fallbackMs?: number): number {
+  const t = fallbackMs ?? Date.parse(iso || "");
+  if (!Number.isFinite(t)) return 0;
+  return Math.max(0, (Date.now() - t) / 3600000);
+}
+
+function favFmtAgo(iso: string | undefined, checkedMs?: number): string {
+  const h = favAgeHours(iso, checkedMs);
+  if (!iso && checkedMs == null) return "—";
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
+  if (h < 24) return `${Math.round(h)} h`;
+  if (h < 24 * 30) return `${Math.round(h / 24)} d`;
+  if (h < 24 * 365) return `${Math.round(h / 730)} mes`;
+  return `${(h / 8760).toFixed(1)} a`;
+}
+
+function favPathOf(fav: Favorite): string {
+  const base = (outputDir || "").replace(/[/\\]+$/, "");
+  const folder = fav.title.trim() || "manga";
+  return base ? `${base}\\${folder}` : folder;
+}
+
+function favSyncState(items: Favorite[]) {
+  const ids = new Set(items.map((f) => f.id));
+  for (const id of [...favNewCounts.keys()]) {
+    if (!ids.has(id)) favNewCounts.delete(id);
+  }
+  for (const id of [...favEnabled.keys()]) {
+    if (!ids.has(id)) favEnabled.delete(id);
+  }
+  for (const id of [...favCheckedAt.keys()]) {
+    if (!ids.has(id)) favCheckedAt.delete(id);
+  }
+  for (const id of Object.keys(favUi.sel)) {
+    if (!ids.has(Number(id))) delete favUi.sel[Number(id)];
+  }
+  for (const it of items) {
+    if (!favEnabled.has(it.id)) favEnabled.set(it.id, true);
+  }
+}
+
+function filteredFavorites(items: Favorite[]): Favorite[] {
+  const q = favUi.query.trim().toLowerCase();
+  const cat = favUi.cat;
+  const f = favUi.filter;
+  let list = items.filter((it) => {
+    const site = it.module_name || it.module_id;
+    if (q && !(it.title + " " + site + " " + (it.last_chapter_name || "")).toLowerCase().includes(q)) {
+      return false;
+    }
+    if (f === "Habilitado" && !favIsEnabled(it.id)) return false;
+    if (f === "Deshabilitado" && favIsEnabled(it.id)) return false;
+    if (cat === "all") return true;
+    if (cat === "new") return favNewOf(it.id) > 0;
+    if (cat === "upto") return favNewOf(it.id) === 0 && favIsEnabled(it.id);
+    if (cat === "stale") {
+      const checkedMs = favCheckedAt.get(it.id) ?? (Date.parse(it.updated_at) || 0);
+      return favAgeHours(it.updated_at, checkedMs) > 168;
+    }
+    if (cat === "off") return !favIsEnabled(it.id);
+    if (cat.startsWith("site:")) return site === cat.slice(5);
+    return true;
+  });
+
+  const key = favUi.sortKey;
+  const dir = favUi.sortDir;
+  const val = (it: Favorite): string | number => {
+    if (key === "title") return it.title.toLowerCase();
+    if (key === "cur") return it.chapter_count || 0;
+    if (key === "site") return (it.module_name || it.module_id).toLowerCase();
+    if (key === "status") {
+      if (!favIsEnabled(it.id)) return 2;
+      return favNewOf(it.id) > 0 ? 0 : 1;
+    }
+    if (key === "path") return favPathOf(it).toLowerCase();
+    if (key === "added") return Date.parse(it.updated_at) || 0;
+    if (key === "checked") return favCheckedAt.get(it.id) ?? (Date.parse(it.updated_at) || 0);
+    return favNewOf(it.id);
+  };
+  list = [...list].sort((a, b) => {
+    const va = val(a);
+    const vb = val(b);
+    if (va > vb) return dir;
+    if (va < vb) return -dir;
+    return a.title.localeCompare(b.title);
+  });
+  return list;
+}
+
+function renderFavTree(items: Favorite[]) {
+  const tree = document.querySelector<HTMLElement>("#fav-tree");
+  if (!tree) return;
+  const count = (fn: (i: Favorite) => boolean) => items.filter(fn).length;
+  const sites = [...new Set(items.map((i) => i.module_name || i.module_id))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  const parts: string[] = [];
+  const push = (
+    id: string,
+    label: string,
+    n: number,
+    opts: { group?: boolean; color?: string; icon?: string },
+  ) => {
+    const on = favUi.cat === id;
+    const pad = opts.group ? "14px" : "34px";
+    parts.push(`
+      <button type="button" class="fav-trow${on ? " on" : ""}" data-fav-cat="${escapeHtml(id)}" style="padding-left:${pad}">
+        ${
+          opts.group
+            ? `<span class="ico ico-sm" style="--ico:${opts.icon || ICO.heart};color:var(--muted)"></span>`
+            : `<span class="fav-dot" style="background:${opts.color || "var(--muted)"}"></span>`
+        }
+        <span class="ell" style="font-size:12.5px;font-weight:${on ? 600 : opts.group ? 600 : 500};color:${on ? "var(--text)" : opts.group ? "var(--text)" : "var(--muted)"}">${escapeHtml(label)}</span>
+        <div class="fav-toolbar-spacer"></div>
+        <span class="mono" style="font-size:11px;color:var(--muted)">${n}</span>
+      </button>
+    `);
+  };
+  push("all", "Todos los favoritos", items.length, { group: true, icon: ICO.heart });
+  push("new", "Con capítulos nuevos", count((i) => favNewOf(i.id) > 0), {
+    color: "var(--accent)",
+  });
+  push("upto", "Al día", count((i) => favNewOf(i.id) === 0 && favIsEnabled(i.id)), {
+    color: "var(--ok)",
+  });
+  push(
+    "stale",
+    "Sin revisar (7 d+)",
+    count((i) => {
+      const checkedMs = favCheckedAt.get(i.id) ?? (Date.parse(i.updated_at) || 0);
+      return favAgeHours(i.updated_at, checkedMs) > 168;
+    }),
+    { color: "var(--warn)" },
+  );
+  push("off", "Deshabilitados", count((i) => !favIsEnabled(i.id)), {
+    color: "var(--border-2)",
+  });
+  push("sites", "Sitios web", sites.length, { group: true, icon: ICO.globe });
+  for (const s of sites) {
+    push(`site:${s}`, s, count((i) => (i.module_name || i.module_id) === s), {});
+  }
+  tree.innerHTML = parts.join("");
+}
+
+function syncFavToolbar(listLen: number) {
+  const selIds = Object.keys(favUi.sel)
+    .filter((k) => favUi.sel[Number(k)])
+    .map(Number);
+  const hasSel = selIds.length > 0;
+  const selLabel = document.querySelector<HTMLElement>("#fav-sel-label");
+  if (selLabel) {
+    selLabel.textContent = hasSel
+      ? `${selIds.length} ${selIds.length === 1 ? "obra seleccionada" : "obras seleccionadas"}`
+      : `${listLen} ${listLen === 1 ? "obra" : "obras"}`;
+  }
+  for (const id of ["fav-sel-check", "fav-sel-download", "fav-sel-toggle", "fav-sel-delete"]) {
+    const el = document.querySelector<HTMLButtonElement>(`#${id}`);
+    if (!el) continue;
+    el.disabled = !hasSel || favUi.scanning;
+    el.classList.toggle("off", !hasSel || favUi.scanning);
+  }
+  const clearBtn = document.querySelector<HTMLButtonElement>("#fav-q-clear");
+  if (clearBtn) clearBtn.hidden = !favUi.query.trim();
+}
+
+function syncFavSortHeaders() {
+  for (const btn of document.querySelectorAll<HTMLButtonElement>(".fav-hc[data-sort]")) {
+    const key = btn.dataset.sort || "";
+    const on = key === favUi.sortKey;
+    btn.classList.toggle("on", on);
+    const ico = btn.querySelector<HTMLElement>(".fav-sort-ico");
+    if (!ico) continue;
+    ico.style.opacity = on ? "1" : "0";
+    ico.style.transform = on && favUi.sortDir < 0 ? "rotate(180deg)" : "none";
+  }
+}
+
+function syncFavScanUi() {
+  const scan = document.querySelector<HTMLElement>("#fav-scan");
+  const checkBtn = document.querySelector<HTMLButtonElement>("#fav-check-all");
+  const checkIco = document.querySelector<HTMLElement>("#fav-check-ico");
+  const checkLabel = document.querySelector<HTMLElement>("#fav-check-label");
+  if (scan) scan.hidden = !favUi.scanning;
+  const target = document.querySelector("#fav-scan-target");
+  const count = document.querySelector("#fav-scan-count");
+  if (target) target.textContent = favUi.scanTarget;
+  if (count) count.textContent = favUi.scanCount;
+  if (checkLabel) {
+    checkLabel.textContent = favUi.scanning ? "Revisando…" : "Revisar capítulos nuevos";
+  }
+  if (checkIco) {
+    checkIco.style.animation = favUi.scanning ? "spin 1s linear infinite" : "none";
+  }
+  if (checkBtn) checkBtn.disabled = favUi.scanning;
+}
+
+function applyFavCheckResults(results: FavoriteCheckResult[]) {
+  const now = Date.now();
+  for (const r of results) {
+    favNewCounts.set(r.favorite.id, r.new_chapters.length);
+    favCheckedAt.set(r.favorite.id, now);
+  }
+}
+
+function renderFavoritesTable(items: Favorite[]) {
+  lastFavorites = items;
+  favSyncState(items);
+  renderFavTree(items);
+
+  const list = filteredFavorites(items);
+  const newSum = items.reduce((a, i) => a + favNewOf(i.id), 0);
+  const enabledN = items.filter((i) => favIsEnabled(i.id)).length;
+  const disabledN = items.length - enabledN;
+
+  const newTotal = document.querySelector("#fav-new-total");
+  if (newTotal) newTotal.textContent = String(newSum);
+  const newLabel = document.querySelector("#fav-new-label");
+  if (newLabel) {
+    newLabel.textContent = newSum
+      ? `${newSum} ${newSum === 1 ? "capítulo nuevo" : "capítulos nuevos"}`
+      : "Todo al día";
+  }
+  const enabledLabel = document.querySelector("#fav-enabled-label");
+  if (enabledLabel) {
+    enabledLabel.textContent = `${enabledN} habilitados · ${disabledN} deshabilitados`;
+  }
+  const lastScan = document.querySelector("#fav-last-scan");
+  if (lastScan) {
+    let latest = 0;
+    for (const it of items) {
+      const t = favCheckedAt.get(it.id) ?? (Date.parse(it.updated_at) || 0);
+      if (t > latest) latest = t;
+    }
+    lastScan.textContent = latest
+      ? `Última revisión hace ${favFmtAgo(undefined, latest)}`
+      : "Última revisión —";
+  }
+
+  const autoBtn = document.querySelector<HTMLButtonElement>("#fav-auto");
+  if (autoBtn) {
+    autoBtn.classList.toggle("on", favUi.auto);
+    autoBtn.setAttribute("aria-pressed", favUi.auto ? "true" : "false");
+  }
+
+  syncFavToolbar(list.length);
+  syncFavSortHeaders();
+  syncFavScanUi();
+
+  const allBtn = document.querySelector<HTMLButtonElement>("#fav-select-all");
+  if (allBtn) {
+    const allOn = list.length > 0 && list.every((it) => favUi.sel[it.id]);
+    const someOn = list.some((it) => favUi.sel[it.id]);
+    allBtn.classList.toggle("on", allOn);
+    allBtn.classList.toggle("some", someOn && !allOn);
+    allBtn.style.setProperty("--ico", allOn || someOn ? (allOn ? ICO.check : ICO.dash) : ICO.check);
+  }
+
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("#fav-seg [data-fav-filter]")) {
+    btn.classList.toggle("on", btn.dataset.favFilter === favUi.filter);
+  }
+
+  if (!list.length) {
+    favRowsEl.innerHTML = "";
+    favEmptyEl.hidden = false;
+    const title = document.querySelector("#fav-empty-title");
+    const desc = document.querySelector("#fav-empty-desc");
+    if (title) {
+      title.textContent = favUi.query.trim() ? "Sin coincidencias" : "Nada por aquí";
+    }
+    if (desc) {
+      desc.textContent = favUi.query.trim()
+        ? `Ningún favorito coincide con “${favUi.query.trim()}”.`
+        : "Esta vista no tiene favoritos en este momento.";
+    }
+    return;
+  }
+  favEmptyEl.hidden = true;
+
+  favRowsEl.innerHTML = list
+    .map((it, idx) => {
+      const n = favNewOf(it.id);
+      const on = !!favUi.sel[it.id];
+      const enabled = favIsEnabled(it.id);
+      const st = !enabled
+        ? { label: "Deshabilitado", color: "var(--muted)", bg: "var(--nest)" }
+        : n
+          ? { label: "Nuevo", color: "var(--warn)", bg: "var(--warn-bg)" }
+          : { label: "Al día", color: "var(--ok)", bg: "var(--ok-bg)" };
+      const path = favPathOf(it);
+      const current = it.last_chapter_name || "—";
+      const latest =
+        favUi.scanning && favUi.scanTarget.includes(it.title)
+          ? "revisando…"
+          : n
+            ? `+${n} nuevos`
+            : "sin novedades";
+      const checkedMs = favCheckedAt.get(it.id);
+      return `
+      <div class="fav-grid fav-row${on ? " sel" : ""}" data-fav-id="${it.id}" style="height:46px">
+        <button type="button" class="sites-cb${on ? " on" : ""}" data-fav-check="${it.id}" style="--ico:${ICO.check}" aria-label="Seleccionar">
+          <span class="sites-cb-mk"></span>
+        </button>
+        <span class="mono fav-num">${idx + 1}</span>
+        <div class="fav-cell-title">
+          <div class="fav-title-stack">
+            <span class="ell fav-manga" style="color:${enabled ? "var(--text)" : "var(--muted)"}">${escapeHtml(it.title)}</span>
+            <span class="ell fav-sub">${escapeHtml(it.module_name || it.module_id)}</span>
+          </div>
+          ${n ? `<span class="fav-badge mono fav-new-badge">+${n}</span>` : ""}
+        </div>
+        <div class="fav-cell-ch">
+          <span class="ell mono fav-cur">${escapeHtml(current)}</span>
+          <span class="ell mono fav-latest" style="color:${n ? "var(--warn)" : "var(--muted)"}">${escapeHtml(latest)}</span>
+        </div>
+        <span class="ell fav-site">${escapeHtml(it.module_name || it.module_id)}</span>
+        <span class="fav-badge" style="color:${st.color};background:${st.bg}">${escapeHtml(st.label)}</span>
+        <span class="ell mono fav-path" title="${escapeHtml(path)}">${escapeHtml(path)}</span>
+        <span class="mono fav-added">${escapeHtml(favFmtAgo(it.updated_at))}</span>
+        <span class="mono fav-checked">${escapeHtml(favFmtAgo(it.updated_at, checkedMs))}</span>
+        <div class="fav-act">
+          <button type="button" class="fav-ibtn${n ? "" : " off"}" data-fav-dl="${it.id}" title="Descargar nuevos" ${n ? "" : "disabled"} style="border-color:transparent;width:24px;height:24px">
+            <span class="ico ico-sm" style="--ico:${ICO.download}"></span>
+          </button>
+          <button type="button" class="fav-ibtn" data-fav-remove="${it.id}" title="Quitar de favoritos" style="border-color:transparent;width:24px;height:24px">
+            <span class="ico ico-sm" style="--ico:${ICO.trash}"></span>
+          </button>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
 async function refreshFavorites() {
   try {
     const favs = await invoke<Favorite[]>("favorites_list");
-    favListEl.innerHTML = "";
-    if (!favs.length) {
-      favListEl.innerHTML = `<div class="empty">Sin favoritos</div>`;
+    renderFavoritesTable(favs);
+  } catch (e) {
+    log(String(e), "err");
+  }
+}
+
+async function removeFavorite(id: number) {
+  const fav = lastFavorites.find((f) => f.id === id);
+  await invoke("favorites_remove", { id });
+  delete favUi.sel[id];
+  await refreshFavorites();
+  if (fav && mangaUrl === fav.manga_url) {
+    isFavorite = false;
+    updateFavButton();
+  }
+}
+
+async function runFavChecks(ids: number[], enqueue: boolean) {
+  if (!ids.length || favUi.scanning) return;
+  if (enqueue) {
+    const dir = await ensureOutputDir();
+    if (!dir) {
+      log("Elige carpeta de salida primero.", "err");
       return;
     }
-    for (const fav of favs) {
-      const row = document.createElement("div");
-      row.className = "list-row";
-      row.innerHTML = `
-        <div class="list-main">
-          <div><strong>${escapeHtml(fav.title)}</strong></div>
-          <div class="muted">${escapeHtml(fav.module_name)} · ${fav.chapter_count} caps · último: ${escapeHtml(fav.last_chapter_name || "—")}</div>
-        </div>
-        <div class="list-actions"></div>
-      `;
-      const actions = row.querySelector(".list-actions")!;
-
-      const checkBtn = document.createElement("button");
-      checkBtn.type = "button";
-      checkBtn.className = "secondary";
-      checkBtn.textContent = "Check";
-      checkBtn.addEventListener("click", () => void runFavCheck(fav.id, false));
-
-      const checkEnq = document.createElement("button");
-      checkEnq.type = "button";
-      checkEnq.className = "btn";
-      checkEnq.textContent = "Check+cola";
-      checkEnq.addEventListener("click", () => void runFavCheck(fav.id, true));
-
-      const openBtn = document.createElement("button");
-      openBtn.type = "button";
-      openBtn.className = "secondary";
-      openBtn.textContent = "Abrir";
-      openBtn.addEventListener("click", () => {
-        urlInput.value = fav.manga_url;
-        syncUrlClear();
-        if ([...moduleSel.options].some((o) => o.value === fav.module_id)) {
-          moduleSel.value = fav.module_id;
-          updateSourceLabel();
-        }
-        switchNav("info");
-        void loadMangaInfo();
-      });
-
-      const del = document.createElement("button");
-      del.type = "button";
-      del.className = "secondary";
-      del.textContent = "Quitar";
-      del.addEventListener("click", async () => {
-        await invoke("favorites_remove", { id: fav.id });
-        await refreshFavorites();
-        if (mangaUrl === fav.manga_url) {
-          isFavorite = false;
-          updateFavButton();
-        }
-      });
-
-      actions.append(checkBtn, checkEnq, openBtn, del);
-      favListEl.appendChild(row);
-    }
-  } catch (e) {
-    log(String(e), "err");
   }
-}
-
-async function runFavCheck(id: number, enqueue: boolean) {
-  setBusy(true, enqueue ? "Check + encolar…" : "Check favorito…");
+  favUi.scanning = true;
+  syncFavScanUi();
+  syncFavToolbar(filteredFavorites(lastFavorites).length);
+  const results: FavoriteCheckResult[] = [];
   try {
-    const r = await invoke<FavoriteCheckResult>("favorites_check", { id, enqueue });
-    if (r.new_chapters.length) {
-      log(
-        `${r.favorite.title}: ${r.new_chapters.length} nuevos` +
-          (enqueue ? `, encolados ${r.enqueued}` : ""),
-        "ok",
-      );
-    } else {
-      log(`${r.favorite.title}: sin capítulos nuevos`, "ok");
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const fav = lastFavorites.find((f) => f.id === id);
+      favUi.scanTarget = fav ? `${fav.title} · ${fav.module_name || fav.module_id}` : "";
+      favUi.scanCount = `${i + 1} / ${ids.length}`;
+      syncFavScanUi();
+      renderFavoritesTable(lastFavorites);
+      try {
+        const r = await invoke<FavoriteCheckResult>("favorites_check", { id, enqueue });
+        results.push(r);
+        favNewCounts.set(r.favorite.id, r.new_chapters.length);
+        favCheckedAt.set(r.favorite.id, Date.now());
+      } catch (e) {
+        log(String(e), "err");
+      }
     }
-    await refreshFavorites();
-    if (enqueue && r.enqueued) await refreshQueue();
-  } catch (e) {
-    log(String(e), "err");
-  } finally {
-    setBusy(false);
-  }
-}
-
-document.querySelector("#fav-refresh")!.addEventListener("click", () => void refreshFavorites());
-document.querySelector("#fav-check-all")!.addEventListener("click", async () => {
-  setBusy(true, "Check todos…");
-  try {
-    const results = await invoke<FavoriteCheckResult[]>("favorites_check_all", {
-      enqueue: false,
-    });
+    applyFavCheckResults(results);
     const news = results.reduce((a, r) => a + r.new_chapters.length, 0);
-    log(`Check todos: ${news} capítulos nuevos en ${results.length} favoritos`, "ok");
-    await refreshFavorites();
-  } catch (e) {
-    log(String(e), "err");
-  } finally {
-    setBusy(false);
-  }
-});
-document.querySelector("#fav-check-enqueue-all")!.addEventListener("click", async () => {
-  const dir = await ensureOutputDir();
-  if (!dir) {
-    log("Elige carpeta de salida primero.", "err");
-    return;
-  }
-  setBusy(true, "Check + encolar todos…");
-  try {
-    const results = await invoke<FavoriteCheckResult[]>("favorites_check_all", {
-      enqueue: true,
-    });
     const enq = results.reduce((a, r) => a + r.enqueued, 0);
-    log(`Encolados ${enq} capítulos nuevos`, "ok");
+    if (enqueue) {
+      log(`Encolados ${enq} capítulos nuevos`, "ok");
+      if (enq) await refreshQueue();
+    } else {
+      log(`Revisión: ${news} capítulos nuevos en ${results.length} favoritos`, "ok");
+    }
     await refreshFavorites();
-    await refreshQueue();
-  } catch (e) {
-    log(String(e), "err");
   } finally {
-    setBusy(false);
+    favUi.scanning = false;
+    favUi.scanTarget = "";
+    favUi.scanCount = "";
+    syncFavScanUi();
+    renderFavoritesTable(lastFavorites);
   }
-});
+}
+
+function initFavoritesUi() {
+  const root = document.querySelector<HTMLElement>("#view-favorites");
+  if (!root || root.dataset.bound === "1") return;
+  root.dataset.bound = "1";
+
+  document.querySelector("#fav-tree")?.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLElement>("[data-fav-cat]");
+    if (!btn?.dataset.favCat) return;
+    favUi.cat = btn.dataset.favCat;
+    renderFavoritesTable(lastFavorites);
+  });
+
+  const q = document.querySelector<HTMLInputElement>("#fav-q");
+  const qClear = document.querySelector<HTMLButtonElement>("#fav-q-clear");
+  q?.addEventListener("input", () => {
+    favUi.query = q.value;
+    renderFavoritesTable(lastFavorites);
+  });
+  qClear?.addEventListener("click", () => {
+    if (!q) return;
+    q.value = "";
+    favUi.query = "";
+    q.focus();
+    renderFavoritesTable(lastFavorites);
+  });
+
+  document.querySelector("#fav-seg")?.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-fav-filter]");
+    if (!btn?.dataset.favFilter) return;
+    favUi.filter = btn.dataset.favFilter as typeof favUi.filter;
+    renderFavoritesTable(lastFavorites);
+  });
+
+  document.querySelector("#fav-select-all")?.addEventListener("click", () => {
+    const list = filteredFavorites(lastFavorites);
+    const allOn = list.length > 0 && list.every((it) => favUi.sel[it.id]);
+    if (allOn) {
+      for (const it of list) delete favUi.sel[it.id];
+    } else {
+      for (const it of list) favUi.sel[it.id] = true;
+    }
+    renderFavoritesTable(lastFavorites);
+  });
+
+  document.querySelector(".fav-head")?.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(".fav-hc[data-sort]");
+    if (!btn?.dataset.sort) return;
+    const key = btn.dataset.sort;
+    if (favUi.sortKey === key) favUi.sortDir = favUi.sortDir === 1 ? -1 : 1;
+    else {
+      favUi.sortKey = key;
+      favUi.sortDir =
+        key === "title" || key === "site" || key === "path" ? 1 : -1;
+    }
+    renderFavoritesTable(lastFavorites);
+  });
+
+  favRowsEl.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement;
+    const check = t.closest<HTMLElement>("[data-fav-check]");
+    if (check?.dataset.favCheck) {
+      ev.stopPropagation();
+      const id = Number(check.dataset.favCheck);
+      if (favUi.sel[id]) delete favUi.sel[id];
+      else favUi.sel[id] = true;
+      renderFavoritesTable(lastFavorites);
+      return;
+    }
+    const dl = t.closest<HTMLElement>("[data-fav-dl]");
+    if (dl?.dataset.favDl) {
+      ev.stopPropagation();
+      const id = Number(dl.dataset.favDl);
+      if (favNewOf(id) > 0) void runFavChecks([id], true);
+      return;
+    }
+    const remove = t.closest<HTMLElement>("[data-fav-remove]");
+    if (remove?.dataset.favRemove) {
+      ev.stopPropagation();
+      void removeFavorite(Number(remove.dataset.favRemove));
+      return;
+    }
+    const row = t.closest<HTMLElement>("[data-fav-id]");
+    if (row?.dataset.favId) {
+      const id = Number(row.dataset.favId);
+      if (favUi.sel[id]) delete favUi.sel[id];
+      else favUi.sel[id] = true;
+      renderFavoritesTable(lastFavorites);
+    }
+  });
+
+  document.querySelector("#fav-check-all")?.addEventListener("click", () => {
+    const sel = Object.keys(favUi.sel)
+      .filter((k) => favUi.sel[Number(k)])
+      .map(Number);
+    const ids = sel.length ? sel : lastFavorites.filter((f) => favIsEnabled(f.id)).map((f) => f.id);
+    void runFavChecks(ids, false);
+  });
+
+  document.querySelector("#fav-import")?.addEventListener("click", () => {
+    log("Importar lista: próximamente", "ok");
+  });
+
+  document.querySelector("#fav-sel-check")?.addEventListener("click", () => {
+    const ids = Object.keys(favUi.sel)
+      .filter((k) => favUi.sel[Number(k)])
+      .map(Number);
+    void runFavChecks(ids, false);
+  });
+
+  document.querySelector("#fav-sel-download")?.addEventListener("click", () => {
+    const ids = Object.keys(favUi.sel)
+      .filter((k) => favUi.sel[Number(k)])
+      .map(Number);
+    void runFavChecks(ids, true);
+  });
+
+  document.querySelector("#fav-sel-toggle")?.addEventListener("click", () => {
+    const ids = Object.keys(favUi.sel)
+      .filter((k) => favUi.sel[Number(k)])
+      .map(Number);
+    for (const id of ids) {
+      favEnabled.set(id, !favIsEnabled(id));
+    }
+    renderFavoritesTable(lastFavorites);
+  });
+
+  document.querySelector("#fav-sel-delete")?.addEventListener("click", async () => {
+    const ids = Object.keys(favUi.sel)
+      .filter((k) => favUi.sel[Number(k)])
+      .map(Number);
+    for (const id of ids) {
+      await removeFavorite(id);
+    }
+  });
+
+  document.querySelector("#fav-auto")?.addEventListener("click", () => {
+    favUi.auto = !favUi.auto;
+    const autoBtn = document.querySelector<HTMLButtonElement>("#fav-auto");
+    autoBtn?.classList.toggle("on", favUi.auto);
+    autoBtn?.setAttribute("aria-pressed", favUi.auto ? "true" : "false");
+    const interval = document.querySelector<HTMLInputElement>("#set-fav-interval");
+    if (interval && interval.checked !== favUi.auto) {
+      interval.checked = favUi.auto;
+      interval.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+
+  document.querySelector("#fav-queue-all")?.addEventListener("click", () => {
+    const ids = lastFavorites.filter((f) => favNewOf(f.id) > 0 && favIsEnabled(f.id)).map((f) => f.id);
+    if (!ids.length) {
+      log("No hay capítulos nuevos para encolar", "ok");
+      return;
+    }
+    void runFavChecks(ids, true);
+  });
+}
+
+initFavoritesUi();
 
 let catalogSearchTimer: number | undefined;
 
