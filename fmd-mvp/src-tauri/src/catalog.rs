@@ -23,6 +23,11 @@ pub struct CatalogEntry {
     /// True when `manga_cache.title = 'N/A'` (GetInfo failed / inaccessible).
     #[serde(default)]
     pub info_failed: bool,
+    /// Owning module (filled by `search`; used for all-sites filter).
+    #[serde(default)]
+    pub module_id: String,
+    #[serde(default)]
+    pub module_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +102,29 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Civil Julian Day Number — same formula as FMD2 `DateToJDN` (uBaseUnit.pas).
+pub fn date_to_jdn(year: i32, month: u32, day: u32) -> i64 {
+    let a = (14 - month as i32) / 12;
+    let y = year + 4800 - a;
+    let m = month as i32 + 12 * a - 3;
+    let raw = f64::from(day as i32)
+        + f64::from((153 * m + 2) / 5)
+        + f64::from(365 * y)
+        + f64::from(y / 4)
+        - f64::from(y / 100)
+        + f64::from(y / 400)
+        - 32045.0
+        - 0.5;
+    raw.round() as i64
+}
+
+/// Today's JDN in local calendar date (FMD2 `GetCurrentJDN`).
+pub fn today_jdn() -> i64 {
+    use chrono::Datelike;
+    let d = chrono::Local::now().date_naive();
+    date_to_jdn(d.year(), d.month(), d.day())
 }
 
 /// Open shared app DB and ensure `manga_cache` exists (regenerates empty file if deleted).
@@ -337,7 +365,9 @@ pub fn search(
             .query_map(params![module_id, limit, offset], map_entry)
             .map_err(|e| e.to_string())?;
         for row in rows {
-            out.push(row.map_err(|e| e.to_string())?);
+            let mut e = row.map_err(|e| e.to_string())?;
+            e.module_id = module_id.to_string();
+            out.push(e);
         }
     } else {
         let like = format!(
@@ -361,7 +391,9 @@ pub fn search(
             .query_map(params![module_id, like, limit, offset], map_entry)
             .map_err(|e| e.to_string())?;
         for row in rows {
-            out.push(row.map_err(|e| e.to_string())?);
+            let mut e = row.map_err(|e| e.to_string())?;
+            e.module_id = module_id.to_string();
+            out.push(e);
         }
     }
     Ok(out)
@@ -414,19 +446,23 @@ fn map_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
         jdn: r.get(9)?,
         cover: r.get(10)?,
         info_failed: failed_flag != 0,
+        module_id: String::new(),
+        module_name: String::new(),
     })
 }
 
 /// Insert title+link rows (FMD UpdateList style). Returns inserted count (ignored duplicates).
+/// New rows get `jdn = today` (FMD2); existing rows keep their jdn via INSERT OR IGNORE.
 pub fn upsert_links(module_id: &str, pairs: &[(String, String)]) -> Result<usize, String> {
     let conn = open_catalog(module_id)?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let jdn = today_jdn();
     let mut inserted = 0usize;
     {
         let mut stmt = tx
             .prepare(
                 r#"INSERT OR IGNORE INTO masterlist(link, title, alttitles, authors, artists, genres, status, summary, numchapter, jdn)
-                   VALUES(?1, ?2, '', '', '', '', '', '', 0, 0)"#,
+                   VALUES(?1, ?2, '', '', '', '', '', '', 0, ?3)"#,
             )
             .map_err(|e| e.to_string())?;
         for (link, title) in pairs {
@@ -435,7 +471,7 @@ pub fn upsert_links(module_id: &str, pairs: &[(String, String)]) -> Result<usize
                 continue;
             }
             let n = stmt
-                .execute(params![link, title])
+                .execute(params![link, title, jdn])
                 .map_err(|e| e.to_string())?;
             inserted += n;
         }
@@ -791,6 +827,33 @@ mod tests {
                 params![mid],
             );
         }
+    }
+
+    #[test]
+    fn upsert_links_stamps_today_jdn() {
+        let mid = "__test_jdn_stamp__";
+        let link = "/series/new_today/";
+        let path = catalog_db_path(mid);
+        let _ = std::fs::remove_file(&path);
+        upsert_links(mid, &[(link.into(), "Brand New".into())]).expect("insert");
+        let hits = search(mid, "", 10, 0).expect("search");
+        let e = hits.iter().find(|e| e.link == normalize_manga_link(link)).expect("row");
+        assert_eq!(e.jdn, today_jdn());
+        assert_eq!(e.module_id, mid);
+        // second insert must not overwrite jdn
+        let old = e.jdn;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        upsert_links(mid, &[(link.into(), "Brand New".into())]).expect("ignore");
+        let hits2 = search(mid, "", 10, 0).expect("search2");
+        let e2 = hits2.iter().find(|e| e.link == normalize_manga_link(link)).expect("row2");
+        assert_eq!(e2.jdn, old);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn date_to_jdn_matches_known_day() {
+        // 2025-03-29 → 2460764 (from FMD2 MangaOni sample)
+        assert_eq!(date_to_jdn(2025, 3, 29), 2460764);
     }
 
     #[test]

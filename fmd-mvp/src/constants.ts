@@ -78,6 +78,32 @@ export function cloneAdvFilter(f: AdvFilterState): AdvFilterState {
   return { ...f, genres: { ...f.genres } };
 }
 
+/** Civil Julian Day Number — same formula as FMD2 `DateToJDN`. */
+export function dateToJdn(d: Date = new Date()): number {
+  const year = d.getFullYear();
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  const a = Math.floor((14 - month) / 12);
+  const y = year + 4800 - a;
+  const m = month + 12 * a - 3;
+  return Math.round(
+    day +
+      Math.floor((153 * m + 2) / 5) +
+      365 * y +
+      Math.floor(y / 4) -
+      Math.floor(y / 100) +
+      Math.floor(y / 400) -
+      32045 -
+      0.5,
+  );
+}
+
+/** FMD2 highlight/filter: `jdn > todayJdn - newDays`. `jdn <= 0` is never new. */
+export function isCatalogEntryNew(jdn: number, newDays: number): boolean {
+  if (!jdn || jdn <= 0 || newDays <= 0) return false;
+  return jdn > dateToJdn() - newDays;
+}
+
 export const CATALOG_PAGE = 250;
 export const LOLI_VAULT_ID = "218b722b1eb34f2aa3863f84538c5b08";
 export const THEME_KEY = "fmd-theme-dark";

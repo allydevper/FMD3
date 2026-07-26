@@ -113,6 +113,9 @@ export type CatalogEntry = {
   cover: string;
   /** GetInfo failed / inaccessible (`manga_cache.title = 'N/A'`). */
   info_failed?: boolean;
+  /** Module that owns this catalog row (all-sites filter / search). */
+  module_id?: string;
+  module_name?: string;
 };
 
 export type MangaCacheRow = {

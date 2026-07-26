@@ -1399,7 +1399,7 @@ export function OptionsView() {
                       <BoundStepperRow
                         id="opt-new-days"
                         label="Marcar manga como nuevo"
-                        desc="Días desde la última actualización"
+                        desc="Días desde que se añadió al catálogo"
                         value={s.newDays}
                         min={1}
                         max={365}

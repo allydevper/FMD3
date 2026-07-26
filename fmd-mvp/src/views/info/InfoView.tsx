@@ -24,6 +24,7 @@ import {
   GENRE_TRI_CYCLE,
   emptyAdvFilter,
   cloneAdvFilter,
+  isCatalogEntryNew,
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
@@ -368,33 +369,58 @@ export function InfoView() {
       const want = map[f.status] || [];
       if (want.length && !want.some((w) => st === w || st.includes(w))) return false;
     }
-    const genreList = (e.genres || "")
+    const genresHay = (e.genres || "").toLowerCase();
+    const genreList = genresHay
       .split(/[,;]/)
-      .map((g) => g.trim().toLowerCase())
+      .map((g) => g.trim())
       .filter(Boolean);
     /** One checkbox / custom token = one criterion; id+label are aliases (OR), not AND. */
     const includeGroups: string[][] = [];
     const excludeAliases: string[] = [];
-    const genreTokenHit = (aliases: string[]) =>
-      aliases.some(
+    const genreTokenHit = (aliases: string[]) => {
+      if (f.useRegex) {
+        return aliases.some((a) => {
+          if (!a) return false;
+          try {
+            return new RegExp(a, "i").test(genresHay);
+          } catch {
+            return genresHay.includes(a);
+          }
+        });
+      }
+      return aliases.some(
         (a) =>
           !!a &&
           genreList.some((g) => g === a || g.includes(a) || a.includes(g)),
       );
+    };
     for (const g of DEFAULT_GENRES) {
       const state = f.genres[g.id] ?? "ignore";
       const aliases = [g.id.toLowerCase(), g.label.toLowerCase()];
       if (state === "include") includeGroups.push(aliases);
       if (state === "exclude") excludeAliases.push(...aliases);
     }
-    for (const part of f.customGenres.split(",")) {
-      const raw = part.trim();
-      if (!raw) continue;
-      if (raw.startsWith("!") || raw.startsWith("-")) {
-        const a = raw.slice(1).trim().toLowerCase();
-        if (a) excludeAliases.push(a);
+    const custom = f.customGenres.trim();
+    if (custom) {
+      if (f.useRegex) {
+        // FMD2: whole custom field is one REGEXP against genres.
+        if (custom.startsWith("!") || custom.startsWith("-")) {
+          const a = custom.slice(1).trim();
+          if (a) excludeAliases.push(a);
+        } else {
+          includeGroups.push([custom]);
+        }
       } else {
-        includeGroups.push([raw.toLowerCase()]);
+        for (const part of custom.split(",")) {
+          const raw = part.trim();
+          if (!raw) continue;
+          if (raw.startsWith("!") || raw.startsWith("-")) {
+            const a = raw.slice(1).trim().toLowerCase();
+            if (a) excludeAliases.push(a);
+          } else {
+            includeGroups.push([raw.toLowerCase()]);
+          }
+        }
       }
     }
     if (excludeAliases.length && genreTokenHit(excludeAliases)) return false;
@@ -402,10 +428,7 @@ export function InfoView() {
       const hit = includeGroups.map((aliases) => genreTokenHit(aliases));
       if (f.matchMode === "all" ? !hit.every(Boolean) : !hit.some(Boolean)) return false;
     }
-    if (f.onlyNew && newDays > 0 && e.jdn) {
-      const nowJdn = Math.floor(Date.now() / 86400000) + 2440587.5;
-      if (nowJdn - e.jdn > newDays) return false;
-    }
+    if (f.onlyNew && !isCatalogEntryNew(e.jdn, newDays)) return false;
     return true;
   }
 
@@ -425,13 +448,68 @@ export function InfoView() {
     setAdvFilterApplied(on);
   }
 
+  async function loadAllEnabledCatalogs(): Promise<CatalogEntry[]> {
+    const query = catalogQueryRef.current;
+    const out: CatalogEntry[] = [];
+    for (const m of enabledModules) {
+      let offset = 0;
+      for (;;) {
+        setCatalogLoadingText(`Cargando ${m.name}… (${out.length})`);
+        const page = await api.catalogSearch(m.id, query, CATALOG_PAGE, offset);
+        for (const e of page) {
+          out.push({
+            ...e,
+            module_id: e.module_id || m.id,
+            module_name: m.name,
+          });
+        }
+        if (page.length < CATALOG_PAGE) break;
+        offset += CATALOG_PAGE;
+      }
+    }
+    out.sort((a, b) =>
+      a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: "base" }),
+    );
+    return out;
+  }
+
   function applyAdvFilter() {
     void (async () => {
       setCatalogLoading(true);
       setCatalogLoadingText("Cargando títulos…");
       try {
         const snapshot = cloneAdvFilter(advFilter);
-        const all = await ensureAllPagesLoaded();
+        let all: CatalogEntry[];
+        if (snapshot.allSites) {
+          all = await loadAllEnabledCatalogs();
+          const pages = Math.max(1, Math.ceil(all.length / CATALOG_PAGE));
+          loadedPagesRef.current = new Set(Array.from({ length: pages }, (_, i) => i));
+          wantedPagesRef.current = [];
+          setCatalogRows(all);
+          setCatalogTotalBoth(all.length);
+          catalogLoadedKeyRef.current = `allsites||${catalogQueryRef.current}`;
+          bumpCatalogReset();
+        } else {
+          all = await ensureAllPagesLoaded();
+          const mid = selectedModuleId;
+          const mname = currentModule?.name || "";
+          if (mid) {
+            all = all.map((e) => ({
+              ...e,
+              module_id: e.module_id || mid,
+              module_name: e.module_name || mname,
+            }));
+            setCatalogRows(catalogRowsRef.current.map((e) =>
+              e
+                ? {
+                    ...e,
+                    module_id: e.module_id || mid,
+                    module_name: e.module_name || mname,
+                  }
+                : e,
+            ));
+          }
+        }
         const needle = catalogText.trim().toLowerCase();
         const n = all.filter((e) => {
           if (!entryMatchesFilter(e, snapshot, filterNewDays)) return false;
@@ -908,6 +986,8 @@ export function InfoView() {
     const title = e.title || e.link;
     pendingSidebarTitleRef.current = title;
     setInfoPanelOpen(true);
+    const mod =
+      (e.module_id ? modules.find((m) => m.id === e.module_id) : undefined) || currentModule;
     paintRows({
       title,
       authors: e.authors,
@@ -916,10 +996,10 @@ export function InfoView() {
       status: e.status,
       summary: e.summary,
       numchapter: e.numchapter,
-      moduleName: currentModule?.name,
+      moduleName: e.module_name || mod?.name,
       altTitles: e.alttitles || "",
     });
-    const root = currentModule?.root_url || "";
+    const root = mod?.root_url || "";
     const hint = resolveCover(e.cover || "", root);
     if (!coverLocalFallbackRef.current && hint) setCover(hint);
   }
@@ -1027,7 +1107,7 @@ export function InfoView() {
   /* ---------------------------------------------------------------------
    * Load manga info
    * ------------------------------------------------------------------- */
-  async function loadMangaInfo(explicitUrl?: string) {
+  async function loadMangaInfo(explicitUrl?: string, preferredModuleId?: string | null) {
     const seq = ++mangaLoadSeqRef.current;
     const raw = (explicitUrl ?? urlInput).trim();
     // URL bar / Enter: don't reuse a previous catalog stub title.
@@ -1064,14 +1144,17 @@ export function InfoView() {
       return;
     }
 
-    // Match URL host for the fetch; do not change the combo selection.
-    let moduleId = selectedModuleId || undefined;
+    // Match URL host for the fetch; prefer catalog row module when all-sites filter.
+    let moduleId = preferredModuleId || selectedModuleId || undefined;
     try {
       const matches = await api.modulesMatchUrl(url);
       if (seq !== mangaLoadSeqRef.current) return;
       const enabled = matches.filter((m) => enabledModuleIds.has(m.id));
       if (enabled.length > 0) {
-        const preferred = enabled.find((m) => m.id === selectedModuleId) ?? enabled[0];
+        const preferred =
+          enabled.find((m) => m.id === preferredModuleId) ??
+          enabled.find((m) => m.id === selectedModuleId) ??
+          enabled[0];
         moduleId = preferred.id;
       } else if (!moduleId) {
         log(
@@ -1241,7 +1324,10 @@ export function InfoView() {
   }
 
   async function openCatalogEntry(e: CatalogEntry) {
-    const root = currentModule?.root_url || "";
+    const moduleId = e.module_id || selectedModuleId || undefined;
+    const mod =
+      (moduleId ? modules.find((m) => m.id === moduleId) : undefined) || currentModule;
+    const root = mod?.root_url || "";
     const url = maybeFillHost(root, e.link);
     const title = e.title || e.link;
     setActiveCatalogTitle(title);
@@ -1257,7 +1343,6 @@ export function InfoView() {
     setCover("", { localFallback: "" });
     setInfoPanelOpen(true);
     applyCatalogStub(e);
-    const moduleId = selectedModuleId;
     if (moduleId) void applyCachedCover(moduleId, e.link);
 
     // Cache already marked inaccessible: do not hit the invalid URL again.
@@ -1267,7 +1352,7 @@ export function InfoView() {
       setSelected(new Set());
       bumpChaptersReset();
       setChaptersLoading(false);
-      const modName = currentModule?.name || "";
+      const modName = e.module_name || mod?.name || "";
       setInfoInaccessible({ moduleName: modName });
       // Stub already painted real masterlist title; keep it (never show N/A in sidebar).
       const msg = inaccessibleInfoMessage(modName);
@@ -1279,7 +1364,7 @@ export function InfoView() {
     }
 
     log(`Abriendo ${title}…`);
-    await loadMangaInfo(url);
+    await loadMangaInfo(url, moduleId);
   }
 
   function handleCatalogRowClick(idx: number, entry: CatalogEntry) {
@@ -1664,12 +1749,17 @@ export function InfoView() {
           }
           const title = e.title || e.link;
           const meta = e.info_failed ? "N/A" : String(e.numchapter ?? 0);
+          const isNew = isCatalogEntryNew(e.jdn, filterNewDays);
+          const site = e.module_name?.trim();
+          const tip = site ? `${title} · ${site} · ${meta}` : `${title} · ${meta}`;
           return (
             <button
               type="button"
-              className={`catalog-row${title === activeCatalogTitle ? " active" : ""}`}
+              className={`catalog-row${title === activeCatalogTitle ? " active" : ""}${
+                isNew ? " is-new" : ""
+              }`}
               style={style}
-              title={`${title} · ${meta}`}
+              title={tip}
               onClick={() => handleCatalogRowClick(i, e)}
             >
               <div className="catalog-row-title">{title}</div>
@@ -2219,7 +2309,7 @@ export function InfoView() {
                     <label className="opt-row opt-row-switch">
                       <div>
                         <div className="opt-row-title">Solo mangas nuevos</div>
-                        <div className="opt-row-desc">Recién añadidos o actualizados</div>
+                        <div className="opt-row-desc">Recién añadidos al catálogo</div>
                       </div>
                       <span className="st-switch">
                         <input
