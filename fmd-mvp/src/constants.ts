@@ -178,7 +178,7 @@ export const SK = {
   TASK_RETRIES: "download.task_retries",
   PARALLEL_TASKS: "download.parallel_tasks",
   OUTPUT_DIR: "default_output_dir",
-  MODULES_DISABLED: "modules.disabled",
+  MODULES_ENABLED: "modules.enabled",
   FAV_INTERVAL_ON: "favorites.check_interval_on",
   FAV_INTERVAL_MIN: "favorites.check_interval_min",
   FAV_CHECK_ON_START: "favorites.check_on_start",

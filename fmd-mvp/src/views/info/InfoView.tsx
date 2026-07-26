@@ -21,7 +21,6 @@ import {
   DEFAULT_GENRES,
   FILTER_CUSTOM_HINT,
   GENRE_TRI_CYCLE,
-  LOLI_VAULT_ID,
   emptyAdvFilter,
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
@@ -96,7 +95,8 @@ export function InfoView() {
     setOutputDir,
     refreshModules,
     setShowMangaInfo,
-    disabledModuleIds,
+    enabledModuleIds,
+    hideInfo,
   } = useApp();
 
   /* ---------------------------------------------------------------------
@@ -154,6 +154,8 @@ export function InfoView() {
   const [chaptersResetSeq, setChaptersResetSeq] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [infoPanelOpen, setInfoPanelOpen] = useState(false);
+  const [infoSidebarCollapsed, setInfoSidebarCollapsed] = useState(false);
+  const [sourceToolsOpen, setSourceToolsOpen] = useState(false);
   const [isFavorite, setIsFavorite] = useState(false);
   const [taskStopped, setTaskStopped] = useState(false);
   const [loadCovers, setLoadCovers] = useState(true);
@@ -247,8 +249,8 @@ export function InfoView() {
   }, []);
 
   const enabledModules = useMemo(
-    () => modules.filter((m) => !disabledModuleIds.has(m.id)),
-    [modules, disabledModuleIds],
+    () => modules.filter((m) => enabledModuleIds.has(m.id)),
+    [modules, enabledModuleIds],
   );
 
   function entryMatchesFilter(e: CatalogEntry, f: AdvFilterState, newDays: number): boolean {
@@ -330,18 +332,20 @@ export function InfoView() {
     if (modules.length) setSourcesLoading(false);
   }, [modules]);
 
-  /** Prefer the Loli Vault module on first load, same as FMD2's default. */
+  /** Keep combo on an enabled source; empty list → no selection. */
   useEffect(() => {
-    if (!enabledModules.length) return;
+    if (!enabledModules.length) {
+      if (selectedModuleId) setSelectedModuleId(null);
+      return;
+    }
     if (selectedModuleId && enabledModules.some((m) => m.id === selectedModuleId)) return;
-    const loli = enabledModules.find((m) => m.id === LOLI_VAULT_ID);
-    setSelectedModuleId(loli ? loli.id : enabledModules[0].id);
+    setSelectedModuleId(enabledModules[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabledModules]);
 
   async function refreshCatalogStats() {
     const id = selectedModuleId;
-    if (!id) {
+    if (!id || !enabledModuleIds.has(id)) {
       setCatalogStatsText("0");
       return;
     }
@@ -355,7 +359,29 @@ export function InfoView() {
 
   async function loadCatalog(force = false, silent = false) {
     const id = selectedModuleId;
-    if (!id) return;
+    if (!enabledModules.length) {
+      setCatalogEntries([]);
+      setCatalogError(false);
+      setCatalogLoading(false);
+      setCatalogStatsText("0");
+      catalogLoadedKeyRef.current = "";
+      if (!silent) {
+        log(
+          "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
+          "err",
+        );
+      }
+      return;
+    }
+    if (!id || !enabledModuleIds.has(id)) {
+      setCatalogEntries([]);
+      setCatalogError(false);
+      setCatalogLoading(false);
+      if (!silent) {
+        log("Elige una fuente en el selector (o actívala en Ajustes → Sitios Web).", "err");
+      }
+      return;
+    }
     const key = `${id}||${catalogQueryRef.current}`;
     if (!force && key === catalogLoadedKeyRef.current && catalogEntriesRef.current.length) {
       return;
@@ -387,18 +413,35 @@ export function InfoView() {
       catalogLoadedKeyRef.current = "";
       setCatalogEntries([]);
       setCatalogError(true);
-      log(String(e), "err");
+      const msg = String(e);
+      if (/deshabilitado|disabled/i.test(msg)) {
+        log(
+          "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
+          "err",
+        );
+      } else {
+        log(msg, "err");
+      }
     } finally {
       setCatalogLoading(false);
     }
   }
 
   useEffect(() => {
-    if (!selectedModuleId) return;
+    if (!selectedModuleId || !enabledModuleIds.has(selectedModuleId)) return;
     void refreshCatalogStats();
     void loadCatalog(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedModuleId]);
+  }, [selectedModuleId, enabledModuleIds]);
+
+  useEffect(() => {
+    if (enabledModules.length) return;
+    setCatalogEntries([]);
+    setCatalogError(false);
+    setCatalogLoading(false);
+    setCatalogStatsText("0");
+    catalogLoadedKeyRef.current = "";
+  }, [enabledModules.length]);
 
   useEffect(() => {
     let un: (() => void) | undefined;
@@ -416,6 +459,15 @@ export function InfoView() {
   /* ---------------------------------------------------------------------
    * Show right info sidebar on the .app shell (CSS: .app.show-manga-info)
    * ------------------------------------------------------------------- */
+  useEffect(() => {
+    if (!sourceToolsOpen) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setSourceToolsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sourceToolsOpen]);
+
   useEffect(() => {
     setShowMangaInfo(!!manga || infoPanelOpen);
     return () => setShowMangaInfo(false);
@@ -692,19 +744,30 @@ export function InfoView() {
     setLoadBtnDisabled(true);
     setChaptersLoading(true);
 
-    // Prefer module that matches the URL host; else keep selected (FMD2-like).
+    if (!enabledModules.length) {
+      log(
+        "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
+        "err",
+      );
+      setManga(null);
+      setChaptersLoading(false);
+      setMangaLoadingUrl("");
+      setLoadBtnDisabled(false);
+      return;
+    }
+
+    // Match URL host for the fetch; do not change the combo selection.
     let moduleId = selectedModuleId || undefined;
     try {
       const matches = await api.modulesMatchUrl(url);
       if (seq !== mangaLoadSeqRef.current) return;
-      const enabled = matches.filter((m) => !disabledModuleIds.has(m.id));
+      const enabled = matches.filter((m) => enabledModuleIds.has(m.id));
       if (enabled.length > 0) {
         const preferred = enabled.find((m) => m.id === selectedModuleId) ?? enabled[0];
         moduleId = preferred.id;
-        setSelectedModuleId(preferred.id);
       } else if (!moduleId) {
         log(
-          "Ningún módulo coincide con esta URL. Elige el sitio en el selector e inténtalo de nuevo.",
+          "Ningún módulo coincide con esta URL. Activa el sitio en Ajustes → Sitios Web o elige uno en el selector.",
           "err",
         );
         setManga(null);
@@ -714,7 +777,7 @@ export function InfoView() {
         return;
       } else if (matches.length > 0) {
         log(
-          "El módulo de esta URL está deshabilitado; se usa el seleccionado.",
+          "El módulo de esta URL no está activado en Ajustes → Sitios Web; se usa el seleccionado.",
           "",
         );
       }
@@ -759,9 +822,6 @@ export function InfoView() {
       setSelected(new Set());
       bumpChaptersReset();
       setChaptersLoading(false);
-      if (result.module_id && modules.some((m) => m.id === result.module_id)) {
-        setSelectedModuleId(result.module_id);
-      }
       setActiveCatalogTitle((cur) => cur || result.title);
       paintRows({
         title: result.title,
@@ -1025,6 +1085,11 @@ export function InfoView() {
     }
   }
 
+  // Reserved for the source-tools modal (import / update).
+  void handleCatalogImport;
+  void handleCatalogUpdate;
+  void catalogRefreshing;
+
   async function handleOnlineClick() {
     if (!mangaUrl) return;
     try {
@@ -1080,7 +1145,11 @@ export function InfoView() {
    * ------------------------------------------------------------------- */
   const sourceLabel = sourcesLoading
     ? "Cargando fuentes…"
-    : currentModule?.name || "Seleccionar fuente…";
+    : currentModule && enabledModuleIds.has(currentModule.id)
+      ? currentModule.name
+      : enabledModules.length
+        ? "Seleccionar fuente…"
+        : "Sin fuentes";
 
   const infoRows: { icon: IconName; label: string; value: string }[] = [];
   if (sidebarRows.authors) infoRows.push({ icon: "user", label: "Autor", value: sidebarRows.authors });
@@ -1159,6 +1228,17 @@ export function InfoView() {
   }
 
   function renderCatalogBody() {
+    if (!enabledModules.length) {
+      return (
+        <div className="catalog-results" id="catalog-list">
+          <div className="catalog-empty">
+            No hay sitios activos.
+            <br />
+            Ve a Ajustes → Sitios Web, marca los que quieras y guarda.
+          </div>
+        </div>
+      );
+    }
     if (catalogLoading) {
       return (
         <div className="catalog-results" id="catalog-list">
@@ -1308,20 +1388,11 @@ export function InfoView() {
             <button
               type="button"
               className="ghost"
-              id="catalog-import"
-              title="Importar catálogo (.db)"
-              onClick={() => void handleCatalogImport()}
+              id="source-tools"
+              title="Herramientas de catálogo"
+              onClick={() => setSourceToolsOpen(true)}
             >
-              <Icon name="import" className="ico" />
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              id="catalog-update"
-              title="Actualizar lista"
-              onClick={() => void handleCatalogUpdate()}
-            >
-              <Icon name="refresh" className={`ico${catalogRefreshing ? " ico-spin" : ""}`} />
+              <Icon name="sliders" className="ico" />
             </button>
           </div>
           <div className="search-input-row">
@@ -1463,7 +1534,26 @@ export function InfoView() {
             </div>
           </div>
 
-          <aside className="info-sidebar" id="info-sidebar" hidden={infoMode === "filter"}>
+          <aside
+            className={`info-sidebar${infoSidebarCollapsed ? " is-collapsed" : ""}`}
+            id="info-sidebar"
+            hidden={infoMode === "filter"}
+          >
+            <button
+              type="button"
+              className="info-sidebar-notch"
+              id="info-sidebar-notch"
+              title={infoSidebarCollapsed ? "Mostrar panel" : "Ocultar panel"}
+              aria-expanded={!infoSidebarCollapsed}
+              hidden={hideInfo || (!manga && !infoPanelOpen)}
+              onClick={() => setInfoSidebarCollapsed((c) => !c)}
+            >
+              <Icon
+                name="chevron"
+                className={`ico ico-sm info-sidebar-notch-ico${infoSidebarCollapsed ? " is-collapsed" : ""}`}
+              />
+            </button>
+            <div className="info-sidebar-body">
             <div className="info-sidebar-blur" id="cover-blur">
               <img id="cover-blur-img" src={coverSrc} alt="" />
             </div>
@@ -1532,6 +1622,7 @@ export function InfoView() {
                   </div>
                 </div>
               </div>
+            </div>
             </div>
           </aside>
 
@@ -1879,6 +1970,37 @@ export function InfoView() {
           </div>
         </div>
       </div>
+
+      {sourceToolsOpen ? (
+        <div
+          className="info-modal-backdrop"
+          role="presentation"
+          onClick={() => setSourceToolsOpen(false)}
+        >
+          <div
+            className="info-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="source-tools-title"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <header className="info-modal-head">
+              <h2 id="source-tools-title" className="info-modal-title">
+                Catálogo
+              </h2>
+              <button
+                type="button"
+                className="ghost"
+                title="Cerrar"
+                onClick={() => setSourceToolsOpen(false)}
+              >
+                <Icon name="x" className="ico" />
+              </button>
+            </header>
+            <div className="info-modal-body" />
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

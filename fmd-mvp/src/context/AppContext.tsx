@@ -43,8 +43,9 @@ type AppContextValue = {
   showMangaInfo: boolean;
   setShowMangaInfo: (open: boolean) => void;
   refreshModules: () => Promise<ModuleMeta[]>;
-  disabledModuleIds: Set<string>;
-  refreshDisabledModules: () => Promise<Set<string>>;
+  /** Opt-in website IDs from Settings (modules.enabled). */
+  enabledModuleIds: Set<string>;
+  refreshEnabledModules: () => Promise<Set<string>>;
   /** Favorites auto-check interval (Options + Favorites footer). */
   favAutoCheck: boolean;
   setFavAutoCheck: (on: boolean) => Promise<void>;
@@ -93,7 +94,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [outputDir, setOutputDir] = useState("");
   const [showMangaInfo, setShowMangaInfo] = useState(false);
-  const [disabledModuleIds, setDisabledModuleIds] = useState<Set<string>>(() => new Set());
+  const [enabledModuleIds, setEnabledModuleIds] = useState<Set<string>>(() => new Set());
   const [favAutoCheck, setFavAutoCheckState] = useState(true);
   const [{ narrow, hideInfo }, setLayout] = useState(() =>
     layoutFromWidth(typeof window !== "undefined" ? window.innerWidth : 1280),
@@ -204,14 +205,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refreshModules = useCallback(async () => {
     const mods = await api.modulesList();
     setModules(mods);
-    if (mods.length && !mods.some((m) => m.id === selectedModuleId)) {
-      setSelectedModuleId(mods[0]?.id ?? null);
+    if (selectedModuleId && !mods.some((m) => m.id === selectedModuleId)) {
+      setSelectedModuleId(null);
     }
     return mods;
   }, [selectedModuleId]);
 
-  const refreshDisabledModules = useCallback(async () => {
-    const raw = (await api.settingsGet(SK.MODULES_DISABLED)) ?? "[]";
+  const refreshEnabledModules = useCallback(async () => {
+    const raw = (await api.settingsGet(SK.MODULES_ENABLED)) ?? "[]";
     let ids: string[] = [];
     try {
       const parsed = JSON.parse(raw) as unknown;
@@ -220,13 +221,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ids = [];
     }
     const next = new Set(ids);
-    setDisabledModuleIds(next);
+    setEnabledModuleIds(next);
     return next;
   }, []);
 
   useEffect(() => {
-    void refreshDisabledModules();
-  }, [refreshDisabledModules]);
+    void refreshEnabledModules();
+  }, [refreshEnabledModules]);
 
   useEffect(() => {
     if (bootDoneRef.current) return;
@@ -315,8 +316,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     showMangaInfo,
     setShowMangaInfo,
     refreshModules,
-    disabledModuleIds,
-    refreshDisabledModules,
+    enabledModuleIds,
+    refreshEnabledModules,
     favAutoCheck,
     setFavAutoCheck,
   };

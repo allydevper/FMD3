@@ -28,7 +28,7 @@ pub const DOWNLOAD_PDF_QUALITY: &str = "download.pdf_quality";
 
 pub const QUEUE_SORT_ON_ADD: &str = "queue.sort_on_add";
 
-pub const MODULES_DISABLED: &str = "modules.disabled";
+pub const MODULES_ENABLED: &str = "modules.enabled";
 
 pub const FAVORITES_CHECK_INTERVAL_MIN: &str = "favorites.check_interval_min";
 pub const FAVORITES_CHECK_INTERVAL_ON: &str = "favorites.check_interval_on";
@@ -185,18 +185,20 @@ pub fn after_finish_exit() -> bool {
         .unwrap_or(false)
 }
 
-/// True if `id` is present in the JSON array stored under [`MODULES_DISABLED`].
+/// True if `id` is **not** in the opt-in list [`MODULES_ENABLED`].
+/// Missing key or `[]` means nothing is enabled (all disabled).
 pub fn module_disabled(id: &str) -> bool {
     if id.trim().is_empty() {
-        return false;
+        return true;
     }
-    let Some(raw) = get_direct(MODULES_DISABLED) else {
-        return false;
+    let Some(raw) = get_direct(MODULES_ENABLED) else {
+        return true;
     };
     if raw.trim().is_empty() {
-        return false;
+        return true;
     }
-    serde_json::from_str::<Vec<String>>(&raw)
-        .map(|list| list.iter().any(|x| x == id))
-        .unwrap_or(false)
+    let Ok(list) = serde_json::from_str::<Vec<String>>(&raw) else {
+        return true;
+    };
+    !list.iter().any(|x| x == id)
 }

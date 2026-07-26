@@ -20,7 +20,9 @@ pub async fn get_manga_info(
     let module_id = module_id.filter(|s| !s.is_empty());
     if let Some(id) = module_id.as_deref() {
         if crate::settings_keys::module_disabled(id) {
-            return Err("Módulo deshabilitado".into());
+            return Err(
+                "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+            );
         }
     }
     tauri::async_runtime::spawn_blocking(move || get_info(&url, module_id.as_deref()))
@@ -60,7 +62,9 @@ pub fn catalog_search(
     offset: Option<i64>,
 ) -> Result<Vec<CatalogEntry>, String> {
     if crate::settings_keys::module_disabled(&module_id) {
-        return Err("Módulo deshabilitado".into());
+        return Err(
+            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+        );
     }
     catalog::search(&module_id, &query, limit.unwrap_or(100), offset.unwrap_or(0))
 }
@@ -132,7 +136,9 @@ pub async fn catalog_update(
     module_id: String,
 ) -> Result<UpdateListStats, String> {
     if crate::settings_keys::module_disabled(&module_id) {
-        return Err("Módulo deshabilitado".into());
+        return Err(
+            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+        );
     }
     let id = module_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -202,7 +208,9 @@ pub fn favorites_add(
     req: FavoriteAddRequest,
 ) -> Result<Favorite, String> {
     if crate::settings_keys::module_disabled(&req.module_id) {
-        return Err("Módulo deshabilitado".into());
+        return Err(
+            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+        );
     }
     let (last_link, last_name, count) = if let Some(last) = req.chapters.last() {
         (last.link.clone(), last.name.clone(), req.chapters.len() as i64)
@@ -381,7 +389,9 @@ pub fn queue_add(
         return Err("Carpeta de salida vacía".into());
     }
     if crate::settings_keys::module_disabled(&req.module_id) {
-        return Err("Módulo deshabilitado".into());
+        return Err(
+            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+        );
     }
     let _ = db::settings_set(&state.db, "default_output_dir", &req.output_dir);
     let items: Vec<NewQueueItem> = req

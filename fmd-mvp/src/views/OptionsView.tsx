@@ -732,7 +732,7 @@ function TokenInsert({ tokens, onInsert }: { tokens: string[]; onInsert: (token:
 /* ---------------------------------------------------------------------- */
 
 export function OptionsView() {
-  const { activeNav, log, outputDir, setOutputDir, modules, refreshModules, setTheme, refreshDisabledModules } =
+  const { activeNav, log, outputDir, setOutputDir, modules, refreshModules, setTheme, refreshEnabledModules } =
     useApp();
 
   const [optTab, setOptTab] = useState<OptTabId>("general");
@@ -755,7 +755,7 @@ export function OptionsView() {
   }, []);
 
   const [siteOn, setSiteOn] = useState<Record<string, true>>({});
-  const disabledIdsRef = useRef<Set<string>>(new Set());
+  const enabledIdsRef = useRef<Set<string>>(new Set());
   const knownModulesRef = useRef<Set<string>>(new Set());
 
   /* ---- Cargar / guardar ajustes reales ---- */
@@ -767,20 +767,20 @@ export function OptionsView() {
     const parsed = parseProxyUrl(proxyRaw);
     const packRaw = (await get(SK.PACK)) ?? "none";
     const packOk = (PACK_FORMATS as readonly string[]).includes(packRaw) ? packRaw : "none";
-    const disabledRaw = (await get(SK.MODULES_DISABLED)) ?? "[]";
-    let disabled: string[] = [];
+    const enabledRaw = (await get(SK.MODULES_ENABLED)) ?? "[]";
+    let enabled: string[] = [];
     try {
-      disabled = JSON.parse(disabledRaw);
+      enabled = JSON.parse(enabledRaw);
     } catch {
-      disabled = [];
+      enabled = [];
     }
-    const disabledSet = new Set(disabled);
-    disabledIdsRef.current = disabledSet;
+    const enabledSet = new Set(enabled);
+    enabledIdsRef.current = enabledSet;
     knownModulesRef.current = new Set(modules.map((m) => m.id));
     setSiteOn(() => {
       const next: Record<string, true> = {};
       for (const m of modules) {
-        if (!disabledSet.has(m.id)) next[m.id] = true;
+        if (enabledSet.has(m.id)) next[m.id] = true;
       }
       return next;
     });
@@ -998,23 +998,23 @@ export function OptionsView() {
     await api.settingsSet(SK.UI_DL_LEFT_BAR, boolStr(s.dlLeftBar));
     await api.settingsSet(SK.CHECK_UPDATE_START, boolStr(s.checkUpdateStart));
     await api.settingsSet(SK.UPDATE_LIST_NO_INFO, boolStr(s.updateListNoInfo));
-    const disabled = modules.filter((m) => !siteOn[m.id]).map((m) => m.id);
-    disabledIdsRef.current = new Set(disabled);
-    await api.settingsSet(SK.MODULES_DISABLED, JSON.stringify(disabled));
+    const enabled = modules.filter((m) => siteOn[m.id]).map((m) => m.id);
+    enabledIdsRef.current = new Set(enabled);
+    await api.settingsSet(SK.MODULES_ENABLED, JSON.stringify(enabled));
     const dir = s.outputDirField.trim();
     if (dir) {
       await api.settingsSet(SK.OUTPUT_DIR, dir);
       setOutputDir(dir);
     }
     setTheme(s.theme);
-    await refreshDisabledModules();
+    await refreshEnabledModules();
     trayRef.current = { trayMinimize: s.trayMinimize, trayStart: s.trayStart };
     setDirty(false);
     log("Ajustes guardados", "ok");
     if (trayChanged) {
       log("Algunos ajustes de bandeja requieren reiniciar la aplicación", "");
     }
-  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshDisabledModules]);
+  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshEnabledModules]);
 
   const handleBrowseOutputDir = useCallback(async () => {
     const dir = await open({ directory: true, multiple: false });
@@ -1102,11 +1102,9 @@ export function OptionsView() {
       }
       for (const m of modules) {
         if (!knownModulesRef.current.has(m.id)) {
+          // New modules stay OFF (opt-in).
           knownModulesRef.current.add(m.id);
-          if (!disabledIdsRef.current.has(m.id)) {
-            next[m.id] = true;
-            changed = true;
-          }
+          changed = true;
         } else if (prev[m.id]) {
           next[m.id] = true;
         }
