@@ -1059,6 +1059,24 @@ fn lua_status_ok(v: Value) -> bool {
 }
 
 pub fn get_info(manga_url: &str, module_id: Option<&str>) -> Result<MangaInfoResult, String> {
+    let manga_url = manga_url.trim();
+    if manga_url.is_empty() {
+        return Err("URL vacía.".into());
+    }
+    // Soft check: only reject clearly non-URLs (plain text). Host/module
+    // resolution stays with resolve_for_url / selected module (FMD2-like).
+    if !manga_url.contains("://") && !manga_url.starts_with("//") {
+        let looks_like_host = manga_url
+            .split(['/', '?', '#'])
+            .next()
+            .is_some_and(|h| h.contains('.') && !h.contains(' '));
+        if !looks_like_host {
+            return Err(
+                "URL inválida. Usa un enlace http(s) completo del manga.".into(),
+            );
+        }
+    }
+
     let meta = registry::resolve_for_url(manga_url, module_id)?;
     let path = PathBuf::from(&meta.file_path);
     if !path.exists() {

@@ -26,7 +26,7 @@ import {
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
-import { catalogLinkKey, maybeFillHost, resolveCover } from "../../utils/url";
+import { catalogLinkKey, maybeFillHost, normalizeMangaUrl, resolveCover } from "../../utils/url";
 import coverDefaultUrl from "../../assets/cover-default.svg";
 import chaptersEmptyUrl from "../../assets/chapters-empty.png";
 import type {
@@ -672,27 +672,54 @@ export function InfoView() {
    * ------------------------------------------------------------------- */
   async function loadMangaInfo(explicitUrl?: string) {
     const seq = ++mangaLoadSeqRef.current;
-    const url = (explicitUrl ?? urlInput).trim();
+    const raw = (explicitUrl ?? urlInput).trim();
+    setInfoPanelOpen(true);
+    clearLog();
+
+    const url = normalizeMangaUrl(raw);
+    if (!url) {
+      log(
+        "URL inválida. Pega un enlace http(s) completo del manga (ej. https://sitio.com/manga/…).",
+        "err",
+      );
+      return;
+    }
+    if (url !== raw) setUrlInput(url);
+
     setMangaUrl(url);
     setMangaLoadingUrl(url);
-    setInfoPanelOpen(true);
-
-    clearLog();
     log("Cargando info vía Lua GetInfo…");
     setLoadBtnDisabled(true);
     setChaptersLoading(true);
 
-    let moduleId = selectedModuleId;
+    // Prefer module that matches the URL host; else keep selected (FMD2-like).
+    let moduleId = selectedModuleId || undefined;
     try {
       const matches = await api.modulesMatchUrl(url);
       if (seq !== mangaLoadSeqRef.current) return;
-      const enabledMatch = matches.find((m) => !disabledModuleIds.has(m.id));
-      if (enabledMatch) {
-        moduleId = enabledMatch.id;
-        setSelectedModuleId(enabledMatch.id);
+      const enabled = matches.filter((m) => !disabledModuleIds.has(m.id));
+      if (enabled.length > 0) {
+        const preferred = enabled.find((m) => m.id === selectedModuleId) ?? enabled[0];
+        moduleId = preferred.id;
+        setSelectedModuleId(preferred.id);
+      } else if (!moduleId) {
+        log(
+          "Ningún módulo coincide con esta URL. Elige el sitio en el selector e inténtalo de nuevo.",
+          "err",
+        );
+        setManga(null);
+        setChaptersLoading(false);
+        setMangaLoadingUrl("");
+        setLoadBtnDisabled(false);
+        return;
+      } else if (matches.length > 0) {
+        log(
+          "El módulo de esta URL está deshabilitado; se usa el seleccionado.",
+          "",
+        );
       }
     } catch {
-      /* keep current module */
+      /* keep selected module */
     }
 
     if (moduleId) {
@@ -725,8 +752,9 @@ export function InfoView() {
     }
 
     try {
-      const result = await api.getMangaInfo(url, moduleId);
+      const result = await api.getMangaInfo(url, moduleId ?? null);
       if (seq !== mangaLoadSeqRef.current) return;
+
       setManga(result);
       setSelected(new Set());
       bumpChaptersReset();
@@ -759,7 +787,7 @@ export function InfoView() {
       syncMangaCacheFromInfo(url, result);
 
       const coverUrl = resolveCover(result.cover, result.root_url);
-      const mid = result.module_id || selectedModuleId;
+      const mid = result.module_id || moduleId;
       const remoteShowing =
         coverDisplayKeyRef.current.startsWith("http://") ||
         coverDisplayKeyRef.current.startsWith("https://");
@@ -771,7 +799,16 @@ export function InfoView() {
 
       await syncFavoriteState(url);
       if (seq !== mangaLoadSeqRef.current) return;
-      log(`OK: ${result.chapters.length} capítulos (${result.module_name})`, "ok");
+      if (!result.title.trim() && result.chapters.length === 0) {
+        log(
+          `Sin datos (${result.module_name}). ¿URL correcta o sitio bloqueado?`,
+          "err",
+        );
+      } else if (result.chapters.length === 0) {
+        log(`OK sin capítulos (${result.module_name})`, "ok");
+      } else {
+        log(`OK: ${result.chapters.length} capítulos (${result.module_name})`, "ok");
+      }
     } catch (e) {
       if (seq !== mangaLoadSeqRef.current) return;
       setManga(null);
@@ -1363,7 +1400,8 @@ export function InfoView() {
                 <input
                   id="url"
                   type="text"
-                  placeholder="https://..."
+                  inputMode="url"
+                  placeholder="https://sitio.com/manga/…"
                   autoComplete="off"
                   autoCapitalize="off"
                   autoCorrect="off"
@@ -1389,7 +1427,7 @@ export function InfoView() {
                   className="url-go"
                   id="load"
                   title="Cargar"
-                  disabled={loadBtnDisabled}
+                  disabled={loadBtnDisabled || !urlInput.trim()}
                   onClick={() => void loadMangaInfo()}
                 >
                   <Icon name="arrowRight" className="ico" />

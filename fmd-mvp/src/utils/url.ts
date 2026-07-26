@@ -6,6 +6,36 @@ export function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * Normalize pasted manga URL for GetInfo.
+ * Rejects plain text (`Listo.`), relative paths without a selected root, etc.
+ * Accepts bare domains (`18kami.com/...`) by prefixing `https://`.
+ */
+export function normalizeMangaUrl(raw: string): string | null {
+  const s = raw.trim();
+  if (!s) return null;
+
+  let candidate = s;
+  if (!/^https?:\/\//i.test(candidate)) {
+    if (candidate.startsWith("//")) {
+      candidate = `https:${candidate}`;
+    } else if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}([/:?#]|$)/i.test(candidate)) {
+      candidate = `https://${candidate}`;
+    } else {
+      return null;
+    }
+  }
+
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    if (!u.hostname || !u.hostname.includes(".")) return null;
+    return u.href;
+  } catch {
+    return null;
+  }
+}
+
 export function maybeFillHost(root: string, link: string): string {
   if (!link) return link;
   if (/^https?:\/\//i.test(link)) return link;
