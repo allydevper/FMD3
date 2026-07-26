@@ -1,4 +1,4 @@
-//! Local cover image cache under `AppData/fmd-mvp/covers/<module_id>/`.
+//! Local cover image cache under `AppData/fmd-mvp/cover-cache/<module_id>/`.
 //! Served to the UI as `data:` URLs (avoids Tauri asset-protocol path mismatch).
 
 use crate::catalog::normalize_manga_link;
@@ -10,7 +10,35 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn covers_root() -> PathBuf {
-    crate::db::db_path().join("covers")
+    migrate_legacy_covers_dir();
+    crate::db::db_path().join("cover-cache")
+}
+
+/// One-shot rename `covers/` → `cover-cache/` if the new folder is missing.
+fn migrate_legacy_covers_dir() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let root = crate::db::db_path();
+        let legacy = root.join("covers");
+        let modern = root.join("cover-cache");
+        if legacy.is_dir() && !modern.exists() {
+            let _ = fs::rename(&legacy, &modern);
+        }
+    });
+}
+
+/// Delete `cover-cache/` and legacy `covers/` trees. Returns number of top-level dirs removed.
+pub fn clear_all() -> Result<usize, String> {
+    migrate_legacy_covers_dir();
+    let mut n = 0usize;
+    for name in ["cover-cache", "covers"] {
+        let p = crate::db::db_path().join(name);
+        if p.is_dir() {
+            fs::remove_dir_all(&p).map_err(|e| format!("borrar {name}: {e}"))?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 fn hash_link(link: &str) -> String {

@@ -82,6 +82,8 @@ export function downloadFmd2Db(url: string) {
 export function mangaCacheUpsert(args: {
   moduleId: string;
   link: string;
+  title: string;
+  altTitles: string;
   authors: string;
   artists: string;
   genres: string;
@@ -90,11 +92,27 @@ export function mangaCacheUpsert(args: {
   numchapter: number;
   cover: string;
 }) {
-  return invoke("manga_cache_upsert", args);
+  return invoke("manga_cache_upsert", {
+    moduleId: args.moduleId,
+    link: args.link,
+    title: args.title,
+    altTitles: args.altTitles,
+    authors: args.authors,
+    artists: args.artists,
+    genres: args.genres,
+    status: args.status,
+    summary: args.summary,
+    numchapter: args.numchapter,
+    cover: args.cover,
+  });
 }
 
 export function mangaCacheGet(moduleId: string, link: string) {
   return invoke<MangaCacheRow | null>("manga_cache_get", { moduleId, link });
+}
+
+export function cacheClear() {
+  return invoke<string>("cache_clear");
 }
 
 export function coverLocalPath(moduleId: string, link: string) {

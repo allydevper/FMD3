@@ -739,6 +739,10 @@ export function OptionsView() {
   const [dirty, setDirty] = useState(false);
   const [saveFlash, setSaveFlash] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const saveFlashTimerRef = useRef<number | undefined>(undefined);
+  const [cacheClearFlash, setCacheClearFlash] = useState<"idle" | "working" | "done" | "error">(
+    "idle",
+  );
+  const cacheClearTimerRef = useRef<number | undefined>(undefined);
   const [s, setS] = useState<OptionsFormState>(DEFAULT_SETTINGS);
 
   const outputDirRef = useRef(outputDir);
@@ -774,8 +778,41 @@ export function OptionsView() {
   useEffect(() => {
     return () => {
       if (saveFlashTimerRef.current != null) window.clearTimeout(saveFlashTimerRef.current);
+      if (cacheClearTimerRef.current != null) window.clearTimeout(cacheClearTimerRef.current);
     };
   }, []);
+
+  function runCacheClear() {
+    if (cacheClearFlash === "working") return;
+    if (
+      !window.confirm(
+        "¿Limpiar caché de info y portadas?\n\nNo se borran favoritos, cola ni listas de manga.",
+      )
+    ) {
+      return;
+    }
+    setCacheClearFlash("working");
+    void api
+      .cacheClear()
+      .then((msg) => {
+        setCacheClearFlash("done");
+        log(msg, "ok");
+        if (cacheClearTimerRef.current != null) window.clearTimeout(cacheClearTimerRef.current);
+        cacheClearTimerRef.current = window.setTimeout(() => {
+          setCacheClearFlash("idle");
+          cacheClearTimerRef.current = undefined;
+        }, 2500);
+      })
+      .catch((e) => {
+        setCacheClearFlash("error");
+        log(String(e), "err");
+        if (cacheClearTimerRef.current != null) window.clearTimeout(cacheClearTimerRef.current);
+        cacheClearTimerRef.current = window.setTimeout(() => {
+          setCacheClearFlash("idle");
+          cacheClearTimerRef.current = undefined;
+        }, 3000);
+      });
+  }
 
   const [siteOn, setSiteOn] = useState<Record<string, true>>({});
   const enabledIdsRef = useRef<Set<string>>(new Set());
@@ -1564,6 +1601,36 @@ export function OptionsView() {
                       <SwitchRow id="opt-dl-clear" label="Botón borrar completadas" desc="Mostrar «Borrar todas las tareas completadas»" checked={s.dlClearBtn} onChange={(v) => update("dlClearBtn", v)} />
                       <SwitchRow id="opt-dl-left" label="Barra izquierda de descargas" desc="Controles adicionales a la izquierda" checked={s.dlLeftBar} onChange={(v) => update("dlLeftBar", v)} />
                       <SwitchRow id="opt-load-covers" label="Cargar portada del manga" desc="Descarga y muestra la imagen de portada" checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
+                      <div className="st-row st-row-actions">
+                        <div className="st-meta">
+                          <div className="st-label">Caché de info y portadas</div>
+                          <div className="st-desc">
+                            Borra metadata en manga_cache y archivos en cover-cache (no toca favoritos ni listas)
+                          </div>
+                          {cacheClearFlash === "done" ? (
+                            <div className="st-inline-ok" role="status">
+                              Caché limpiada
+                            </div>
+                          ) : cacheClearFlash === "error" ? (
+                            <div className="st-inline-err" role="status">
+                              No se pudo limpiar
+                            </div>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          className={`secondary${cacheClearFlash === "done" ? " is-saved" : ""}`}
+                          id="opt-clear-cache"
+                          disabled={cacheClearFlash === "working"}
+                          onClick={runCacheClear}
+                        >
+                          {cacheClearFlash === "working"
+                            ? "Limpiando…"
+                            : cacheClearFlash === "done"
+                              ? "Listo"
+                              : "Limpiar caché"}
+                        </button>
+                      </div>
                       <SwitchRow id="opt-notify" label="Globo de notificación" desc="Avisos del sistema al completar tareas" checked={s.notify} onChange={(v) => update("notify", v)} />
                       <SwitchRow id="opt-goto-dl" label="Ir a Descargas al añadir" desc="Cambia a la vista Descargas al crear tareas" checked={s.gotoDl} onChange={(v) => update("gotoDl", v)} />
                       <SwitchRow id="opt-goto-fav" label="Ir a Favoritos al añadir manga" desc="Cambia a Favoritos al guardar un título" checked={s.gotoFav} onChange={(v) => update("gotoFav", v)} />

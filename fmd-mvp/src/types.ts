@@ -115,6 +115,8 @@ export type CatalogEntry = {
 
 export type MangaCacheRow = {
   link: string;
+  title?: string;
+  alt_titles?: string;
   authors: string;
   artists: string;
   genres: string;

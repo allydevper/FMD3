@@ -25,6 +25,10 @@ pub struct CatalogEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MangaCacheRow {
     pub link: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub alt_titles: String,
     pub authors: String,
     pub artists: String,
     pub genres: String,
@@ -37,6 +41,10 @@ pub struct MangaCacheRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MangaCacheUpsert {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub alt_titles: String,
     pub authors: String,
     pub artists: String,
     pub genres: String,
@@ -99,6 +107,8 @@ fn open_app_db() -> Result<Connection, String> {
         CREATE TABLE IF NOT EXISTS manga_cache (
             module_id TEXT NOT NULL,
             link TEXT NOT NULL,
+            title TEXT,
+            alt_titles TEXT,
             authors TEXT,
             artists TEXT,
             genres TEXT,
@@ -113,6 +123,8 @@ fn open_app_db() -> Result<Connection, String> {
         "#,
     )
     .map_err(|e| e.to_string())?;
+    let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
+    let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN alt_titles TEXT", []);
     Ok(conn)
 }
 
@@ -274,8 +286,8 @@ pub fn stats(module_id: &str) -> Result<CatalogStats, String> {
 const SEARCH_SELECT: &str = r#"
 SELECT
   m.link,
-  COALESCE(m.title,''),
-  COALESCE(m.alttitles,''),
+  COALESCE(NULLIF(c.title,''), m.title, ''),
+  COALESCE(NULLIF(c.alt_titles,''), m.alttitles, ''),
   COALESCE(c.authors, m.authors, ''),
   COALESCE(c.artists, m.artists, ''),
   COALESCE(c.genres, m.genres, ''),
@@ -390,6 +402,7 @@ pub fn manga_cache_get(module_id: &str, link: &str) -> Result<Option<MangaCacheR
     let row = conn
         .query_row(
             r#"SELECT link,
+                      COALESCE(title,''), COALESCE(alt_titles,''),
                       COALESCE(authors,''), COALESCE(artists,''), COALESCE(genres,''),
                       COALESCE(status,''), COALESCE(summary,''), COALESCE(numchapter,0),
                       COALESCE(cover,''), COALESCE(updated_at,'')
@@ -398,14 +411,16 @@ pub fn manga_cache_get(module_id: &str, link: &str) -> Result<Option<MangaCacheR
             |r| {
                 Ok(MangaCacheRow {
                     link: r.get(0)?,
-                    authors: r.get(1)?,
-                    artists: r.get(2)?,
-                    genres: r.get(3)?,
-                    status: r.get(4)?,
-                    summary: r.get(5)?,
-                    numchapter: r.get(6)?,
-                    cover: r.get(7)?,
-                    updated_at: r.get(8)?,
+                    title: r.get(1)?,
+                    alt_titles: r.get(2)?,
+                    authors: r.get(3)?,
+                    artists: r.get(4)?,
+                    genres: r.get(5)?,
+                    status: r.get(6)?,
+                    summary: r.get(7)?,
+                    numchapter: r.get(8)?,
+                    cover: r.get(9)?,
+                    updated_at: r.get(10)?,
                 })
             },
         )
@@ -429,9 +444,11 @@ pub fn manga_cache_upsert(
     }
     let updated_at = chrono_now();
     conn.execute(
-        r#"INSERT INTO manga_cache(module_id, link, authors, artists, genres, status, summary, numchapter, cover, updated_at)
-           VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        r#"INSERT INTO manga_cache(module_id, link, title, alt_titles, authors, artists, genres, status, summary, numchapter, cover, updated_at)
+           VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
            ON CONFLICT(module_id, link) DO UPDATE SET
+             title=excluded.title,
+             alt_titles=excluded.alt_titles,
              authors=excluded.authors,
              artists=excluded.artists,
              genres=excluded.genres,
@@ -443,6 +460,8 @@ pub fn manga_cache_upsert(
         params![
             module_id,
             link,
+            data.title,
+            data.alt_titles,
             data.authors,
             data.artists,
             data.genres,
@@ -455,6 +474,19 @@ pub fn manga_cache_upsert(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Clear Info metadata cache and on-disk cover images (settings/favorites/queue untouched).
+pub fn cache_clear() -> Result<String, String> {
+    let conn = open_app_db()?;
+    let deleted = conn
+        .execute("DELETE FROM manga_cache", [])
+        .map_err(|e| e.to_string())?;
+    let _ = conn.execute("VACUUM", []);
+    let removed_dirs = crate::cover_cache::clear_all()?;
+    Ok(format!(
+        "Caché limpiada: {deleted} filas de metadata, {removed_dirs} carpetas de portadas"
+    ))
 }
 
 fn chrono_now() -> String {
@@ -553,6 +585,8 @@ mod tests {
             mid,
             link,
             &MangaCacheUpsert {
+                title: "Test Title".into(),
+                alt_titles: "Alt".into(),
                 authors: "A".into(),
                 artists: "".into(),
                 genres: "Action".into(),
@@ -572,6 +606,7 @@ mod tests {
         let row = manga_cache_get(mid, link).expect("get").expect("row still there");
         assert_eq!(row.numchapter, 7);
         assert_eq!(row.authors, "A");
+        assert_eq!(row.alt_titles, "Alt");
         assert_eq!(row.cover, "https://example.com/c.jpg");
 
         let hits = search(mid, "", 10, 0).expect("search");

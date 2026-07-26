@@ -178,6 +178,31 @@
   gap: 8px;
 }
 
+.st-inline-ok {
+  margin-top: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ok);
+}
+
+.st-inline-err {
+  margin-top: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--bad);
+}
+
+.st-card .secondary.is-saved {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #fff;
+}
+
+.st-card .secondary:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .st-meta {
   flex: 1 1 auto;
   min-width: 0;

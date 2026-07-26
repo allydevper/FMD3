@@ -70,6 +70,8 @@ type PaintOpts = {
   summary?: string;
   numchapter?: number;
   moduleName?: string;
+  /** When provided (including ""), updates alt titles; omit to leave current alt alone. */
+  altTitles?: string;
 };
 
 /** FMD2 stores status as "0"/"1"/"2"/"3"; sidebar shows the label like ShowInformation. */
@@ -642,7 +644,9 @@ export function InfoView() {
       numchapter: opts.numchapter && opts.numchapter > 0 ? opts.numchapter : 0,
       moduleName: (opts.moduleName || "").trim(),
     });
-    setAltTitles("");
+    if (opts.altTitles !== undefined) {
+      setAltTitles(opts.altTitles.trim());
+    }
   }
 
   async function applyCachedCover(moduleId: string, link: string) {
@@ -697,6 +701,7 @@ export function InfoView() {
       summary: e.summary,
       numchapter: e.numchapter,
       moduleName: currentModule?.name,
+      altTitles: e.alttitles || "",
     });
     const root = currentModule?.root_url || "";
     const hint = resolveCover(e.cover || "", root);
@@ -715,6 +720,8 @@ export function InfoView() {
         touched = true;
         return {
           ...e,
+          title: info.title || e.title,
+          alttitles: info.alt_titles || e.alttitles,
           numchapter: count,
           authors: info.authors,
           artists: info.artists,
@@ -733,6 +740,8 @@ export function InfoView() {
         .mangaCacheUpsert({
           moduleId,
           link: mangaLink,
+          title: info.title,
+          altTitles: info.alt_titles,
           authors: info.authors,
           artists: info.artists,
           genres: info.genres,
@@ -832,7 +841,7 @@ export function InfoView() {
           if (seq !== mangaLoadSeqRef.current || !cached) return;
           if (!mangaRef.current) {
             paintRows({
-              title: activeCatalogTitle || cached.link,
+              title: cached.title?.trim() || activeCatalogTitle || cached.link,
               authors: cached.authors,
               artists: cached.artists,
               genres: cached.genres,
@@ -840,6 +849,7 @@ export function InfoView() {
               summary: cached.summary,
               numchapter: cached.numchapter,
               moduleName: currentModule?.name,
+              altTitles: cached.alt_titles || "",
             });
           }
           if (cached.cover && !coverLocalFallbackRef.current) {
@@ -871,8 +881,8 @@ export function InfoView() {
         summary: result.summary,
         numchapter: result.chapters.length,
         moduleName: result.module_name,
+        altTitles: result.alt_titles,
       });
-      setAltTitles(result.alt_titles.trim());
 
       const remote = resolveCover(result.cover, result.root_url);
       if (coverLocalFallbackRef.current) {

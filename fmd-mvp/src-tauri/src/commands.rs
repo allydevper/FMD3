@@ -78,6 +78,8 @@ pub fn catalog_import(module_id: String, path: String) -> Result<CatalogStats, S
 pub fn manga_cache_upsert(
     module_id: String,
     link: String,
+    title: String,
+    alt_titles: String,
     authors: String,
     artists: String,
     genres: String,
@@ -90,6 +92,8 @@ pub fn manga_cache_upsert(
         &module_id,
         &link,
         &MangaCacheUpsert {
+            title,
+            alt_titles,
             authors,
             artists,
             genres,
@@ -104,6 +108,11 @@ pub fn manga_cache_upsert(
 #[tauri::command]
 pub fn manga_cache_get(module_id: String, link: String) -> Result<Option<MangaCacheRow>, String> {
     catalog::manga_cache_get(&module_id, &link)
+}
+
+#[tauri::command]
+pub fn cache_clear() -> Result<String, String> {
+    catalog::cache_clear()
 }
 
 #[tauri::command]

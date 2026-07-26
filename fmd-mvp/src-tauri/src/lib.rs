@@ -247,6 +247,7 @@ pub fn run() {
             commands::catalog_import,
             commands::manga_cache_upsert,
             commands::manga_cache_get,
+            commands::cache_clear,
             commands::cover_local_path,
             commands::cover_ensure,
             commands::catalog_update,

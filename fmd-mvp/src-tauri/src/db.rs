@@ -166,6 +166,8 @@ pub fn open_db() -> Result<Db, String> {
         CREATE TABLE IF NOT EXISTS manga_cache (
             module_id TEXT NOT NULL,
             link TEXT NOT NULL,
+            title TEXT,
+            alt_titles TEXT,
             authors TEXT,
             artists TEXT,
             genres TEXT,
@@ -205,6 +207,8 @@ pub fn open_db() -> Result<Db, String> {
         "ALTER TABLE queue_items ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
+    let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN alt_titles TEXT", []);
     Ok(Arc::new(Mutex::new(conn)))
 }
 
