@@ -1025,11 +1025,9 @@
 }
 
 .sites-group-count,
-.sites-group-summary,
-.sites-site-domain {
-  font-size: 11px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  color: var(--muted);
+.sites-group-summary {
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--text) 70%, var(--muted));
 }
 
 .sites-group-summary {
@@ -1038,6 +1036,24 @@
 
 .sites-site-label {
   font-size: 12.5px;
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+  font-weight: 500;
+}
+
+.sites-trow-site.is-on .sites-site-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.sites-site-domain {
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: color-mix(in srgb, var(--text) 62%, var(--muted));
+  letter-spacing: 0.01em;
+}
+
+.sites-trow-site.is-on .sites-site-domain {
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
 }
 
 .sites-row-spacer {

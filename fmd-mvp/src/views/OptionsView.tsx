@@ -2232,19 +2232,35 @@ export function OptionsView() {
                           );
                         }
                         return (
-                          <div key={row.key} className="sites-trow sites-trow-site" style={{ top }}>
+                          <div
+                            key={row.key}
+                            className={`sites-trow sites-trow-site${row.on ? " is-on" : ""}`}
+                            style={{ top }}
+                            role="checkbox"
+                            aria-checked={row.on}
+                            tabIndex={0}
+                            onClick={() => setSitesOn([row.id], !row.on)}
+                            onKeyDown={(e) => {
+                              if (e.key === " " || e.key === "Enter") {
+                                e.preventDefault();
+                                setSitesOn([row.id], !row.on);
+                              }
+                            }}
+                          >
                             <button
                               type="button"
                               className={`sites-cb${row.on ? " on" : ""}`}
                               style={{ ["--ico" as string]: ICO.check }}
                               aria-label="Activar sitio"
-                              onClick={() => setSitesOn([row.id], !row.on)}
+                              tabIndex={-1}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSitesOn([row.id], !row.on);
+                              }}
                             >
                               <span className="sites-cb-mk" />
                             </button>
-                            <span className="sites-site-label" style={{ color: row.on ? "var(--text)" : "var(--muted)" }}>
-                              {row.name}
-                            </span>
+                            <span className="sites-site-label">{row.name}</span>
                             <div className="sites-row-spacer" />
                             <span className="sites-site-domain">{row.domain}</span>
                           </div>
