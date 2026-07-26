@@ -60,6 +60,10 @@ export function catalogSearch(
   });
 }
 
+export function catalogCount(moduleId: string, query: string) {
+  return invoke<number>("catalog_count", { moduleId, query });
+}
+
 export function catalogImport(moduleId: string, path: string) {
   return invoke<CatalogStats>("catalog_import", { moduleId, path });
 }

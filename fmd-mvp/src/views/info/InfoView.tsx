@@ -13,7 +13,7 @@ import { Icon } from "../../components/Icon";
 import { VirtualList } from "../../components/VirtualList";
 import type { IconName } from "../../icons";
 import {
-  CATALOG_BATCH,
+  CATALOG_PAGE,
   CAT_OVERSCAN,
   CAT_ROW_H,
   CH_OVERSCAN,
@@ -147,12 +147,14 @@ export function InfoView() {
   /* ---------------------------------------------------------------------
    * Catalog (left panel)
    * ------------------------------------------------------------------- */
-  const [catalogEntries, setCatalogEntriesState] = useState<CatalogEntry[]>([]);
-  const catalogEntriesRef = useRef<CatalogEntry[]>([]);
-  const setCatalogEntries = useCallback((v: CatalogEntry[]) => {
-    catalogEntriesRef.current = v;
-    setCatalogEntriesState(v);
+  const [catalogRows, setCatalogRowsState] = useState<(CatalogEntry | undefined)[]>([]);
+  const catalogRowsRef = useRef<(CatalogEntry | undefined)[]>([]);
+  const setCatalogRows = useCallback((v: (CatalogEntry | undefined)[]) => {
+    catalogRowsRef.current = v;
+    setCatalogRowsState(v);
   }, []);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const catalogTotalRef = useRef(0);
 
   const [catalogText, setCatalogText] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -170,10 +172,29 @@ export function InfoView() {
   const catalogLoadGenRef = useRef(0);
   const catalogLoadingDelayRef = useRef<number | undefined>(undefined);
   const catalogSpinnerShownRef = useRef(false);
+  const loadedPagesRef = useRef<Set<number>>(new Set());
+  const inflightRef = useRef<Set<number>>(new Set());
+  const wantedPagesRef = useRef<number[]>([]);
+  const fillRunningRef = useRef(false);
+  const fillWaitersRef = useRef<Array<() => void>>([]);
   const lastCatalogClickRef = useRef<{ idx: number; at: number }>({ idx: -1, at: 0 });
 
   function bumpCatalogReset() {
     setCatalogResetSeq((s) => s + 1);
+  }
+
+  function setCatalogTotalBoth(n: number) {
+    catalogTotalRef.current = n;
+    setCatalogTotal(n);
+  }
+
+  function resetFillQueues() {
+    loadedPagesRef.current = new Set();
+    inflightRef.current = new Set();
+    wantedPagesRef.current = [];
+    fillRunningRef.current = false;
+    const waiters = fillWaitersRef.current.splice(0);
+    for (const w of waiters) w();
   }
 
   /* ---------------------------------------------------------------------
@@ -374,15 +395,28 @@ export function InfoView() {
     return true;
   }
 
-  const visibleCatalog = useMemo(() => {
-    if (!advFilterApplied) return catalogEntries;
-    return catalogEntries.filter((e) => entryMatchesFilter(e, advFilter, filterNewDays));
-  }, [catalogEntries, advFilter, advFilterApplied, filterNewDays]);
+  const visibleCatalog = useMemo((): (CatalogEntry | undefined)[] => {
+    if (!advFilterApplied) return catalogRows;
+    return catalogRows.filter(
+      (e): e is CatalogEntry => !!e && entryMatchesFilter(e, advFilter, filterNewDays),
+    );
+  }, [catalogRows, advFilter, advFilterApplied, filterNewDays]);
 
   function applyAdvFilter() {
-    setAdvFilterApplied(true);
-    const n = catalogEntries.filter((e) => entryMatchesFilter(e, advFilter, filterNewDays)).length;
-    log(`Filtro aplicado: ${n} títulos`, "ok");
+    void (async () => {
+      setCatalogLoading(true);
+      setCatalogLoadingText("Cargando títulos…");
+      try {
+        const all = await ensureAllPagesLoaded();
+        setAdvFilterApplied(true);
+        const n = all.filter((e) => entryMatchesFilter(e, advFilter, filterNewDays)).length;
+        log(`Filtro aplicado: ${n} títulos`, "ok");
+      } catch (e) {
+        log(String(e), "err");
+      } finally {
+        setCatalogLoading(false);
+      }
+    })();
   }
 
   function removeAdvFilter() {
@@ -412,19 +446,130 @@ export function InfoView() {
       return;
     }
     try {
-      const st = await api.catalogStats(id);
-      setCatalogStatsText(String(st.count));
+      const n = await api.catalogCount(id, catalogQueryRef.current);
+      setCatalogStatsText(String(n));
     } catch {
       setCatalogStatsText("—");
     }
+  }
+
+  function nextPageToFetch(totalPages: number): number | null {
+    while (wantedPagesRef.current.length) {
+      const p = wantedPagesRef.current.shift()!;
+      if (p >= 0 && p < totalPages && !loadedPagesRef.current.has(p) && !inflightRef.current.has(p)) {
+        return p;
+      }
+    }
+    for (let p = 0; p < totalPages; p++) {
+      if (!loadedPagesRef.current.has(p) && !inflightRef.current.has(p)) return p;
+    }
+    return null;
+  }
+
+  function requestRange(start: number, end: number) {
+    const total = catalogTotalRef.current;
+    if (total <= 0 || end <= start) return;
+    const startPage = Math.floor(start / CATALOG_PAGE);
+    const endPage = Math.floor(Math.max(start, end - 1) / CATALOG_PAGE);
+    const pages: number[] = [];
+    for (let p = startPage; p <= endPage; p++) {
+      if (!loadedPagesRef.current.has(p) && !inflightRef.current.has(p)) pages.push(p);
+    }
+    if (!pages.length) return;
+    const pageSet = new Set(pages);
+    wantedPagesRef.current = [
+      ...pages,
+      ...wantedPagesRef.current.filter((p) => !pageSet.has(p)),
+    ];
+    void startFill(catalogLoadGenRef.current);
+  }
+
+  async function fetchPage(page: number, gen: number) {
+    const id = selectedModuleId;
+    if (!id || !enabledModuleIds.has(id)) return;
+    const query = catalogQueryRef.current;
+    inflightRef.current.add(page);
+    try {
+      const rows = await api.catalogSearch(id, query, CATALOG_PAGE, page * CATALOG_PAGE);
+      if (gen !== catalogLoadGenRef.current || catalogQueryRef.current !== query) return;
+      const next = catalogRowsRef.current.slice();
+      const base = page * CATALOG_PAGE;
+      const prevLen = next.length;
+      for (let i = 0; i < rows.length; i++) next[base + i] = rows[i];
+      if (rows.length < CATALOG_PAGE) {
+        const newLen = base + rows.length;
+        if (newLen < next.length) next.length = newLen;
+        setCatalogTotalBoth(newLen);
+        setCatalogStatsText(String(newLen));
+        const oldPages = Math.ceil(prevLen / CATALOG_PAGE);
+        for (let p = page + 1; p < oldPages; p++) loadedPagesRef.current.add(p);
+      }
+      loadedPagesRef.current.add(page);
+      setCatalogRows(next);
+      if (fillWaitersRef.current.length) {
+        setCatalogLoadingText(`Cargando títulos… (${next.filter(Boolean).length})`);
+      }
+    } catch {
+      /* skip page to avoid fill loop; leave holes */
+      if (gen === catalogLoadGenRef.current) loadedPagesRef.current.add(page);
+    } finally {
+      inflightRef.current.delete(page);
+    }
+  }
+
+  async function startFill(gen: number) {
+    if (fillRunningRef.current) return;
+    fillRunningRef.current = true;
+    try {
+      for (;;) {
+        if (gen !== catalogLoadGenRef.current) return;
+        const total = catalogTotalRef.current;
+        const totalPages = Math.ceil(total / CATALOG_PAGE);
+        if (total === 0 || loadedPagesRef.current.size >= totalPages) break;
+        const page = nextPageToFetch(totalPages);
+        if (page == null) break;
+        await fetchPage(page, gen);
+      }
+    } finally {
+      fillRunningRef.current = false;
+      if (gen === catalogLoadGenRef.current) {
+        const totalPages = Math.ceil(catalogTotalRef.current / CATALOG_PAGE);
+        if (catalogTotalRef.current === 0 || loadedPagesRef.current.size >= totalPages) {
+          const waiters = fillWaitersRef.current.splice(0);
+          for (const w of waiters) w();
+        } else if (wantedPagesRef.current.length > 0) {
+          queueMicrotask(() => void startFill(gen));
+        }
+      }
+    }
+  }
+
+  function ensureAllPagesLoaded(): Promise<CatalogEntry[]> {
+    return new Promise((resolve) => {
+      const finish = () => {
+        resolve(catalogRowsRef.current.filter((e): e is CatalogEntry => !!e));
+      };
+      const totalPages = Math.ceil(catalogTotalRef.current / CATALOG_PAGE);
+      if (catalogTotalRef.current === 0 || loadedPagesRef.current.size >= totalPages) {
+        finish();
+        return;
+      }
+      fillWaitersRef.current.push(finish);
+      setCatalogLoadingText(
+        `Cargando títulos… (${catalogRowsRef.current.filter(Boolean).length})`,
+      );
+      void startFill(catalogLoadGenRef.current);
+    });
   }
 
   async function loadCatalog(force = false, silent = false) {
     const id = selectedModuleId;
     if (!enabledModules.length) {
       catalogLoadGenRef.current += 1;
+      resetFillQueues();
       window.clearTimeout(catalogLoadingDelayRef.current);
-      setCatalogEntries([]);
+      setCatalogRows([]);
+      setCatalogTotalBoth(0);
       setCatalogError(false);
       setCatalogLoading(false);
       setCatalogStatsText("0");
@@ -439,8 +584,10 @@ export function InfoView() {
     }
     if (!id || !enabledModuleIds.has(id)) {
       catalogLoadGenRef.current += 1;
+      resetFillQueues();
       window.clearTimeout(catalogLoadingDelayRef.current);
-      setCatalogEntries([]);
+      setCatalogRows([]);
+      setCatalogTotalBoth(0);
       setCatalogError(false);
       setCatalogLoading(false);
       if (!silent) {
@@ -449,17 +596,18 @@ export function InfoView() {
       return;
     }
     const key = `${id}||${catalogQueryRef.current}`;
-    if (!force && key === catalogLoadedKeyRef.current && catalogEntriesRef.current.length) {
+    if (!force && key === catalogLoadedKeyRef.current && loadedPagesRef.current.size > 0) {
       return;
     }
 
     const gen = ++catalogLoadGenRef.current;
+    resetFillQueues();
     window.clearTimeout(catalogLoadingDelayRef.current);
-    const keepList = silent && catalogEntriesRef.current.length > 0;
+    const preserveUntilData = silent && catalogRowsRef.current.length > 0;
 
-    // Avoid spinner flash on fast/empty responses: only show loading after a short delay.
-    if (!keepList) {
-      setCatalogEntries([]);
+    if (!preserveUntilData) {
+      setCatalogRows([]);
+      setCatalogTotalBoth(0);
       setCatalogError(false);
       setCatalogLoading(false);
       catalogSpinnerShownRef.current = false;
@@ -472,30 +620,29 @@ export function InfoView() {
     }
 
     try {
-      const all: CatalogEntry[] = [];
-      let offset = 0;
-      for (;;) {
-        const rows = await api.catalogSearch(id, catalogQueryRef.current, CATALOG_BATCH, offset);
-        if (gen !== catalogLoadGenRef.current) return;
-        all.push(...rows);
-        if (rows.length < CATALOG_BATCH) break;
-        offset += rows.length;
-        if (catalogSpinnerShownRef.current) {
-          setCatalogLoadingText(`Cargando títulos… (${all.length})`);
-        }
-      }
+      const query = catalogQueryRef.current;
+      const [page0, total] = await Promise.all([
+        api.catalogSearch(id, query, CATALOG_PAGE, 0),
+        api.catalogCount(id, query),
+      ]);
       if (gen !== catalogLoadGenRef.current) return;
-      setCatalogEntries(all);
+      const actualTotal =
+        total > 0 && page0.length < CATALOG_PAGE && page0.length < total ? page0.length : total;
+      const rows: (CatalogEntry | undefined)[] = Array.from({ length: actualTotal });
+      for (let i = 0; i < page0.length && i < actualTotal; i++) rows[i] = page0[i];
+      loadedPagesRef.current = new Set(actualTotal > 0 ? [0] : []);
+      setCatalogTotalBoth(actualTotal);
+      setCatalogStatsText(String(actualTotal));
+      setCatalogRows(rows);
       catalogLoadedKeyRef.current = key;
       if (silent) bumpCatalogReset();
-      await refreshCatalogStats();
-      if (gen !== catalogLoadGenRef.current) return;
-      if (!silent && all.length > 0) log(`Catálogo: ${all.length} títulos`, "ok");
-      else if (silent) setCatalogStatsText(String(all.length));
+      if (!silent && actualTotal > 0) log(`Catálogo: ${actualTotal} títulos`, "ok");
+      void startFill(gen);
     } catch (e) {
       if (gen !== catalogLoadGenRef.current) return;
       catalogLoadedKeyRef.current = "";
-      setCatalogEntries([]);
+      setCatalogRows([]);
+      setCatalogTotalBoth(0);
       setCatalogError(true);
       const msg = String(e);
       if (/deshabilitado|disabled|no activado/i.test(msg)) {
@@ -523,7 +670,10 @@ export function InfoView() {
 
   useEffect(() => {
     if (enabledModules.length) return;
-    setCatalogEntries([]);
+    catalogLoadGenRef.current += 1;
+    resetFillQueues();
+    setCatalogRows([]);
+    setCatalogTotalBoth(0);
     setCatalogError(false);
     setCatalogLoading(false);
     setCatalogStatsText("0");
@@ -615,7 +765,7 @@ export function InfoView() {
       }
       catalogQueryRef.current = next;
       void loadCatalog(true, true);
-    }, 280);
+    }, 150);
   }
 
   function handleCatalogInputChange(value: string) {
@@ -746,7 +896,8 @@ export function InfoView() {
     const key = catalogLinkKey(mangaLink);
     const root = currentModule?.root_url || info.root_url || "";
     let touched = false;
-    const next = catalogEntriesRef.current.map((e) => {
+    const next = catalogRowsRef.current.map((e) => {
+      if (!e) return e;
       const full = maybeFillHost(root, e.link);
       if (catalogLinkKey(e.link) === key || catalogLinkKey(full) === key) {
         touched = true;
@@ -769,7 +920,7 @@ export function InfoView() {
       }
       return e;
     });
-    if (touched) setCatalogEntries(next);
+    if (touched) setCatalogRows(next);
     const moduleId = info.module_id || selectedModuleId;
     if (moduleId) {
       void api
@@ -796,7 +947,8 @@ export function InfoView() {
     const key = catalogLinkKey(mangaLink);
     const root = currentModule?.root_url || "";
     let touched = false;
-    const next = catalogEntriesRef.current.map((e) => {
+    const next = catalogRowsRef.current.map((e) => {
+      if (!e) return e;
       const full = maybeFillHost(root, e.link);
       if (catalogLinkKey(e.link) === key || catalogLinkKey(full) === key) {
         touched = true;
@@ -804,7 +956,7 @@ export function InfoView() {
       }
       return e;
     });
-    if (touched) setCatalogEntries(next);
+    if (touched) setCatalogRows(next);
     if (moduleId) {
       void api
         .mangaCacheUpsert({
@@ -1449,7 +1601,8 @@ export function InfoView() {
         </div>
       );
     }
-    if (!visibleCatalog.length) {
+    const isEmpty = advFilterApplied ? visibleCatalog.length === 0 : catalogTotal === 0;
+    if (isEmpty && !catalogLoading) {
       return (
         <div className="catalog-results" id="catalog-list">
           <div className="catalog-empty">Sin resultados.</div>
@@ -1465,8 +1618,14 @@ export function InfoView() {
         itemHeight={CAT_ROW_H}
         overscan={CAT_OVERSCAN}
         resetKey={catalogResetSeq}
-        getKey={(e, i) => `${i}:${e.link}`}
+        onRange={(s, e) => {
+          if (!advFilterApplied) requestRange(s, e);
+        }}
+        getKey={(e, i) => (e ? `${i}:${e.link}` : `ph:${i}`)}
         renderItem={(e, i, style: CSSProperties) => {
+          if (!e) {
+            return <div className="catalog-row is-loading" style={style} aria-hidden />;
+          }
           const title = e.title || e.link;
           const meta = e.info_failed ? "N/A" : String(e.numchapter ?? 0);
           return (

@@ -70,6 +70,16 @@ pub fn catalog_search(
 }
 
 #[tauri::command]
+pub fn catalog_count(module_id: String, query: String) -> Result<i64, String> {
+    if crate::settings_keys::module_disabled(&module_id) {
+        return Err(
+            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+        );
+    }
+    catalog::count(&module_id, &query)
+}
+
+#[tauri::command]
 pub fn catalog_import(module_id: String, path: String) -> Result<CatalogStats, String> {
     catalog::import_file(&module_id, std::path::Path::new(&path))
 }

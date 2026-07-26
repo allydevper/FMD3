@@ -74,7 +74,7 @@ export function emptyAdvFilter(): AdvFilterState {
   };
 }
 
-export const CATALOG_BATCH = 500;
+export const CATALOG_PAGE = 250;
 export const LOLI_VAULT_ID = "218b722b1eb34f2aa3863f84538c5b08";
 export const THEME_KEY = "fmd-theme-dark";
 export const CH_ROW_H = 52;

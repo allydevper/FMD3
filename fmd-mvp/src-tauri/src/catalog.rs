@@ -330,7 +330,7 @@ pub fn search(
     let mut out = Vec::new();
     if q.is_empty() {
         let sql = format!(
-            "{SEARCH_SELECT} WHERE {MASTERLIST_USABLE} ORDER BY m.title COLLATE NATCMP LIMIT ?2 OFFSET ?3"
+            "{SEARCH_SELECT} WHERE {MASTERLIST_USABLE} ORDER BY m.title COLLATE NATCMP, m.link LIMIT ?2 OFFSET ?3"
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
@@ -353,7 +353,7 @@ pub fn search(
                  lower(m.title) LIKE lower(?2) ESCAPE '\\'
                  OR lower(m.alttitles) LIKE lower(?2) ESCAPE '\\'
                )
-             ORDER BY m.title COLLATE NATCMP
+             ORDER BY m.title COLLATE NATCMP, m.link
              LIMIT ?3 OFFSET ?4"
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -365,6 +365,38 @@ pub fn search(
         }
     }
     Ok(out)
+}
+
+/// Count usable masterlist rows matching the same filters as `search` (no cache JOIN).
+pub fn count(module_id: &str, query: &str) -> Result<i64, String> {
+    let path = catalog_db_path(module_id);
+    if !path.exists() {
+        return Ok(0);
+    }
+    let conn = open_catalog(module_id)?;
+    let q = query.trim();
+    if q.is_empty() {
+        let sql = format!("SELECT COUNT(*) FROM masterlist m WHERE {MASTERLIST_USABLE}");
+        conn.query_row(&sql, [], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    } else {
+        let like = format!(
+            "%{}%",
+            q.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let sql = format!(
+            "SELECT COUNT(*) FROM masterlist m
+             WHERE {MASTERLIST_USABLE}
+               AND (
+                 lower(m.title) LIKE lower(?1) ESCAPE '\\'
+                 OR lower(m.alttitles) LIKE lower(?1) ESCAPE '\\'
+               )"
+        );
+        conn.query_row(&sql, params![like], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
 }
 
 fn map_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {

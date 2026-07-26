@@ -432,6 +432,26 @@
   );
 }
 
+.catalog-row.is-loading {
+  pointer-events: none;
+  cursor: default;
+  background: transparent;
+}
+
+.catalog-row.is-loading:hover {
+  background: transparent;
+}
+
+.catalog-row.is-loading::before {
+  content: "";
+  display: block;
+  width: 42%;
+  height: 10px;
+  border-radius: 0;
+  background: var(--muted);
+  opacity: 0.15;
+}
+
 .catalog-row.active {
   background: linear-gradient(
     90deg,
