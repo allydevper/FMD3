@@ -305,6 +305,7 @@ export function InfoView() {
   /** Snapshot used for the list; only updates on Aplicar / Quitar. */
   const [appliedAdvFilter, setAppliedAdvFilter] = useState<AdvFilterState>(() => emptyAdvFilter());
   const [advFilterApplied, setAdvFilterApplied] = useState(false);
+  const advFilterAppliedRef = useRef(false);
   const [filterNewDays, setFilterNewDays] = useState(1);
   const [liveSearch, setLiveSearch] = useState(true);
 
@@ -410,10 +411,19 @@ export function InfoView() {
 
   const visibleCatalog = useMemo((): (CatalogEntry | undefined)[] => {
     if (!advFilterApplied) return catalogRows;
-    return catalogRows.filter(
-      (e): e is CatalogEntry => !!e && entryMatchesFilter(e, appliedAdvFilter, filterNewDays),
-    );
-  }, [catalogRows, appliedAdvFilter, advFilterApplied, filterNewDays]);
+    const needle = catalogText.trim().toLowerCase();
+    return catalogRows.filter((e): e is CatalogEntry => {
+      if (!e || !entryMatchesFilter(e, appliedAdvFilter, filterNewDays)) return false;
+      if (!needle) return true;
+      const hay = `${e.title} ${e.alttitles || ""}`.toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [catalogRows, appliedAdvFilter, advFilterApplied, filterNewDays, catalogText]);
+
+  function setAdvFilterAppliedBoth(on: boolean) {
+    advFilterAppliedRef.current = on;
+    setAdvFilterApplied(on);
+  }
 
   function applyAdvFilter() {
     void (async () => {
@@ -422,9 +432,14 @@ export function InfoView() {
       try {
         const snapshot = cloneAdvFilter(advFilter);
         const all = await ensureAllPagesLoaded();
-        const n = all.filter((e) => entryMatchesFilter(e, snapshot, filterNewDays)).length;
+        const needle = catalogText.trim().toLowerCase();
+        const n = all.filter((e) => {
+          if (!entryMatchesFilter(e, snapshot, filterNewDays)) return false;
+          if (!needle) return true;
+          return `${e.title} ${e.alttitles || ""}`.toLowerCase().includes(needle);
+        }).length;
         setAppliedAdvFilter(snapshot);
-        setAdvFilterApplied(true);
+        setAdvFilterAppliedBoth(true);
         setCatalogStatsText(String(n));
         log(`Filtro aplicado: ${n} títulos`, "ok");
       } catch (e) {
@@ -773,6 +788,8 @@ export function InfoView() {
    * ------------------------------------------------------------------- */
   function scheduleCatalogSearch(value: string) {
     window.clearTimeout(catalogSearchTimerRef.current);
+    // Advanced mode: text filters client-side on the already-loaded catalog (no reload flicker).
+    if (advFilterAppliedRef.current) return;
     catalogSearchTimerRef.current = window.setTimeout(() => {
       const next = value.trim();
       if (next === catalogQueryRef.current && catalogLoadedKeyRef.current.startsWith(`${selectedModuleId}||`)) {
@@ -790,6 +807,7 @@ export function InfoView() {
 
   function runCatalogSearch() {
     window.clearTimeout(catalogSearchTimerRef.current);
+    if (advFilterAppliedRef.current) return;
     catalogQueryRef.current = catalogText.trim();
     void loadCatalog(true, true);
   }
@@ -797,6 +815,7 @@ export function InfoView() {
   function clearCatalogFilter() {
     window.clearTimeout(catalogSearchTimerRef.current);
     setCatalogText("");
+    if (advFilterAppliedRef.current) return;
     catalogQueryRef.current = "";
     void loadCatalog(true, true);
   }
@@ -807,7 +826,7 @@ export function InfoView() {
     catalogQueryRef.current = "";
     setAdvFilter(emptyAdvFilter());
     setAppliedAdvFilter(emptyAdvFilter());
-    setAdvFilterApplied(false);
+    setAdvFilterAppliedBoth(false);
     void loadCatalog(true, true);
     log("Filtro quitado.", "ok");
   }
