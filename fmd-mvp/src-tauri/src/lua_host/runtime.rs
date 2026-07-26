@@ -4,7 +4,10 @@ use super::fmd_env::register_fmd_env;
 use super::image_puzzle::register_fmd_imagepuzzle;
 use super::mangafox_watermark::register_fmd_mangafoxwatermark;
 use super::http::HttpClient;
-use super::json_xpath::{json_collect_strings, json_string_at, parse_json_text, split_json_expr};
+use super::json_xpath::{
+    json_collect_strings, json_navigate, json_string_at, parse_json_text, split_json_expr,
+    split_parse_json_expr,
+};
 use super::paths::{modules_dir, package_path};
 use super::registry;
 use super::strings::{register_helpers, LuaStringList};
@@ -551,16 +554,51 @@ fn json_ctx_from_value(ctx: Option<Value>) -> Option<JsonValue> {
 }
 
 fn extract_json_from_html(tq: &TxQuery, inner_xpath: &str) -> Option<JsonValue> {
-    let nodes = tq.xpath_nodes(inner_xpath);
+    let inner = inner_xpath.trim();
+    // `json(*)` — whole document body (API modules return raw JSON).
+    if inner == "*" || inner.is_empty() {
+        if let Some(j) = parse_json_text(tq.source()) {
+            return Some(j);
+        }
+        return parse_json_text(&tq.raw_document_text());
+    }
+    let nodes = tq.xpath_nodes(inner);
     for n in &nodes {
         let t = n.raw_text();
         if let Some(j) = parse_json_text(&t) {
             return Some(j);
         }
     }
-    // Fallback collapsed text
-    let text = tq.xpath_string(inner_xpath);
+    let text = tq.xpath_string(inner);
     parse_json_text(&text)
+}
+
+fn eval_parse_json_from_tq(tq: &TxQuery, path: &str, ctx: Option<&DomNode>) -> Option<JsonValue> {
+    let text = if let Some(node) = ctx {
+        node.raw_text()
+    } else {
+        tq.source().to_string()
+    };
+    let text = if parse_json_text(&text).is_some() {
+        text
+    } else if ctx.is_none() {
+        tq.raw_document_text()
+    } else {
+        text
+    };
+    let root = parse_json_text(&text)?;
+    Some(json_navigate(&root, path))
+}
+
+fn json_xpath_userdata(lua: &mlua::Lua, jv: JsonValue) -> mlua::Result<Value> {
+    match jv {
+        JsonValue::Array(arr) => Ok(Value::UserData(lua.create_userdata(JsonResult {
+            items: Arc::new(arr),
+        })?)),
+        other => Ok(Value::UserData(
+            lua.create_userdata(JsonNode { value: other })?,
+        )),
+    }
 }
 
 #[derive(Clone)]
@@ -579,6 +617,31 @@ impl UserData for JsonNode {
                         Ok(Value::UserData(
                             lua.create_userdata(JsonNode { value: child })?,
                         ))
+                    })?;
+                    Ok(Value::Function(f))
+                }
+                "Get" => {
+                    // Allow `.Get()` on a single object wrapping an array field misuse;
+                    // primary array iteration is JsonResult.
+                    let this = this.clone();
+                    let f = lua.create_function(move |lua, ()| {
+                        let items = match &this.value {
+                            JsonValue::Array(arr) => arr.clone(),
+                            other => vec![other.clone()],
+                        };
+                        let items = Arc::new(items);
+                        let mut idx = 0usize;
+                        let iter = lua.create_function_mut(move |lua, ()| {
+                            if idx >= items.len() {
+                                return Ok(Value::Nil);
+                            }
+                            let value = items[idx].clone();
+                            idx += 1;
+                            Ok(Value::UserData(
+                                lua.create_userdata(JsonNode { value })?,
+                            ))
+                        })?;
+                        Ok(Value::Function(iter))
                     })?;
                     Ok(Value::Function(f))
                 }
@@ -610,6 +673,39 @@ impl UserData for JsonNode {
     }
 }
 
+#[derive(Clone)]
+struct JsonResult {
+    items: Arc<Vec<JsonValue>>,
+}
+
+impl UserData for JsonResult {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            if key == "Get" {
+                let items = this.items.clone();
+                let f = lua.create_function(move |lua, ()| {
+                    let items = items.clone();
+                    let mut idx = 0usize;
+                    let iter = lua.create_function_mut(move |lua, ()| {
+                        if idx >= items.len() {
+                            return Ok(Value::Nil);
+                        }
+                        let value = items[idx].clone();
+                        idx += 1;
+                        Ok(Value::UserData(
+                            lua.create_userdata(JsonNode { value })?,
+                        ))
+                    })?;
+                    Ok(Value::Function(iter))
+                })?;
+                Ok(Value::Function(f))
+            } else {
+                Ok(Value::Nil)
+            }
+        });
+    }
+}
+
 impl UserData for TxQueryHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
@@ -634,17 +730,28 @@ impl UserData for TxQueryHandle {
                             return Ok(json_string_at(&jv, &expr));
                         }
                         let tq = this.inner.lock();
+                        let ctx = ctx_from_value(args.get(1).cloned());
+                        if let Some(path) = split_parse_json_expr(&expr) {
+                            if let Some(jv) = eval_parse_json_from_tq(&tq, &path, ctx.as_ref()) {
+                                return Ok(json_string_at(&jv, ""));
+                            }
+                            return Ok(String::new());
+                        }
                         if let Some((inner, rest)) = split_json_expr(&expr) {
                             if let Some(jv) = extract_json_from_html(&tq, &inner) {
                                 if rest.is_empty() {
-                                    return Ok(jv.to_string());
+                                    return Ok(match &jv {
+                                        JsonValue::String(s) => s.clone(),
+                                        JsonValue::Null => String::new(),
+                                        other => other.to_string(),
+                                    });
                                 }
                                 return Ok(json_string_at(&jv, &rest));
                             }
                             return Ok(String::new());
                         }
-                        if let Some(ctx) = ctx_from_value(args.get(1).cloned()) {
-                            Ok(tq.xpath_string_ctx(&expr, &ctx))
+                        if let Some(ref c) = ctx {
+                            Ok(tq.xpath_string_ctx(&expr, c))
                         } else {
                             Ok(tq.xpath_string(&expr))
                         }
@@ -659,7 +766,16 @@ impl UserData for TxQueryHandle {
                             _ => return Ok(Value::String(lua.create_string("")?)),
                         };
                         let tq = this.inner.lock();
-                        let values = if let Some((inner, rest)) = split_json_expr(&expr) {
+                        let ctx = ctx_from_value(args.get(1).cloned());
+                        let values = if let Some(jv) = json_ctx_from_value(args.get(1).cloned()) {
+                            json_collect_strings(&jv, &expr)
+                        } else if let Some(path) = split_parse_json_expr(&expr) {
+                            if let Some(jv) = eval_parse_json_from_tq(&tq, &path, ctx.as_ref()) {
+                                json_collect_strings(&jv, "")
+                            } else {
+                                Vec::new()
+                            }
+                        } else if let Some((inner, rest)) = split_json_expr(&expr) {
                             if let Some(jv) = extract_json_from_html(&tq, &inner) {
                                 if rest.is_empty() {
                                     json_collect_strings(&jv, "")
@@ -741,22 +857,24 @@ impl UserData for TxQueryHandle {
                             _ => return Ok(Value::Nil),
                         };
                         let tq = this.inner.lock();
-                        if let Some((inner, rest)) = split_json_expr(&expr) {
-                            if let Some(mut jv) = extract_json_from_html(&tq, &inner) {
-                                if !rest.is_empty() {
-                                    let collected = json_collect_strings(&jv, &rest);
-                                    if let Some(s) = collected.first() {
-                                        jv = JsonValue::String(s.clone());
-                                    }
-                                }
-                                return Ok(Value::UserData(
-                                    lua.create_userdata(JsonNode { value: jv })?,
-                                ));
+                        let ctx = ctx_from_value(args.get(1).cloned());
+                        if let Some(path) = split_parse_json_expr(&expr) {
+                            if let Some(jv) = eval_parse_json_from_tq(&tq, &path, ctx.as_ref()) {
+                                return json_xpath_userdata(lua, jv);
                             }
                             return Ok(Value::Nil);
                         }
-                        let nodes = if let Some(ctx) = ctx_from_value(args.get(1).cloned()) {
-                            tq.xpath_nodes_ctx(&expr, &ctx)
+                        if let Some((inner, rest)) = split_json_expr(&expr) {
+                            if let Some(mut jv) = extract_json_from_html(&tq, &inner) {
+                                if !rest.is_empty() {
+                                    jv = json_navigate(&jv, &rest);
+                                }
+                                return json_xpath_userdata(lua, jv);
+                            }
+                            return Ok(Value::Nil);
+                        }
+                        let nodes = if let Some(ref c) = ctx {
+                            tq.xpath_nodes_ctx(&expr, c)
                         } else {
                             tq.xpath_nodes(&expr)
                         };

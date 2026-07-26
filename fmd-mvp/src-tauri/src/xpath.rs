@@ -83,6 +83,7 @@ impl DomNode {
 
 pub struct TxQuery {
     roots: Vec<DomNode>,
+    source: String,
 }
 
 impl TxQuery {
@@ -93,7 +94,24 @@ impl TxQuery {
             .children()
             .filter_map(to_dom)
             .collect();
-        Self { roots }
+        Self {
+            roots,
+            source: html.to_string(),
+        }
+    }
+
+    /// Original input string (needed for `json(*)` on raw JSON API bodies).
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Concatenated raw text of the DOM (fallback when source parse fails).
+    pub fn raw_document_text(&self) -> String {
+        let mut out = String::new();
+        for n in &self.roots {
+            out.push_str(&n.raw_text());
+        }
+        out
     }
 
     pub fn xpath_nodes(&self, expr: &str) -> Vec<DomNode> {
@@ -102,7 +120,13 @@ impl TxQuery {
 
     pub fn xpath_string(&self, expr: &str) -> String {
         let expr = expr.trim();
+        if let Some(s) = eval_string_join_html(&self.roots, expr) {
+            return s;
+        }
         if let Some(s) = eval_mid_path_string(&self.roots, expr) {
+            return s;
+        }
+        if let Some(s) = eval_bang_string(&self.roots, expr) {
             return s;
         }
         if let Some(s) = eval_following_sibling_text(&self.roots, expr) {
@@ -123,7 +147,13 @@ impl TxQuery {
     pub fn xpath_string_ctx(&self, expr: &str, ctx: &DomNode) -> String {
         let roots = [ctx.clone()];
         let expr = expr.trim();
+        if let Some(s) = eval_string_join_html(&roots, expr) {
+            return s;
+        }
         if let Some(s) = eval_mid_path_string(&roots, expr) {
+            return s;
+        }
+        if let Some(s) = eval_bang_string(&roots, expr) {
             return s;
         }
         if let Some(s) = eval_following_sibling_text(&roots, expr) {
@@ -139,7 +169,13 @@ impl TxQuery {
 
     pub fn xpath_string_all_values_on(&self, roots: &[DomNode], expr: &str) -> Vec<String> {
         let expr = expr.trim();
+        if let Some(s) = eval_string_join_html(roots, expr) {
+            return if s.is_empty() { vec![] } else { vec![s] };
+        }
         if let Some(s) = eval_mid_path_string(roots, expr) {
+            return if s.is_empty() { vec![] } else { vec![s] };
+        }
+        if let Some(s) = eval_bang_string(roots, expr) {
             return if s.is_empty() { vec![] } else { vec![s] };
         }
         let (nodes, terminal) = eval_expr_term(roots, expr);
@@ -263,6 +299,10 @@ fn eval_mid_path_string(roots: &[DomNode], expr: &str) -> Option<String> {
     static AFTER: OnceLock<Regex> = OnceLock::new();
     static BEFORE: OnceLock<Regex> = OnceLock::new();
     static NORM: OnceLock<Regex> = OnceLock::new();
+    static REPL: OnceLock<Regex> = OnceLock::new();
+    static RESURI: OnceLock<Regex> = OnceLock::new();
+    static CONCAT: OnceLock<Regex> = OnceLock::new();
+
     let after = AFTER.get_or_init(|| {
         Regex::new(r#"^(.*)/substring-after\(\s*\.\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
     });
@@ -271,29 +311,193 @@ fn eval_mid_path_string(roots: &[DomNode], expr: &str) -> Option<String> {
     });
     let norm =
         NORM.get_or_init(|| Regex::new(r#"^(.*)/normalize-space\(\s*\.\s*\)$"#).unwrap());
+    let repl = REPL.get_or_init(|| {
+        Regex::new(
+            r#"^(.*)/replace\(\s*\.\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*\)$"#,
+        )
+        .unwrap()
+    });
+    let resuri = RESURI.get_or_init(|| {
+        Regex::new(r#"^(.*)/resolve-uri\(\s*@([a-zA-Z0-9_\-:]+)\s*\)$"#).unwrap()
+    });
+    let concat_re = CONCAT.get_or_init(|| {
+        Regex::new(r#"^(.*)/concat\(\s*\.\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
+    });
 
     if let Some(c) = after.captures(expr) {
-        let base = TxQuery {
-            roots: roots.to_vec(),
-        }
-        .xpath_string(c.get(1)?.as_str());
+        let path = c.get(1)?.as_str();
+        let (nodes, terminal) = eval_expr_term(roots, path);
+        let base = string_of_nodes(&nodes, terminal);
         let needle = c.get(2)?.as_str();
         return Some(substring_after(&base, needle));
     }
     if let Some(c) = before.captures(expr) {
-        let base = TxQuery {
-            roots: roots.to_vec(),
-        }
-        .xpath_string(c.get(1)?.as_str());
+        let path = c.get(1)?.as_str();
+        let (nodes, terminal) = eval_expr_term(roots, path);
+        let base = string_of_nodes(&nodes, terminal);
         let needle = c.get(2)?.as_str();
         return Some(substring_before(&base, needle));
     }
     if let Some(c) = norm.captures(expr) {
-        let base = TxQuery {
-            roots: roots.to_vec(),
-        }
-        .xpath_string(c.get(1)?.as_str());
+        let path = c.get(1)?.as_str();
+        let (nodes, terminal) = eval_expr_term(roots, path);
+        let base = string_of_nodes(&nodes, terminal);
         return Some(collapse_ws(&base));
+    }
+    if let Some(c) = repl.captures(expr) {
+        let path = c.get(1)?.as_str();
+        let (nodes, terminal) = eval_expr_term(roots, path);
+        let base = string_of_nodes(&nodes, terminal);
+        let pat = c.get(2)?.as_str();
+        let repl_s = c.get(3)?.as_str();
+        return Some(base.replace(pat, repl_s));
+    }
+    if let Some(c) = concat_re.captures(expr) {
+        let path = c.get(1)?.as_str();
+        let (nodes, terminal) = eval_expr_term(roots, path);
+        let base = string_of_nodes(&nodes, terminal);
+        let suffix = c.get(2)?.as_str();
+        return Some(format!("{base}{suffix}"));
+    }
+    if let Some(c) = resuri.captures(expr) {
+        let path = c.get(1)?.as_str();
+        let attr = c.get(2)?.as_str();
+        let nodes = eval_expr(roots, path);
+        let href = nodes
+            .first()
+            .and_then(|n| n.attr(attr).map(|s| s.to_string()))
+            .unwrap_or_default();
+        let base = document_base_href(roots);
+        return Some(resolve_uri(&href, &base));
+    }
+    None
+}
+
+fn eval_string_join_html(roots: &[DomNode], expr: &str) -> Option<String> {
+    let rest = expr.strip_prefix("string-join(")?;
+    let end = find_closing_paren_str(rest)?;
+    if !rest[end + 1..].trim().is_empty() {
+        return None;
+    }
+    let inside = &rest[..end];
+    let parts = split_top_level_str(inside, ",");
+    if parts.is_empty() {
+        return None;
+    }
+    let sep = if parts.len() >= 2 {
+        let raw = parts.last().unwrap().trim();
+        unquote_str(raw).unwrap_or_else(|| raw.to_string())
+    } else {
+        ", ".to_string()
+    };
+    let seq = if parts.len() >= 2 {
+        parts[..parts.len() - 1].join(",")
+    } else {
+        parts[0].to_string()
+    };
+    let seq = seq.trim();
+    // Evaluate union / paths → all string values (keep outer parens for `(…)[n]|…`).
+    let (nodes, terminal) = eval_expr_term(roots, seq);
+    let vals = strings_of_nodes(&nodes, terminal);
+    Some(vals.join(&sep))
+}
+
+fn eval_bang_string(roots: &[DomNode], expr: &str) -> Option<String> {
+    if !expr.contains('!') || expr.contains("!=") {
+        return None;
+    }
+    // LHS!RHS — map operator (subset): for each LHS node, eval RHS relative, take first string.
+    let parts = split_top_level_str(expr, "!");
+    if parts.len() != 2 {
+        return None;
+    }
+    let lhs = parts[0].trim();
+    let rhs = parts[1].trim();
+    if lhs.is_empty() || rhs.is_empty() {
+        return None;
+    }
+    let nodes = eval_expr(roots, lhs);
+    for n in &nodes {
+        let s = {
+            let (ns, term) = eval_expr_term(std::slice::from_ref(n), rhs);
+            string_of_nodes(&ns, term)
+        };
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    Some(String::new())
+}
+
+fn document_base_href(roots: &[DomNode]) -> String {
+    // <base href="…"> if present
+    let nodes = eval_expr(roots, "//base");
+    nodes
+        .first()
+        .and_then(|n| n.attr("href").map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+fn resolve_uri(href: &str, base: &str) -> String {
+    let href = href.trim();
+    if href.is_empty() {
+        return String::new();
+    }
+    if href.starts_with("http://")
+        || href.starts_with("https://")
+        || href.starts_with("data:")
+        || href.starts_with("//")
+    {
+        return href.to_string();
+    }
+    if base.is_empty() {
+        return href.to_string();
+    }
+    if let Ok(base_u) = url::Url::parse(base) {
+        if let Ok(joined) = base_u.join(href) {
+            return joined.to_string();
+        }
+    }
+    if href.starts_with('/') {
+        // Keep path-absolute as-is when base is not a full URL.
+        return href.to_string();
+    }
+    let base = base.trim_end_matches('/');
+    format!("{base}/{href}")
+}
+
+fn find_closing_paren_str(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_quote: Option<char> = None;
+    for (i, c) in s.char_indices() {
+        if let Some(q) = in_quote {
+            if c == q {
+                in_quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => in_quote = Some(c),
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn unquote_str(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.len() >= 2 {
+        let b = s.as_bytes();
+        if (b[0] == b'"' && b[s.len() - 1] == b'"') || (b[0] == b'\'' && b[s.len() - 1] == b'\'') {
+            return Some(s[1..s.len() - 1].to_string());
+        }
     }
     None
 }
@@ -480,6 +684,80 @@ mod tests {
         let name = q.xpath_string_ctx("li/text()", &nodes[0]);
         assert_eq!(name, "Chapter 1");
     }
+
+    #[test]
+    fn string_join_html_union() {
+        let html = r#"
+        <div class="summary__content"><p>One</p></div>
+        <div class="manga-excerpt">Two</div>
+        "#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(
+            r#"string-join((//div[contains(@class, "summary__content")])[1]|//div[@class="manga-excerpt"], " | ")"#,
+        );
+        assert!(s.contains("One"), "got {s:?}");
+        assert!(s.contains("Two"), "got {s:?}");
+    }
+
+    #[test]
+    fn replace_and_ends_with() {
+        let html = r#"<a href="/file.zip">archive.zip</a><a href="/x">ok</a>"#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(r#"//a[ends-with(., ".zip")]/replace(., ".zip", ".cbz")"#);
+        assert_eq!(s, "archive.cbz");
+    }
+
+    #[test]
+    fn resolve_uri_with_base() {
+        let html = r#"<base href="https://ex.com/manga/"/><img src="cover.jpg"/>"#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(r#"//img/resolve-uri(@src)"#);
+        assert_eq!(s, "https://ex.com/manga/cover.jpg");
+    }
+
+    #[test]
+    fn following_sibling_element() {
+        let html = r#"
+        <div class="summary-heading">Author</div>
+        <div class="summary-content">Alice</div>
+        "#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(
+            r#"//div[@class="summary-heading" and contains(., "Author")]/following-sibling::div"#,
+        );
+        assert_eq!(s, "Alice");
+    }
+
+    #[test]
+    fn preceding_sibling_li() {
+        let html = r#"
+        <ul class="pagination">
+          <li><a>1</a></li>
+          <li><a>2</a></li>
+          <li><a rel="next">next</a></li>
+        </ul>
+        "#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(
+            r#"//a[@rel="next"]/parent::li/preceding-sibling::li[1]/a"#,
+        );
+        assert_eq!(s, "2");
+    }
+
+    #[test]
+    fn position_eq_predicate() {
+        let html = r#"<ul><li>a</li><li>b</li><li>c</li></ul>"#;
+        let q = TxQuery::parse(html);
+        assert_eq!(q.xpath_string("//ul/li[position()=2]"), "b");
+    }
+
+    #[test]
+    fn bang_map_operator() {
+        let html = r#"<div class="item"><span class="t">Title</span></div>"#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(r#"//div[@class="item"]!span[@class="t"]"#);
+        assert_eq!(s, "Title");
+    }
 }
 
 fn to_dom(node: ego_tree::NodeRef<'_, Node>) -> Option<DomNode> {
@@ -548,6 +826,7 @@ enum Pred {
     AttrContains(String, String),
     TextContains(String),
     TextStartsWith(String),
+    TextEndsWith(String),
     /// `text()="Exact"` — string-value of element (collapsed).
     TextEq(String),
     SelfName(String),
@@ -562,9 +841,19 @@ enum PositionPred {
     LastMinus(usize),
 }
 
+#[derive(Clone, Debug)]
+enum Axis {
+    Child,
+    Descendant,
+    FollowingSibling,
+    PrecedingSibling,
+    Parent,
+    Ancestor,
+}
+
 #[derive(Clone)]
 struct Step {
-    descendant: bool,
+    axis: Axis,
     name: String,
     preds: Vec<Pred>,
     position: Option<PositionPred>,
@@ -574,22 +863,45 @@ fn parse_steps(expr: &str) -> Vec<Step> {
     let mut steps = Vec::new();
     let mut rest = expr.trim();
     while !rest.is_empty() {
-        let descendant;
+        let axis;
         if rest.starts_with(".//") {
-            descendant = true;
+            axis = Axis::Descendant;
             rest = &rest[3..];
         } else if rest.starts_with("./") {
-            descendant = false;
+            axis = Axis::Child;
             rest = &rest[2..];
         } else if rest.starts_with("//") {
-            descendant = true;
+            axis = Axis::Descendant;
             rest = &rest[2..];
+        } else if let Some(r) = rest.strip_prefix("/following-sibling::") {
+            axis = Axis::FollowingSibling;
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("following-sibling::") {
+            axis = Axis::FollowingSibling;
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("/preceding-sibling::") {
+            axis = Axis::PrecedingSibling;
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("preceding-sibling::") {
+            axis = Axis::PrecedingSibling;
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("/parent::") {
+            axis = Axis::Parent;
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("parent::") {
+            axis = Axis::Parent;
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("/ancestor::") {
+            axis = Axis::Ancestor;
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("ancestor::") {
+            axis = Axis::Ancestor;
+            rest = r;
         } else if rest.starts_with('/') {
-            descendant = false;
+            axis = Axis::Child;
             rest = &rest[1..];
         } else if steps.is_empty() {
-            // Relative path from context → child:: (FMD2 / XPath 1.0).
-            descendant = false;
+            axis = Axis::Child;
         } else {
             break;
         }
@@ -621,7 +933,7 @@ fn parse_steps(expr: &str) -> Vec<Step> {
         }
 
         steps.push(Step {
-            descendant,
+            axis,
             name,
             preds,
             position,
@@ -638,6 +950,16 @@ fn parse_position(inner: &str) -> Option<PositionPred> {
     if let Some(rest) = inner.strip_prefix("last()-") {
         let n: usize = rest.trim().parse().ok()?;
         return Some(PositionPred::LastMinus(n));
+    }
+    // position()=N
+    static POS: OnceLock<Regex> = OnceLock::new();
+    let pos = POS.get_or_init(|| Regex::new(r#"^position\(\)\s*=\s*(\d+)$"#).unwrap());
+    if let Some(c) = pos.captures(inner) {
+        let n: usize = c[1].parse().ok()?;
+        if n >= 1 {
+            return Some(PositionPred::Index(n));
+        }
+        return None;
     }
     let n: usize = inner.parse().ok()?;
     if n >= 1 {
@@ -838,6 +1160,13 @@ fn parse_pred_atom(inner: &str) -> Option<Pred> {
     if let Some(c) = sw.captures(inner) {
         return Some(Pred::TextStartsWith(c[1].to_string()));
     }
+    static EW: OnceLock<Regex> = OnceLock::new();
+    let ew = EW.get_or_init(|| {
+        Regex::new(r#"^ends-with\(\s*\.\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
+    });
+    if let Some(c) = ew.captures(inner) {
+        return Some(Pred::TextEndsWith(c[1].to_string()));
+    }
     let tc = TC.get_or_init(|| {
         Regex::new(r#"^contains\(\.\s*,\s*['"]([^'"]*)['"]\)$"#).unwrap()
     });
@@ -857,6 +1186,7 @@ fn match_pred(node: &DomNode, pred: &Pred) -> bool {
         Pred::AttrContains(k, v) => node.attr(k).is_some_and(|a| a.contains(v)),
         Pred::TextContains(v) => node.all_text().contains(v.as_str()),
         Pred::TextStartsWith(v) => node.all_text().starts_with(v.as_str()),
+        Pred::TextEndsWith(v) => node.all_text().ends_with(v.as_str()),
         Pred::TextEq(v) => node.all_text() == v.as_str(),
         Pred::SelfName(name) => match node {
             DomNode::Elem { tag, .. } => tag.eq_ignore_ascii_case(name),
@@ -877,32 +1207,66 @@ fn match_name(node: &DomNode, name: &str) -> bool {
 fn eval_path(roots: &[DomNode], expr: &str) -> Vec<DomNode> {
     let steps = parse_steps(expr);
     let mut current: Vec<DomNode> = roots.to_vec();
-    for step in steps {
+    for step in &steps {
         let mut next = Vec::new();
-        if step.descendant {
-            if step.position.is_some() {
-                // `//li[1]` ≡ child::li[1] under every descendant element.
-                for n in &current {
-                    collect_desc_child_pos(n, &step, &mut next);
-                }
-            } else {
-                for n in &current {
-                    collect_desc(n, &step, &mut next);
+        match step.axis {
+            Axis::Descendant => {
+                if step.position.is_some() {
+                    for n in &current {
+                        collect_desc_child_pos(n, step, &mut next);
+                    }
+                } else {
+                    for n in &current {
+                        collect_desc(n, step, &mut next);
+                    }
                 }
             }
-        } else {
-            // Positional predicates apply per parent (XPath 1.0).
-            for n in &current {
-                if let DomNode::Elem { children, .. } = n {
+            Axis::Child => {
+                for n in &current {
+                    if let DomNode::Elem { children, .. } = n {
+                        let mut batch = Vec::new();
+                        for c in children {
+                            if match_name(c, &step.name)
+                                && step.preds.iter().all(|p| match_pred(c, p))
+                            {
+                                batch.push(c.clone());
+                            }
+                        }
+                        next.extend(apply_position(batch, step.position.as_ref()));
+                    }
+                }
+            }
+            Axis::FollowingSibling | Axis::PrecedingSibling => {
+                for n in &current {
+                    let sibs = sibling_elements(roots, n, matches!(step.axis, Axis::FollowingSibling));
                     let mut batch = Vec::new();
-                    for c in children {
-                        if match_name(c, &step.name)
-                            && step.preds.iter().all(|p| match_pred(c, p))
+                    for c in sibs {
+                        if match_name(&c, &step.name)
+                            && step.preds.iter().all(|p| match_pred(&c, p))
                         {
-                            batch.push(c.clone());
+                            batch.push(c);
                         }
                     }
                     next.extend(apply_position(batch, step.position.as_ref()));
+                }
+            }
+            Axis::Parent => {
+                for n in &current {
+                    if let Some(p) = find_parent(roots, n) {
+                        if match_name(&p, &step.name)
+                            && step.preds.iter().all(|pred| match_pred(&p, pred))
+                        {
+                            next.push(p);
+                        }
+                    }
+                }
+                next = apply_position(next, step.position.as_ref());
+            }
+            Axis::Ancestor => {
+                for n in &current {
+                    let mut ancestors = Vec::new();
+                    collect_ancestors(roots, n, step, &mut ancestors);
+                    next.extend(apply_position(ancestors, step.position.as_ref()));
                 }
             }
         }
@@ -934,6 +1298,90 @@ fn collect_desc_child_pos(node: &DomNode, step: &Step, out: &mut Vec<DomNode>) {
         for c in children {
             collect_desc_child_pos(c, step, out);
         }
+    }
+}
+
+fn same_elem(a: &DomNode, b: &DomNode) -> bool {
+    // Structural compare (nodes are cloned frequently).
+    match (a, b) {
+        (
+            DomNode::Elem {
+                tag: t1,
+                attrs: a1,
+                children: c1,
+            },
+            DomNode::Elem {
+                tag: t2,
+                attrs: a2,
+                children: c2,
+            },
+        ) => {
+            t1.eq_ignore_ascii_case(t2)
+                && a1 == a2
+                && c1.len() == c2.len()
+                && a.all_text() == b.all_text()
+        }
+        (DomNode::Text(t1), DomNode::Text(t2)) => t1 == t2,
+        _ => false,
+    }
+}
+
+fn find_parent_in(nodes: &[DomNode], target: &DomNode) -> Option<DomNode> {
+    for n in nodes {
+        if let DomNode::Elem { children, .. } = n {
+            for c in children {
+                if same_elem(c, target) {
+                    return Some(n.clone());
+                }
+            }
+            if let Some(p) = find_parent_in(children, target) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+fn find_parent(roots: &[DomNode], target: &DomNode) -> Option<DomNode> {
+    find_parent_in(roots, target)
+}
+
+fn sibling_elements(roots: &[DomNode], target: &DomNode, following: bool) -> Vec<DomNode> {
+    let parent = match find_parent(roots, target) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let DomNode::Elem { children, .. } = parent else {
+        return Vec::new();
+    };
+    let idx = children.iter().position(|c| same_elem(c, target));
+    let Some(idx) = idx else {
+        return Vec::new();
+    };
+    let slice: Vec<DomNode> = if following {
+        children[idx + 1..]
+            .iter()
+            .filter(|c| matches!(c, DomNode::Elem { .. }))
+            .cloned()
+            .collect()
+    } else {
+        children[..idx]
+            .iter()
+            .rev()
+            .filter(|c| matches!(c, DomNode::Elem { .. }))
+            .cloned()
+            .collect()
+    };
+    slice
+}
+
+fn collect_ancestors(roots: &[DomNode], node: &DomNode, step: &Step, out: &mut Vec<DomNode>) {
+    let mut cur = find_parent(roots, node);
+    while let Some(p) = cur {
+        if match_name(&p, &step.name) && step.preds.iter().all(|pred| match_pred(&p, pred)) {
+            out.push(p.clone());
+        }
+        cur = find_parent(roots, &p);
     }
 }
 
