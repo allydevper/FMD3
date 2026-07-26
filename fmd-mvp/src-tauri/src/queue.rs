@@ -2,7 +2,7 @@ use crate::db::{self, Db, QueueItem};
 use crate::lua_host::{self, download_chapter};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -11,6 +11,8 @@ pub struct QueueState {
     pub db: Db,
     running: Arc<AtomicBool>,
     cancel_current: Arc<AtomicBool>,
+    /// Number of items currently being processed (for parallel workers).
+    active: Arc<AtomicUsize>,
 }
 
 impl QueueState {
@@ -19,6 +21,7 @@ impl QueueState {
             db,
             running: Arc::new(AtomicBool::new(false)),
             cancel_current: Arc::new(AtomicBool::new(false)),
+            active: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -32,6 +35,10 @@ pub struct QueueProgressEvent {
     pub pending_left: i64,
     pub page_current: u32,
     pub page_total: u32,
+    #[serde(default)]
+    pub bytes_per_sec: u64,
+    #[serde(default)]
+    pub bytes_current: u64,
 }
 
 fn chapter_url(root_url: &str, link: &str) -> String {
@@ -62,6 +69,29 @@ fn pending_count(db: &Db) -> i64 {
         .unwrap_or(0)
 }
 
+fn progress_event(
+    item: &QueueItem,
+    message: String,
+    pending_left: i64,
+    page_current: u32,
+    page_total: u32,
+) -> QueueProgressEvent {
+    QueueProgressEvent {
+        item_id: item.id,
+        manga_title: item.manga_title.clone(),
+        chapter_name: item.chapter_name.clone(),
+        message,
+        pending_left,
+        page_current,
+        page_total,
+        bytes_per_sec: 0,
+        bytes_current: 0,
+    }
+}
+
+/// Start the queue worker. Spawns up to `DOWNLOAD_PARALLEL_TASKS` concurrent
+/// `process_item` jobs (clamped 1–8). Page downloads inside a chapter still use
+/// `settings_keys::max_threads()` for parallel page GETs.
 pub fn start_worker(app: AppHandle) {
     let state = app.state::<QueueState>();
     if state.running.swap(true, Ordering::SeqCst) {
@@ -70,76 +100,111 @@ pub fn start_worker(app: AppHandle) {
     state.cancel_current.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
+        let parallel = crate::settings_keys::parallel_tasks();
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
         loop {
             let state = app2.state::<QueueState>();
+            let active = state.active.clone();
             let db = state.db.clone();
             let cancel = state.cancel_current.clone();
 
-            let next = match tauri::async_runtime::spawn_blocking({
-                let db = db.clone();
-                move || db::queue_take_next_pending(&db)
-            })
-            .await
-            {
-                Ok(Ok(v)) => v,
-                Ok(Err(e)) => {
-                    eprintln!("queue take error: {e}");
+            // Fill worker slots up to parallel
+            while active.load(Ordering::SeqCst) < parallel {
+                if cancel.load(Ordering::SeqCst) {
                     break;
                 }
-                Err(e) => {
-                    eprintln!("queue join error: {e}");
+                let next = match tauri::async_runtime::spawn_blocking({
+                    let db = db.clone();
+                    move || db::queue_take_next_pending(&db)
+                })
+                .await
+                {
+                    Ok(Ok(v)) => v,
+                    Ok(Err(e)) => {
+                        eprintln!("queue take error: {e}");
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("queue join error: {e}");
+                        break;
+                    }
+                };
+
+                let Some(item) = next else {
                     break;
-                }
-            };
+                };
 
-            let Some(item) = next else {
-                break;
-            };
-
-            emit_changed(&app2);
-            let _ = app2.emit(
-                "queue-progress",
-                QueueProgressEvent {
-                    item_id: item.id,
-                    manga_title: item.manga_title.clone(),
-                    chapter_name: item.chapter_name.clone(),
-                    message: format!("Obteniendo páginas: {}", item.chapter_name),
-                    pending_left: pending_count(&db),
-                    page_current: 0,
-                    page_total: 0,
-                },
-            );
-
-            if cancel.load(Ordering::SeqCst) {
-                let _ = db::queue_set_status(&db, item.id, "cancelled", "cancelado");
-                cancel.store(false, Ordering::SeqCst);
                 emit_changed(&app2);
+                let _ = app2.emit(
+                    "queue-progress",
+                    progress_event(
+                        &item,
+                        format!("Obteniendo páginas: {}", item.chapter_name),
+                        pending_count(&db),
+                        0,
+                        0,
+                    ),
+                );
+
+                if cancel.load(Ordering::SeqCst) {
+                    let _ = db::queue_set_status(&db, item.id, "cancelled", "cancelado");
+                    emit_changed(&app2);
+                    continue;
+                }
+
+                active.fetch_add(1, Ordering::SeqCst);
+                let app_item = app2.clone();
+                let cancel_item = cancel.clone();
+                let db_item = db.clone();
+                let active_item = active.clone();
+                let done_tx = done_tx.clone();
+                let item_id = item.id;
+
+                tauri::async_runtime::spawn(async move {
+                    let result = tauri::async_runtime::spawn_blocking({
+                        let item = item.clone();
+                        let cancel = cancel_item.clone();
+                        let app = app_item.clone();
+                        move || process_item(app, item, cancel)
+                    })
+                    .await;
+
+                    match result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            let max = crate::settings_keys::task_retries();
+                            crate::log_file::append(&format!("ERR {}: {e}", item.chapter_name));
+                            let _ = db::queue_fail_or_retry(&db_item, item_id, &e, max);
+                        }
+                        Err(e) => {
+                            let max = crate::settings_keys::task_retries();
+                            let msg = format!("tarea cancelada: {e}");
+                            crate::log_file::append(&format!("ERR {}: {msg}", item.chapter_name));
+                            let _ = db::queue_fail_or_retry(&db_item, item_id, &msg, max);
+                        }
+                    }
+                    emit_changed(&app_item);
+                    active_item.fetch_sub(1, Ordering::SeqCst);
+                    let _ = done_tx.send(());
+                });
+            }
+
+            // Idle: no active work and nothing pending
+            if active.load(Ordering::SeqCst) == 0 {
+                if cancel.load(Ordering::SeqCst) {
+                    cancel.store(false, Ordering::SeqCst);
+                }
+                if !db::queue_has_pending(&db).unwrap_or(false) {
+                    break;
+                }
+                // Pending exists but take returned None (race) — brief wait
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 continue;
             }
 
-            let result = tauri::async_runtime::spawn_blocking({
-                let item = item.clone();
-                let cancel = cancel.clone();
-                let app = app2.clone();
-                move || process_item(app, item, cancel)
-            })
-            .await;
-
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    let _ = db::queue_set_status(&db, item.id, "failed", &e);
-                }
-                Err(e) => {
-                    let _ = db::queue_set_status(
-                        &db,
-                        item.id,
-                        "failed",
-                        &format!("tarea cancelada: {e}"),
-                    );
-                }
-            }
-            emit_changed(&app2);
+            // Wait for a slot to free
+            let _ = done_rx.recv().await;
         }
 
         app2.state::<QueueState>()
@@ -151,6 +216,8 @@ pub fn start_worker(app: AppHandle) {
         let state = app2.state::<QueueState>();
         if db::queue_has_pending(&state.db).unwrap_or(false) {
             start_worker(app2);
+        } else if crate::settings_keys::after_finish_exit() {
+            app2.exit(0);
         }
     });
 }
@@ -187,15 +254,13 @@ fn process_item(
 
     let _ = app.emit(
         "queue-progress",
-        QueueProgressEvent {
-            item_id: item.id,
-            manga_title: item.manga_title.clone(),
-            chapter_name: item.chapter_name.clone(),
-            message: format!("Downloading {}", item.chapter_name),
-            pending_left: pending_count(&app.state::<QueueState>().db),
-            page_current: 0,
-            page_total: 0,
-        },
+        progress_event(
+            &item,
+            format!("Downloading {}", item.chapter_name),
+            pending_count(&app.state::<QueueState>().db),
+            0,
+            0,
+        ),
     );
 
     let output = PathBuf::from(&item.output_dir);
@@ -203,7 +268,10 @@ fn process_item(
     let manga_title = item.manga_title.clone();
     let chapter_name = item.chapter_name.clone();
     let app_progress = app.clone();
-    let mut on_progress = |cur: usize, total: usize| {
+    let started_at = std::time::Instant::now();
+    let mut on_progress = |cur: usize, total: usize, bytes_total: u64| {
+        let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+        let bytes_per_sec = (bytes_total as f64 / elapsed).round() as u64;
         let _ = app_progress.emit(
             "queue-progress",
             QueueProgressEvent {
@@ -214,6 +282,8 @@ fn process_item(
                 pending_left: pending_count(&app_progress.state::<QueueState>().db),
                 page_current: cur as u32,
                 page_total: total as u32,
+                bytes_per_sec,
+                bytes_current: bytes_total,
             },
         );
     };
@@ -231,7 +301,6 @@ fn process_item(
     ) {
         Err(e) if e == lua_host::DOWNLOAD_CANCELLED || cancel.load(Ordering::SeqCst) => {
             let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
-            cancel.store(false, Ordering::SeqCst);
             return Ok(());
         }
         Err(e) => return Err(e),
@@ -240,7 +309,6 @@ fn process_item(
 
     if cancel.load(Ordering::SeqCst) {
         let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
-        cancel.store(false, Ordering::SeqCst);
         return Ok(());
     }
 
@@ -254,14 +322,20 @@ fn process_item(
         result.errors.join("; ")
     };
 
+    let mut viewer_target: Option<PathBuf> = result
+        .files
+        .first()
+        .and_then(|f| std::path::Path::new(f).parent().map(|p| p.to_path_buf()));
+
     let pack_fmt = crate::settings_keys::pack_format();
-    if matches!(pack_fmt.as_str(), "cbz" | "zip") && !result.files.is_empty() {
+    if matches!(pack_fmt.as_str(), "cbz" | "zip" | "pdf" | "epub") && !result.files.is_empty() {
         if let Some(first) = result.files.first() {
             if let Some(dir) = std::path::Path::new(first).parent() {
                 match crate::pack::pack_chapter_dir(dir, &pack_fmt) {
                     Ok(archive) => {
                         if crate::settings_keys::pack_delete_folder() {
                             let _ = std::fs::remove_dir_all(dir);
+                            viewer_target = Some(archive.clone());
                         }
                         if !err.is_empty() {
                             err.push_str("; ");
@@ -282,19 +356,57 @@ fn process_item(
     db::queue_set_status(&app.state::<QueueState>().db, item.id, "done", &err)?;
     let _ = app.emit(
         "queue-progress",
-        QueueProgressEvent {
-            item_id: item.id,
-            manga_title: item.manga_title,
-            chapter_name: item.chapter_name,
-            message: format!("Completed ({} files)", result.files.len()),
-            pending_left: pending_count(&app.state::<QueueState>().db),
-            page_current: result.files.len() as u32,
-            page_total: result.files.len() as u32,
-        },
+        progress_event(
+            &item,
+            format!("Completed ({} files)", result.files.len()),
+            pending_count(&app.state::<QueueState>().db),
+            result.files.len() as u32,
+            result.files.len() as u32,
+        ),
     );
+    crate::log_file::append(&format!(
+        "OK  {} - {} ({} archivos)",
+        item.manga_title,
+        item.chapter_name,
+        result.files.len()
+    ));
+    if crate::settings_keys::bool_setting(crate::settings_keys::NOTIFY_ON_DONE, true) {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = app
+            .notification()
+            .builder()
+            .title("FMD3")
+            .body(format!("{}: {}", item.manga_title, item.chapter_name))
+            .show();
+    }
+    if let Some(target) = viewer_target {
+        crate::commands::open_external_viewer(&target, &item.chapter_name);
+    }
+    maybe_remove_completed_favorite(&app.state::<QueueState>().db, &item.manga_url);
     Ok(())
 }
 
+/// If `favorites.remove_completed` is on and no other queue items remain
+/// pending/running for this manga, remove the matching favorite (MVP: keeps
+/// the favorites list clean once every enqueued chapter has finished).
+fn maybe_remove_completed_favorite(db: &Db, manga_url: &str) {
+    if manga_url.trim().is_empty() {
+        return;
+    }
+    if !crate::settings_keys::bool_setting(crate::settings_keys::FAVORITES_REMOVE_COMPLETED, false) {
+        return;
+    }
+    let Ok(Some(fav)) = db::favorites_find_by_manga_url(db, manga_url) else {
+        return;
+    };
+    let remaining = db::queue_count_pending_for_manga(db, manga_url).unwrap_or(1);
+    if remaining == 0 {
+        let _ = db::favorites_remove(db, fav.id);
+    }
+}
+
+/// Cancel the currently running item(s). With parallel workers, this signals
+/// all in-flight downloads to stop at the next cancel check.
 pub fn request_cancel_current(state: &QueueState) {
     state.cancel_current.store(true, Ordering::SeqCst);
 }

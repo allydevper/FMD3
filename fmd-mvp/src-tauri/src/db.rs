@@ -19,6 +19,14 @@ pub struct Favorite {
     pub last_chapter_name: String,
     pub chapter_count: i64,
     pub updated_at: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub last_checked_at: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +44,10 @@ pub struct QueueItem {
     pub error: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub retry_count: i64,
+    #[serde(default)]
+    pub position: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +65,54 @@ pub struct NewQueueItem {
 fn now() -> String {
     Utc::now().to_rfc3339()
 }
+
+fn map_favorite(r: &rusqlite::Row<'_>) -> rusqlite::Result<Favorite> {
+    Ok(Favorite {
+        id: r.get(0)?,
+        module_id: r.get(1)?,
+        module_name: r.get(2)?,
+        root_url: r.get(3)?,
+        manga_url: r.get(4)?,
+        title: r.get(5)?,
+        last_chapter_link: r.get(6)?,
+        last_chapter_name: r.get(7)?,
+        chapter_count: r.get(8)?,
+        updated_at: r.get(9)?,
+        enabled: r.get::<_, i64>(10)? != 0,
+        last_checked_at: r.get(11)?,
+    })
+}
+
+fn map_queue_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
+    Ok(QueueItem {
+        id: r.get(0)?,
+        manga_title: r.get(1)?,
+        root_url: r.get(2)?,
+        manga_url: r.get(3)?,
+        module_id: r.get(4)?,
+        chapter_index: r.get(5)?,
+        chapter_name: r.get(6)?,
+        chapter_link: r.get(7)?,
+        output_dir: r.get(8)?,
+        status: r.get(9)?,
+        error: r.get(10)?,
+        created_at: r.get(11)?,
+        updated_at: r.get(12)?,
+        retry_count: r.get(13)?,
+        position: r.get(14)?,
+    })
+}
+
+const FAVORITE_SELECT: &str = "SELECT id, module_id, module_name, root_url, manga_url, title,
+        last_chapter_link, last_chapter_name, chapter_count, updated_at,
+        COALESCE(enabled, 1), COALESCE(last_checked_at, '')
+ FROM favorites";
+
+const QUEUE_SELECT: &str = "SELECT id, manga_title, root_url, COALESCE(manga_url,''), COALESCE(module_id,''),
+        chapter_index, chapter_name, chapter_link,
+        output_dir, status, error, created_at, updated_at,
+        COALESCE(retry_count, 0), COALESCE(position, 0)
+ FROM queue_items";
 
 pub fn db_path() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -81,7 +141,9 @@ pub fn open_db() -> Result<Db, String> {
             last_chapter_link TEXT NOT NULL DEFAULT '',
             last_chapter_name TEXT NOT NULL DEFAULT '',
             chapter_count INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_checked_at TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS queue_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,7 +158,9 @@ pub fn open_db() -> Result<Db, String> {
             status TEXT NOT NULL,
             error TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_items(status);
         CREATE TABLE IF NOT EXISTS manga_cache (
@@ -123,6 +187,22 @@ pub fn open_db() -> Result<Db, String> {
     );
     let _ = conn.execute(
         "ALTER TABLE queue_items ADD COLUMN manga_url TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE favorites ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE favorites ADD COLUMN last_checked_at TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
         [],
     );
     Ok(Arc::new(Mutex::new(conn)))
@@ -192,27 +272,10 @@ pub fn settings_set(db: &Db, key: &str, value: &str) -> Result<(), String> {
 pub fn favorites_list(db: &Db) -> Result<Vec<Favorite>, String> {
     let conn = db.lock();
     let mut stmt = conn
-        .prepare(
-            "SELECT id, module_id, module_name, root_url, manga_url, title,
-                    last_chapter_link, last_chapter_name, chapter_count, updated_at
-             FROM favorites ORDER BY updated_at DESC",
-        )
+        .prepare(&format!("{FAVORITE_SELECT} ORDER BY updated_at DESC"))
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(Favorite {
-                id: r.get(0)?,
-                module_id: r.get(1)?,
-                module_name: r.get(2)?,
-                root_url: r.get(3)?,
-                manga_url: r.get(4)?,
-                title: r.get(5)?,
-                last_chapter_link: r.get(6)?,
-                last_chapter_name: r.get(7)?,
-                chapter_count: r.get(8)?,
-                updated_at: r.get(9)?,
-            })
-        })
+        .query_map([], map_favorite)
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
@@ -237,8 +300,9 @@ pub fn favorites_add(
     conn.execute(
         "INSERT INTO favorites(
             module_id, module_name, root_url, manga_url, title,
-            last_chapter_link, last_chapter_name, chapter_count, updated_at
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
+            last_chapter_link, last_chapter_name, chapter_count, updated_at,
+            enabled, last_checked_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,'')
          ON CONFLICT(manga_url) DO UPDATE SET
             module_id=excluded.module_id,
             module_name=excluded.module_name,
@@ -263,24 +327,9 @@ pub fn favorites_add(
     .map_err(|e| e.to_string())?;
 
     conn.query_row(
-        "SELECT id, module_id, module_name, root_url, manga_url, title,
-                last_chapter_link, last_chapter_name, chapter_count, updated_at
-         FROM favorites WHERE manga_url = ?1",
+        &format!("{FAVORITE_SELECT} WHERE manga_url = ?1"),
         params![manga_url],
-        |r| {
-            Ok(Favorite {
-                id: r.get(0)?,
-                module_id: r.get(1)?,
-                module_name: r.get(2)?,
-                root_url: r.get(3)?,
-                manga_url: r.get(4)?,
-                title: r.get(5)?,
-                last_chapter_link: r.get(6)?,
-                last_chapter_name: r.get(7)?,
-                chapter_count: r.get(8)?,
-                updated_at: r.get(9)?,
-            })
-        },
+        map_favorite,
     )
     .map_err(|e| e.to_string())
 }
@@ -288,26 +337,31 @@ pub fn favorites_add(
 pub fn favorites_get(db: &Db, id: i64) -> Result<Favorite, String> {
     let conn = db.lock();
     conn.query_row(
-        "SELECT id, module_id, module_name, root_url, manga_url, title,
-                last_chapter_link, last_chapter_name, chapter_count, updated_at
-         FROM favorites WHERE id = ?1",
+        &format!("{FAVORITE_SELECT} WHERE id = ?1"),
         params![id],
-        |r| {
-            Ok(Favorite {
-                id: r.get(0)?,
-                module_id: r.get(1)?,
-                module_name: r.get(2)?,
-                root_url: r.get(3)?,
-                manga_url: r.get(4)?,
-                title: r.get(5)?,
-                last_chapter_link: r.get(6)?,
-                last_chapter_name: r.get(7)?,
-                chapter_count: r.get(8)?,
-                updated_at: r.get(9)?,
-            })
-        },
+        map_favorite,
     )
     .map_err(|e| e.to_string())
+}
+
+pub fn favorites_set_enabled(db: &Db, id: i64, enabled: bool) -> Result<(), String> {
+    let conn = db.lock();
+    conn.execute(
+        "UPDATE favorites SET enabled=?1, updated_at=?2 WHERE id=?3",
+        params![if enabled { 1 } else { 0 }, now(), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn favorites_touch_checked(db: &Db, id: i64) -> Result<(), String> {
+    let conn = db.lock();
+    conn.execute(
+        "UPDATE favorites SET last_checked_at=?1 WHERE id=?2",
+        params![now(), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn favorites_update_progress(
@@ -317,11 +371,12 @@ pub fn favorites_update_progress(
     last_chapter_name: &str,
     chapter_count: i64,
 ) -> Result<(), String> {
+    let ts = now();
     let conn = db.lock();
     conn.execute(
         "UPDATE favorites SET last_chapter_link=?1, last_chapter_name=?2,
-         chapter_count=?3, updated_at=?4 WHERE id=?5",
-        params![last_chapter_link, last_chapter_name, chapter_count, now(), id],
+         chapter_count=?3, updated_at=?4, last_checked_at=?4 WHERE id=?5",
+        params![last_chapter_link, last_chapter_name, chapter_count, ts, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -334,14 +389,39 @@ pub fn favorites_remove(db: &Db, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Look up a favorite by its manga URL (used by `favorites.remove_completed`).
+pub fn favorites_find_by_manga_url(db: &Db, manga_url: &str) -> Result<Option<Favorite>, String> {
+    if manga_url.trim().is_empty() {
+        return Ok(None);
+    }
+    let conn = db.lock();
+    conn.query_row(
+        &format!("{FAVORITE_SELECT} WHERE manga_url = ?1"),
+        params![manga_url],
+        map_favorite,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Count queue items still pending/running for a given manga URL (used to know
+/// whether a favorite's chapters have all finished downloading).
+pub fn queue_count_pending_for_manga(db: &Db, manga_url: &str) -> Result<i64, String> {
+    let conn = db.lock();
+    conn.query_row(
+        "SELECT COUNT(*) FROM queue_items
+         WHERE manga_url = ?1 AND status IN ('pending','running')",
+        params![manga_url],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
     let conn = db.lock();
     let mut stmt = conn
-        .prepare(
-            "SELECT id, manga_title, root_url, COALESCE(manga_url,''), COALESCE(module_id,''),
-                    chapter_index, chapter_name, chapter_link,
-                    output_dir, status, error, created_at, updated_at
-             FROM queue_items
+        .prepare(&format!(
+            "{QUEUE_SELECT}
              ORDER BY
                CASE status
                  WHEN 'running' THEN 0
@@ -349,27 +429,12 @@ pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
                  WHEN 'failed' THEN 2
                  ELSE 3
                END,
-               id ASC",
-        )
+               position ASC,
+               id ASC"
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(QueueItem {
-                id: r.get(0)?,
-                manga_title: r.get(1)?,
-                root_url: r.get(2)?,
-                manga_url: r.get(3)?,
-                module_id: r.get(4)?,
-                chapter_index: r.get(5)?,
-                chapter_name: r.get(6)?,
-                chapter_link: r.get(7)?,
-                output_dir: r.get(8)?,
-                status: r.get(9)?,
-                error: r.get(10)?,
-                created_at: r.get(11)?,
-                updated_at: r.get(12)?,
-            })
-        })
+        .query_map([], map_queue_item)
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
@@ -381,6 +446,13 @@ pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
 pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, String> {
     let conn = db.lock();
     let ts = now();
+    let mut max_pos: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(position), 0) FROM queue_items",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     let mut ids = Vec::new();
     for item in items {
         // Skip exact duplicate pending/running
@@ -397,11 +469,12 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
         if exists.is_some() {
             continue;
         }
+        max_pos += 1;
         conn.execute(
             "INSERT INTO queue_items(
                 manga_title, root_url, manga_url, module_id, chapter_index, chapter_name, chapter_link,
-                output_dir, status, error, created_at, updated_at
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending','',?9,?9)",
+                output_dir, status, error, created_at, updated_at, retry_count, position
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending','',?9,?9,0,?10)",
             params![
                 item.manga_title,
                 item.root_url,
@@ -411,7 +484,8 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
                 item.chapter_name,
                 item.chapter_link,
                 item.output_dir,
-                ts
+                ts,
+                max_pos
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -420,11 +494,39 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
     Ok(ids)
 }
 
+/// Reorder the whole queue by (manga_title, chapter_index), keeping the
+/// existing status-based priority from [`queue_list`] intact (position only
+/// tie-breaks within the same status).
+pub fn queue_sort_by_title(db: &Db) -> Result<(), String> {
+    let mut items = queue_list(db)?;
+    items.sort_by(|a, b| {
+        a.manga_title
+            .to_lowercase()
+            .cmp(&b.manga_title.to_lowercase())
+            .then(a.chapter_index.cmp(&b.chapter_index))
+    });
+    let ids: Vec<i64> = items.iter().map(|i| i.id).collect();
+    queue_reorder(db, &ids)
+}
+
+pub fn queue_reorder(db: &Db, ids: &[i64]) -> Result<(), String> {
+    let conn = db.lock();
+    for (i, id) in ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE queue_items SET position=?1, updated_at=?2 WHERE id=?3",
+            params![i as i64, now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn queue_take_next_pending(db: &Db) -> Result<Option<QueueItem>, String> {
     let conn = db.lock();
     let id: Option<i64> = conn
         .query_row(
-            "SELECT id FROM queue_items WHERE status = 'pending' ORDER BY id ASC LIMIT 1",
+            "SELECT id FROM queue_items WHERE status = 'pending'
+             ORDER BY position ASC, id ASC LIMIT 1",
             [],
             |r| r.get(0),
         )
@@ -446,28 +548,9 @@ pub fn queue_take_next_pending(db: &Db) -> Result<Option<QueueItem>, String> {
 pub fn queue_get(db: &Db, id: i64) -> Result<QueueItem, String> {
     let conn = db.lock();
     conn.query_row(
-        "SELECT id, manga_title, root_url, COALESCE(manga_url,''), COALESCE(module_id,''),
-                chapter_index, chapter_name, chapter_link,
-                output_dir, status, error, created_at, updated_at
-         FROM queue_items WHERE id = ?1",
+        &format!("{QUEUE_SELECT} WHERE id = ?1"),
         params![id],
-        |r| {
-            Ok(QueueItem {
-                id: r.get(0)?,
-                manga_title: r.get(1)?,
-                root_url: r.get(2)?,
-                manga_url: r.get(3)?,
-                module_id: r.get(4)?,
-                chapter_index: r.get(5)?,
-                chapter_name: r.get(6)?,
-                chapter_link: r.get(7)?,
-                output_dir: r.get(8)?,
-                status: r.get(9)?,
-                error: r.get(10)?,
-                created_at: r.get(11)?,
-                updated_at: r.get(12)?,
-            })
-        },
+        map_queue_item,
     )
     .map_err(|e| e.to_string())
 }
@@ -480,6 +563,33 @@ pub fn queue_set_status(db: &Db, id: i64, status: &str, error: &str) -> Result<(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Increment retry_count and set status back to pending.
+pub fn queue_inc_retry(db: &Db, id: i64, error: &str) -> Result<(), String> {
+    let conn = db.lock();
+    conn.execute(
+        "UPDATE queue_items SET status='pending', error=?1, retry_count=retry_count+1, updated_at=?2
+         WHERE id=?3",
+        params![error, now(), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// On failure: if retry_count < max_retries, increment and set pending; else failed.
+pub fn queue_fail_or_retry(db: &Db, id: i64, error: &str, max_retries: usize) -> Result<(), String> {
+    let item = queue_get(db, id)?;
+    if (item.retry_count as usize) < max_retries {
+        queue_inc_retry(db, id, error)
+    } else {
+        queue_set_status(db, id, "failed", error)
+    }
+}
+
+pub fn db_vacuum(db: &Db) -> Result<(), String> {
+    let conn = db.lock();
+    conn.execute_batch("VACUUM").map_err(|e| e.to_string())
 }
 
 pub fn queue_cancel(db: &Db, id: i64) -> Result<(), String> {
@@ -498,7 +608,7 @@ pub fn queue_retry(db: &Db, id: i64) -> Result<(), String> {
     let conn = db.lock();
     let n = conn
         .execute(
-            "UPDATE queue_items SET status='pending', error='', updated_at=?1
+            "UPDATE queue_items SET status='pending', error='', retry_count=0, updated_at=?1
              WHERE id=?2 AND status IN ('cancelled','failed')",
             params![now(), id],
         )

@@ -85,6 +85,7 @@ function genreChipClass(state: GenreTri): string {
 export function InfoView() {
   const {
     activeNav,
+    setActiveNav,
     log,
     clearLog,
     modules,
@@ -95,6 +96,7 @@ export function InfoView() {
     setOutputDir,
     refreshModules,
     setShowMangaInfo,
+    disabledModuleIds,
   } = useApp();
 
   /* ---------------------------------------------------------------------
@@ -153,6 +155,8 @@ export function InfoView() {
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [infoPanelOpen, setInfoPanelOpen] = useState(false);
   const [isFavorite, setIsFavorite] = useState(false);
+  const [taskStopped, setTaskStopped] = useState(false);
+  const [loadCovers, setLoadCovers] = useState(true);
 
   const [sidebarRows, setSidebarRows] = useState<SidebarRows>(EMPTY_SIDEBAR_ROWS);
   const [altTitles, setAltTitles] = useState("");
@@ -216,6 +220,8 @@ export function InfoView() {
   const [infoMode, setInfoModeState] = useState<InfoMode>("search");
   const [advFilter, setAdvFilter] = useState<AdvFilterState>(() => emptyAdvFilter());
   const [advFilterApplied, setAdvFilterApplied] = useState(false);
+  const [filterNewDays, setFilterNewDays] = useState(1);
+  const [liveSearch, setLiveSearch] = useState(true);
 
   /* ---------------------------------------------------------------------
    * Bootstrap: modules + output dir + initial catalog load
@@ -227,8 +233,98 @@ export function InfoView() {
         if (saved) setOutputDir(saved);
       });
     }
+    void api.settingsGet("ui.load_covers").then((v) => {
+      if (v === "0" || v === "false") setLoadCovers(false);
+    });
+    void api.settingsGet("ui.new_days").then((v) => {
+      const n = Number(v ?? "1");
+      if (Number.isFinite(n) && n > 0) setFilterNewDays(n);
+    });
+    void api.settingsGet("ui.live_search").then((v) => {
+      if (v === "0" || v === "false") setLiveSearch(false);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const enabledModules = useMemo(
+    () => modules.filter((m) => !disabledModuleIds.has(m.id)),
+    [modules, disabledModuleIds],
+  );
+
+  function entryMatchesFilter(e: CatalogEntry, f: AdvFilterState, newDays: number): boolean {
+    const textMatch = (hay: string, needle: string) => {
+      const n = needle.trim();
+      if (!n) return true;
+      if (f.useRegex) {
+        try {
+          return new RegExp(n, "i").test(hay);
+        } catch {
+          return hay.toLowerCase().includes(n.toLowerCase());
+        }
+      }
+      return hay.toLowerCase().includes(n.toLowerCase());
+    };
+    if (!textMatch(e.title + " " + (e.alttitles || ""), f.title)) return false;
+    if (!textMatch(e.authors || "", f.authors)) return false;
+    if (!textMatch(e.artists || "", f.artists)) return false;
+    if (!textMatch(e.summary || "", f.summary)) return false;
+    if (f.status !== 4) {
+      const st = (e.status || "").toLowerCase();
+      const map: Record<number, string[]> = {
+        0: ["ongoing", "en curso", "1"],
+        1: ["completed", "completo", "2"],
+        2: ["hiatus", "pausado"],
+        3: ["cancelled", "cancelado"],
+      };
+      const want = map[f.status] || [];
+      if (want.length && !want.some((w) => st.includes(w))) return false;
+    }
+    const genreList = (e.genres || "")
+      .split(/[,;]/)
+      .map((g) => g.trim().toLowerCase())
+      .filter(Boolean);
+    const includes: string[] = [];
+    const excludes: string[] = [];
+    for (const g of DEFAULT_GENRES) {
+      const state = f.genres[g.id] ?? "ignore";
+      if (state === "include") includes.push(g.id.toLowerCase(), g.label.toLowerCase());
+      if (state === "exclude") excludes.push(g.id.toLowerCase(), g.label.toLowerCase());
+    }
+    for (const part of f.customGenres.split(",")) {
+      const raw = part.trim();
+      if (!raw) continue;
+      if (raw.startsWith("!") || raw.startsWith("-")) excludes.push(raw.slice(1).trim().toLowerCase());
+      else includes.push(raw.toLowerCase());
+    }
+    for (const ex of excludes) {
+      if (ex && genreList.some((g) => g.includes(ex))) return false;
+    }
+    if (includes.length) {
+      const hit = includes.filter(Boolean).map((inc) => genreList.some((g) => g.includes(inc)));
+      if (f.matchMode === "all" ? !hit.every(Boolean) : !hit.some(Boolean)) return false;
+    }
+    if (f.onlyNew && newDays > 0 && e.jdn) {
+      const nowJdn = Math.floor(Date.now() / 86400000) + 2440587.5;
+      if (nowJdn - e.jdn > newDays) return false;
+    }
+    return true;
+  }
+
+  const visibleCatalog = useMemo(() => {
+    if (!advFilterApplied) return catalogEntries;
+    return catalogEntries.filter((e) => entryMatchesFilter(e, advFilter, filterNewDays));
+  }, [catalogEntries, advFilter, advFilterApplied, filterNewDays]);
+
+  function applyAdvFilter() {
+    setAdvFilterApplied(true);
+    const n = catalogEntries.filter((e) => entryMatchesFilter(e, advFilter, filterNewDays)).length;
+    log(`Filtro aplicado: ${n} títulos`, "ok");
+  }
+
+  function removeAdvFilter() {
+    clearAllFilters();
+    setAdvFilterApplied(false);
+  }
 
   useEffect(() => {
     if (modules.length) setSourcesLoading(false);
@@ -236,12 +332,12 @@ export function InfoView() {
 
   /** Prefer the Loli Vault module on first load, same as FMD2's default. */
   useEffect(() => {
-    if (!modules.length) return;
-    if (selectedModuleId && modules.some((m) => m.id === selectedModuleId)) return;
-    const loli = modules.find((m) => m.id === LOLI_VAULT_ID);
-    setSelectedModuleId(loli ? loli.id : modules[0].id);
+    if (!enabledModules.length) return;
+    if (selectedModuleId && enabledModules.some((m) => m.id === selectedModuleId)) return;
+    const loli = enabledModules.find((m) => m.id === LOLI_VAULT_ID);
+    setSelectedModuleId(loli ? loli.id : enabledModules[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modules]);
+  }, [enabledModules]);
 
   async function refreshCatalogStats() {
     const id = selectedModuleId;
@@ -329,8 +425,8 @@ export function InfoView() {
    * Source dropdown behaviour
    * ------------------------------------------------------------------- */
   const sortedModules = useMemo(
-    () => [...modules].sort((a, b) => a.name.localeCompare(b.name)),
-    [modules],
+    () => [...enabledModules].sort((a, b) => a.name.localeCompare(b.name)),
+    [enabledModules],
   );
   const filteredSourceModules = useMemo(() => {
     const q = sourceFilter.trim().toLowerCase();
@@ -390,7 +486,7 @@ export function InfoView() {
 
   function handleCatalogInputChange(value: string) {
     setCatalogText(value);
-    scheduleCatalogSearch(value);
+    if (liveSearch) scheduleCatalogSearch(value);
   }
 
   function runCatalogSearch() {
@@ -485,6 +581,7 @@ export function InfoView() {
     coverUrl: string,
     referer: string,
   ) {
+    if (!loadCovers) return;
     const ensureId = ++coverEnsureSeqRef.current;
     if (!coverUrl.trim()) return;
     try {
@@ -585,7 +682,19 @@ export function InfoView() {
     setLoadBtnDisabled(true);
     setChaptersLoading(true);
 
-    const moduleId = selectedModuleId;
+    let moduleId = selectedModuleId;
+    try {
+      const matches = await api.modulesMatchUrl(url);
+      if (seq !== mangaLoadSeqRef.current) return;
+      const enabledMatch = matches.find((m) => !disabledModuleIds.has(m.id));
+      if (enabledMatch) {
+        moduleId = enabledMatch.id;
+        setSelectedModuleId(enabledMatch.id);
+      }
+    } catch {
+      /* keep current module */
+    }
+
     if (moduleId) {
       void applyCachedCover(moduleId, url);
       void (async () => {
@@ -656,7 +765,7 @@ export function InfoView() {
         coverDisplayKeyRef.current.startsWith("https://");
       const toEnsure = coverUrl || (remoteShowing ? coverDisplayKeyRef.current : "");
       const alreadyLocal = coverLocalFallbackRef.current.startsWith("data:");
-      if (mid && toEnsure && !alreadyLocal) {
+      if (loadCovers && mid && toEnsure && !alreadyLocal) {
         void ensureCoverAsync(seq, mid, url, toEnsure, result.root_url || url);
       }
 
@@ -787,8 +896,49 @@ export function InfoView() {
         module_id: manga.module_id,
         output_dir: dir,
         chapters,
+        start: !taskStopped,
       });
-      log(`Encolados ${n} capítulo(s). Ve a Descargas.`, "ok");
+      const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
+      if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
+      log(
+        taskStopped
+          ? `Encolados ${n} (detenidos). Ve a Descargas y reanuda.`
+          : `Encolados ${n} capítulo(s).`,
+        "ok",
+      );
+    } catch (e) {
+      log(String(e), "err");
+    }
+  }
+
+  async function handleSplitDownload() {
+    if (!manga) return;
+    const chapters = manga.chapters.filter((c) => selected.has(c.index));
+    if (chapters.length < 2) {
+      log("Selecciona al menos 2 capítulos para dividir.", "err");
+      return;
+    }
+    const dir = await ensureOutputDir();
+    if (!dir) {
+      log("Elige una carpeta de salida.", "err");
+      return;
+    }
+    const mid = Math.ceil(chapters.length / 2);
+    const batches = [chapters.slice(0, mid), chapters.slice(mid)];
+    try {
+      let total = 0;
+      for (const batch of batches) {
+        total += await api.queueAdd({
+          manga_title: manga.title || "manga",
+          root_url: manga.root_url,
+          manga_url: mangaUrl,
+          module_id: manga.module_id,
+          output_dir: dir,
+          chapters: batch,
+          start: !taskStopped,
+        });
+      }
+      log(`Dividido en ${batches.length} tareas (${total} caps).`, "ok");
     } catch (e) {
       log(String(e), "err");
     }
@@ -810,6 +960,29 @@ export function InfoView() {
       });
       setIsFavorite(true);
       log(`Favorito guardado: ${fav.title} (último: ${fav.last_chapter_name || "—"})`, "ok");
+      const gotoFav = await api.settingsGet("ui.goto_favorites_on_add");
+      if (gotoFav === "1" || gotoFav === "true") setActiveNav("favorites");
+    } catch (e) {
+      log(String(e), "err");
+    }
+  }
+
+  async function handleCatalogImport() {
+    const id = selectedModuleId;
+    if (!id) {
+      log("Elige una fuente primero.", "err");
+      return;
+    }
+    const path = await open({
+      multiple: false,
+      filters: [{ name: "Base de datos", extensions: ["db", "sqlite", "sqlite3"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      const st = await api.catalogImport(id, path);
+      log(`Catálogo importado: ${st.count} títulos`, "ok");
+      await loadCatalog(true);
+      await refreshCatalogStats();
     } catch (e) {
       log(String(e), "err");
     }
@@ -859,15 +1032,6 @@ export function InfoView() {
     if (advFilter.useRegex) n += 1;
     return n;
   }, [advFilter]);
-
-  function applyAdvFilterStub() {
-    setAdvFilterApplied(true);
-    log("Filtro preparado (UI; aún no aplica al catálogo).", "ok");
-  }
-
-  function removeAdvFilterStub() {
-    clearAllFilters();
-  }
 
   function resetAdvFilterForm() {
     setAdvFilter(emptyAdvFilter());
@@ -975,7 +1139,7 @@ export function InfoView() {
         </div>
       );
     }
-    if (!catalogEntries.length) {
+    if (!visibleCatalog.length) {
       return (
         <div className="catalog-results" id="catalog-list">
           <div className="catalog-empty">Sin resultados.</div>
@@ -987,7 +1151,7 @@ export function InfoView() {
         id="catalog-list"
         className="catalog-results"
         innerClassName="catalog-virtual"
-        items={catalogEntries}
+        items={visibleCatalog}
         itemHeight={CAT_ROW_H}
         overscan={CAT_OVERSCAN}
         resetKey={catalogResetSeq}
@@ -1104,6 +1268,15 @@ export function InfoView() {
                 </div>
               </div>
             </div>
+            <button
+              type="button"
+              className="ghost"
+              id="catalog-import"
+              title="Importar catálogo (.db)"
+              onClick={() => void handleCatalogImport()}
+            >
+              <Icon name="import" className="ico" />
+            </button>
             <button
               type="button"
               className="ghost"
@@ -1548,7 +1721,10 @@ export function InfoView() {
                         </span>
                       </span>
                     </label>
-                    <label className="opt-row opt-row-switch">
+                    <label
+                      className="opt-row opt-row-switch ui-status-none"
+                      title="Sin función — paridad imposible por ahora"
+                    >
                       <div>
                         <div className="opt-row-title">Buscar en todas las fuentes</div>
                         <div className="opt-row-desc">Ignora la fuente seleccionada</div>
@@ -1588,10 +1764,10 @@ export function InfoView() {
             </div>
 
             <div className="filter-actions">
-              <button type="button" className="btn" id="filter-apply" onClick={applyAdvFilterStub}>
+              <button type="button" className="btn" id="filter-apply" onClick={applyAdvFilter}>
                 <Icon name="filter" className="ico ico-sm" /> Aplicar filtro
               </button>
-              <button type="button" className="secondary" id="filter-remove" onClick={removeAdvFilterStub}>
+              <button type="button" className="secondary" id="filter-remove" onClick={removeAdvFilter}>
                 Quitar filtro
               </button>
               <button type="button" className="secondary" id="filter-reset" onClick={resetAdvFilterForm}>
@@ -1633,11 +1809,24 @@ export function InfoView() {
               </button>
             </div>
           </div>
-          <label className="action-check" title="Próximamente">
-            <input type="checkbox" id="task-stopped" disabled /> Tarea detenida
+          <label className="action-check" title="Encolar sin iniciar el worker">
+            <input
+              type="checkbox"
+              id="task-stopped"
+              checked={taskStopped}
+              onChange={(e) => setTaskStopped(e.target.checked)}
+            />{" "}
+            Tarea detenida
           </label>
           <div className="action-btns">
-            <button type="button" className="btn-split" id="btn-split" disabled title="Próximamente">
+            <button
+              type="button"
+              className="btn-split"
+              id="btn-split"
+              disabled={!manga || selected.size < 2}
+              title="Partir la selección en dos tareas de cola"
+              onClick={() => void handleSplitDownload()}
+            >
               <Icon name="split" className="ico ico-sm" /> Dividir descarga
             </button>
             <button

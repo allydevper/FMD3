@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Returned by [`download_chapter`] when the cancel flag trips mid-download.
@@ -1369,24 +1369,41 @@ fn chapter_output_dir(
     chapter_index: usize,
     chapter_name: &str,
     website: &str,
+    authors: &str,
+    artists: &str,
 ) -> PathBuf {
-    use crate::rename_patterns::{apply_pattern, format_chapter_index};
-    use crate::settings_keys::{chapter_folder_pattern, manga_folder_pattern};
+    use crate::rename_patterns::{apply_pattern, format_chapter_index, strip_manga_from_chapter};
+    use crate::settings_keys::{
+        chapter_folder_on, chapter_folder_pattern, manga_folder_on, manga_folder_pattern,
+        remove_manga_from_chapter,
+    };
     let idx = format_chapter_index(chapter_index + 1);
+    let chapter_display = if remove_manga_from_chapter() {
+        strip_manga_from_chapter(chapter_name, manga_title)
+    } else {
+        chapter_name.to_string()
+    };
     // FMD2 tokens are uppercase (%MANGA%, %CHAPTER%, …); keep TitleCase aliases for older MVP settings.
     let tokens = [
         ("%MANGA%", manga_title),
         ("%Manga%", manga_title),
         ("%WEBSITE%", website),
         ("%Website%", website),
-        ("%CHAPTER%", chapter_name),
-        ("%Chapter%", chapter_name),
+        ("%CHAPTER%", chapter_display.as_str()),
+        ("%Chapter%", chapter_display.as_str()),
+        ("%AUTHOR%", authors),
+        ("%ARTIST%", artists),
         ("%NUMBERING%", &idx),
         ("%ChapterIndex%", &idx),
     ];
-    let manga_folder = apply_pattern(&manga_folder_pattern(), &tokens);
-    let chapter_folder = apply_pattern(&chapter_folder_pattern(), &tokens);
-    output_dir.join(manga_folder).join(chapter_folder)
+    let mut path = output_dir.to_path_buf();
+    if manga_folder_on() {
+        path = path.join(apply_pattern(&manga_folder_pattern(), &tokens));
+    }
+    if chapter_folder_on() {
+        path = path.join(apply_pattern(&chapter_folder_pattern(), &tokens));
+    }
+    path
 }
 
 fn work_basename(file_names: &LuaStringList, work_id: usize, page_count: usize) -> String {
@@ -1442,7 +1459,7 @@ pub fn download_chapter(
     manga_title: &str,
     chapter_index: usize,
     chapter_name: &str,
-    mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
+    mut on_progress: Option<&mut dyn FnMut(usize, usize, u64)>,
     cancel: Option<&AtomicBool>,
 ) -> Result<crate::download::DownloadResult, String> {
     let cancelled = || cancel.is_some_and(|c| c.load(Ordering::SeqCst));
@@ -1558,12 +1575,19 @@ pub fn download_chapter(
             s.name.clone()
         }
     };
+    let (authors, artists) = manga_url
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|mu| crate::catalog::manga_cache_get(&meta.id, mu).ok().flatten())
+        .map(|row| (row.authors, row.artists))
+        .unwrap_or_default();
     let chapter_dir = chapter_output_dir(
         output_dir,
         manga_title,
         chapter_index,
         chapter_name,
         &website_name,
+        &authors,
+        &artists,
     );
     let max_threads = {
         let mod_lim = module.inner.lock().max_thread_per_task_limit;
@@ -1597,11 +1621,12 @@ pub fn download_chapter(
         && task.page_container_links.len() > 0;
 
     if parallel_ok {
+        let bytes_counter = Arc::new(AtomicU64::new(0));
         let mut pending: Vec<(usize, String)> = Vec::new();
         for i in 0..page_count {
             abort_if_cancelled(&http)?;
             if let Some(cb) = on_progress.as_mut() {
-                cb(i, page_count);
+                cb(i, page_count, bytes_counter.load(Ordering::SeqCst));
             }
             let work_url = task.page_links.get(i).unwrap_or_default();
             let trimmed = work_url.trim().to_string();
@@ -1609,10 +1634,13 @@ pub fn download_chapter(
                 let base_name = work_basename(&task.file_names, i, page_count);
                 let base_path = chapter_dir.join(&base_name);
                 if let Some(existing) = find_existing_image(&base_path) {
+                    if let Ok(meta) = std::fs::metadata(&existing) {
+                        bytes_counter.fetch_add(meta.len(), Ordering::SeqCst);
+                    }
                     files.push(existing.display().to_string());
                     task.page_links.set(i, "D".into());
                     if let Some(cb) = on_progress.as_mut() {
-                        cb(i + 1, page_count);
+                        cb(i + 1, page_count, bytes_counter.load(Ordering::SeqCst));
                     }
                     continue;
                 }
@@ -1655,6 +1683,7 @@ pub fn download_chapter(
                 let files_m = &files_m;
                 let errors_m = &errors_m;
                 let progress = &progress;
+                let bytes_counter = &bytes_counter;
                 let page_count = page_count;
                 scope.spawn(move || {
                     let Ok(client) = http0.fork() else {
@@ -1668,6 +1697,9 @@ pub fn download_chapter(
                         let base_name = work_basename(&task.file_names, i, page_count);
                         let base_path = chapter_dir.join(&base_name);
                         if let Some(existing) = find_existing_image(&base_path) {
+                            if let Ok(meta) = std::fs::metadata(&existing) {
+                                bytes_counter.fetch_add(meta.len(), Ordering::SeqCst);
+                            }
                             files_m.lock().push(existing.display().to_string());
                             task.page_links.set(i, "D".into());
                             progress.fetch_add(1, Ordering::SeqCst);
@@ -1709,6 +1741,7 @@ pub fn download_chapter(
                         };
                         match std::fs::write(&file_path, &bytes) {
                             Ok(()) => {
+                                bytes_counter.fetch_add(bytes.len() as u64, Ordering::SeqCst);
                                 files_m.lock().push(file_path.display().to_string());
                                 task.page_links.set(i, "D".into());
                                 progress.fetch_add(1, Ordering::SeqCst);
@@ -1728,7 +1761,7 @@ pub fn download_chapter(
             return Err(DOWNLOAD_CANCELLED.into());
         }
         if let Some(cb) = on_progress.as_mut() {
-            cb(page_count, page_count);
+            cb(page_count, page_count, bytes_counter.load(Ordering::SeqCst));
         }
         return Ok(crate::download::DownloadResult {
             chapter_index,
@@ -1738,11 +1771,12 @@ pub fn download_chapter(
         });
     }
 
+    let mut bytes_so_far: u64 = 0;
     for i in 0..page_count {
         abort_if_cancelled(&http)?;
 
         if let Some(cb) = on_progress.as_mut() {
-            cb(i, page_count);
+            cb(i, page_count, bytes_so_far);
         }
 
         let mut work_url = task.page_links.get(i).unwrap_or_default();
@@ -1763,6 +1797,9 @@ pub fn download_chapter(
         let base_name = work_basename(&task.file_names, i, page_count);
         let base_path = chapter_dir.join(&base_name);
         if let Some(existing) = find_existing_image(&base_path) {
+            if let Ok(meta) = std::fs::metadata(&existing) {
+                bytes_so_far += meta.len();
+            }
             files.push(existing.display().to_string());
             task.page_links.set(i, "D".into());
             if !on_after.is_empty() {
@@ -1772,7 +1809,7 @@ pub fn download_chapter(
                 }
             }
             if let Some(cb) = on_progress.as_mut() {
-                cb(i + 1, page_count);
+                cb(i + 1, page_count, bytes_so_far);
             }
             continue;
         }
@@ -1867,6 +1904,12 @@ pub fn download_chapter(
             }
         };
 
+        if let Some(path) = &saved {
+            if let Ok(meta) = std::fs::metadata(path) {
+                bytes_so_far += meta.len();
+            }
+        }
+
         match saved {
             Some(path) => {
                 let path_str = path.display().to_string();
@@ -1887,7 +1930,7 @@ pub fn download_chapter(
         }
 
         if let Some(cb) = on_progress.as_mut() {
-            cb(i + 1, page_count);
+            cb(i + 1, page_count, bytes_so_far);
         }
     }
 

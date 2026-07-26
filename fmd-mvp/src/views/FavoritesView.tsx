@@ -4,6 +4,7 @@ import { Icon } from "../components/Icon";
 import { ICO } from "../icons";
 import * as api from "../api/tauri";
 import { useApp } from "../context/AppContext";
+import { confirmIfEnabled, SK } from "../utils/settings";
 import type { Favorite, FavoriteCheckResult } from "../types";
 
 type FavFilter = "Todo" | "Habilitado" | "Deshabilitado";
@@ -45,7 +46,7 @@ function favFmtAgo(iso: string | undefined, checkedMs?: number): string {
 }
 
 export function FavoritesView() {
-  const { activeNav, log, outputDir, setOutputDir } = useApp();
+  const { activeNav, log, outputDir, setOutputDir, favAutoCheck, setFavAutoCheck } = useApp();
 
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [newCounts, setNewCounts] = useState<Map<number, number>>(new Map());
@@ -61,14 +62,17 @@ export function FavoritesView() {
   const [scanning, setScanning] = useState(false);
   const [scanTarget, setScanTarget] = useState("");
   const [scanCount, setScanCount] = useState("");
-  const [auto, setAuto] = useState(true);
 
   const queryInputRef = useRef<HTMLInputElement>(null);
 
   const favNewOf = useCallback((id: number) => newCounts.get(id) || 0, [newCounts]);
   const favIsEnabled = useCallback(
-    (id: number) => enabledMap.get(id) !== false,
-    [enabledMap],
+    (id: number) => {
+      if (enabledMap.has(id)) return enabledMap.get(id) !== false;
+      const fav = favorites.find((f) => f.id === id);
+      return fav?.enabled !== false;
+    },
+    [enabledMap, favorites],
   );
   const favPathOf = useCallback(
     (fav: Favorite): string => {
@@ -84,11 +88,20 @@ export function FavoritesView() {
       const favs = await api.favoritesList();
       const ids = new Set(favs.map((f) => f.id));
       setNewCounts((prev) => pruneMap(prev, ids));
-      setCheckedAt((prev) => pruneMap(prev, ids));
+      setCheckedAt((prev) => {
+        const next = pruneMap(prev, ids);
+        for (const f of favs) {
+          if (f.last_checked_at) {
+            const t = Date.parse(f.last_checked_at);
+            if (Number.isFinite(t)) next.set(f.id, t);
+          }
+        }
+        return next;
+      });
       setEnabledMap((prev) => {
         const next = pruneMap(prev, ids);
         for (const f of favs) {
-          if (!next.has(f.id)) next.set(f.id, true);
+          next.set(f.id, f.enabled !== false);
         }
         return next;
       });
@@ -128,6 +141,8 @@ export function FavoritesView() {
 
   const removeFavorite = useCallback(
     async (id: number) => {
+      const ok = await confirmIfEnabled(SK.CONFIRM_DELETE, "¿Eliminar este favorito?");
+      if (!ok) return;
       await api.favoritesRemove(id);
       setSel((prev) => {
         const next = { ...prev };
@@ -340,11 +355,32 @@ export function FavoritesView() {
 
   const handleToggleSelected = () => {
     const ids = selectedIds;
-    setEnabledMap((prev) => {
-      const next = new Map(prev);
-      for (const id of ids) next.set(id, next.get(id) === false);
-      return next;
-    });
+    void (async () => {
+      try {
+        for (const id of ids) {
+          const next = !favIsEnabled(id);
+          await api.favoritesSetEnabled(id, next);
+          setEnabledMap((prev) => new Map(prev).set(id, next));
+        }
+        await refreshFavorites();
+      } catch (e) {
+        log(String(e), "err");
+      }
+    })();
+  };
+
+  const handleImportList = () => {
+    const json = window.prompt("Pega el JSON de la lista de favoritos:");
+    if (json == null || !json.trim()) return;
+    void (async () => {
+      try {
+        const n = await api.favoritesImportList(json.trim());
+        log(`Importados ${n} favoritos`, "ok");
+        await refreshFavorites();
+      } catch (e) {
+        log(String(e), "err");
+      }
+    })();
   };
 
   const handleDeleteSelected = async () => {
@@ -404,8 +440,8 @@ export function FavoritesView() {
             <button
               type="button"
               className="fav-btn-ghost"
-              title="Próximamente"
-              onClick={() => log("Importar lista: próximamente", "ok")}
+              title="Importar lista JSON"
+              onClick={handleImportList}
             >
               <Icon name="import" className="ico ico-sm" />
               Importar lista
@@ -651,7 +687,9 @@ export function FavoritesView() {
                           {path}
                         </span>
                         <span className="mono fav-added">{favFmtAgo(it.updated_at)}</span>
-                        <span className="mono fav-checked">{favFmtAgo(it.updated_at, checkedMs)}</span>
+                        <span className="mono fav-checked">
+                          {favFmtAgo(it.last_checked_at || it.updated_at, checkedMs)}
+                        </span>
                         <div className="fav-act">
                           <button
                             type="button"
@@ -700,9 +738,9 @@ export function FavoritesView() {
                 Revisión automática
                 <button
                   type="button"
-                  className={`fav-sw${auto ? " on" : ""}`}
-                  aria-pressed={auto}
-                  onClick={() => setAuto((a) => !a)}
+                  className={`fav-sw${favAutoCheck ? " on" : ""}`}
+                  aria-pressed={favAutoCheck}
+                  onClick={() => void setFavAutoCheck(!favAutoCheck)}
                 >
                   <i />
                 </button>

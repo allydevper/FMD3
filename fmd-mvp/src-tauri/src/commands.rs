@@ -18,6 +18,11 @@ pub async fn get_manga_info(
         return Err("URL vacía".into());
     }
     let module_id = module_id.filter(|s| !s.is_empty());
+    if let Some(id) = module_id.as_deref() {
+        if crate::settings_keys::module_disabled(id) {
+            return Err("Módulo deshabilitado".into());
+        }
+    }
     tauri::async_runtime::spawn_blocking(move || get_info(&url, module_id.as_deref()))
         .await
         .map_err(|e| format!("tarea cancelada: {e}"))?
@@ -54,6 +59,9 @@ pub fn catalog_search(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Result<Vec<CatalogEntry>, String> {
+    if crate::settings_keys::module_disabled(&module_id) {
+        return Err("Módulo deshabilitado".into());
+    }
     catalog::search(&module_id, &query, limit.unwrap_or(100), offset.unwrap_or(0))
 }
 
@@ -123,6 +131,9 @@ pub async fn catalog_update(
     app: AppHandle,
     module_id: String,
 ) -> Result<UpdateListStats, String> {
+    if crate::settings_keys::module_disabled(&module_id) {
+        return Err("Módulo deshabilitado".into());
+    }
     let id = module_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let app2 = app.clone();
@@ -151,6 +162,13 @@ pub struct QueueAddRequest {
     pub module_id: String,
     pub output_dir: String,
     pub chapters: Vec<DownloadChapterInput>,
+    /// If false, enqueue as pending without starting the worker ("tarea detenida").
+    #[serde(default = "default_true")]
+    pub start: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[tauri::command]
@@ -183,6 +201,9 @@ pub fn favorites_add(
     state: State<QueueState>,
     req: FavoriteAddRequest,
 ) -> Result<Favorite, String> {
+    if crate::settings_keys::module_disabled(&req.module_id) {
+        return Err("Módulo deshabilitado".into());
+    }
     let (last_link, last_name, count) = if let Some(last) = req.chapters.last() {
         (last.link.clone(), last.name.clone(), req.chapters.len() as i64)
     } else {
@@ -204,6 +225,15 @@ pub fn favorites_add(
 #[tauri::command]
 pub fn favorites_remove(state: State<QueueState>, id: i64) -> Result<(), String> {
     db::favorites_remove(&state.db, id)
+}
+
+#[tauri::command]
+pub fn favorites_set_enabled(
+    state: State<QueueState>,
+    id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    db::favorites_set_enabled(&state.db, id, enabled)
 }
 
 #[derive(Debug, Serialize)]
@@ -249,6 +279,7 @@ pub async fn favorites_check_all(
 ) -> Result<Vec<FavoriteCheckResult>, String> {
     let ids: Vec<i64> = db::favorites_list(&state.db)?
         .into_iter()
+        .filter(|f| f.enabled)
         .map(|f| f.id)
         .collect();
     drop(state);
@@ -271,6 +302,15 @@ async fn check_favorite_inner(
 ) -> Result<FavoriteCheckResult, String> {
     let db = state.db.clone();
     let fav = db::favorites_get(&db, id)?;
+    if !fav.enabled {
+        let _ = db::favorites_touch_checked(&db, id);
+        let favorite = db::favorites_get(&db, id)?;
+        return Ok(FavoriteCheckResult {
+            favorite,
+            new_chapters: vec![],
+            enqueued: 0,
+        });
+    }
     let manga_url = fav.manga_url.clone();
     let module_id = fav.module_id.clone();
     let manga_url_for_queue = manga_url.clone();
@@ -314,6 +354,7 @@ async fn check_favorite_inner(
         ("", "")
     };
     db::favorites_update_progress(&db, id, last_link, last_name, chapters.len() as i64)?;
+    let _ = db::favorites_touch_checked(&db, id);
     let favorite = db::favorites_get(&db, id)?;
     Ok(FavoriteCheckResult {
         favorite,
@@ -339,6 +380,9 @@ pub fn queue_add(
     if req.output_dir.trim().is_empty() {
         return Err("Carpeta de salida vacía".into());
     }
+    if crate::settings_keys::module_disabled(&req.module_id) {
+        return Err("Módulo deshabilitado".into());
+    }
     let _ = db::settings_set(&state.db, "default_output_dir", &req.output_dir);
     let items: Vec<NewQueueItem> = req
         .chapters
@@ -355,8 +399,18 @@ pub fn queue_add(
         })
         .collect();
     let ids = db::queue_add_many(&state.db, &items)?;
-    queue::ensure_started(&app);
+    if crate::settings_keys::sort_on_add() {
+        let _ = db::queue_sort_by_title(&state.db);
+    }
+    if req.start {
+        queue::ensure_started(&app);
+    }
     Ok(ids.len())
+}
+
+#[tauri::command]
+pub fn queue_reorder(state: State<QueueState>, ids: Vec<i64>) -> Result<(), String> {
+    db::queue_reorder(&state.db, &ids)
 }
 
 #[tauri::command]
@@ -399,4 +453,257 @@ pub fn download_chapters(
     req: QueueAddRequest,
 ) -> Result<usize, String> {
     queue_add(app, state, req)
+}
+
+#[derive(Debug, Deserialize)]
+struct FavoriteImportItem {
+    module_id: String,
+    module_name: String,
+    root_url: String,
+    manga_url: String,
+    title: String,
+}
+
+#[tauri::command]
+pub fn favorites_import_list(
+    state: State<QueueState>,
+    json: String,
+) -> Result<usize, String> {
+    let items: Vec<FavoriteImportItem> =
+        serde_json::from_str(&json).map_err(|e| format!("JSON inválido: {e}"))?;
+    let mut n = 0usize;
+    for item in items {
+        match db::favorites_add(
+            &state.db,
+            &item.module_id,
+            &item.module_name,
+            &item.root_url,
+            &item.manga_url,
+            &item.title,
+            "",
+            "",
+            0,
+        ) {
+            Ok(_) => n += 1,
+            Err(e) => eprintln!("favorites_import skip {}: {e}", item.manga_url),
+        }
+    }
+    Ok(n)
+}
+
+fn log_file_path(db: &db::Db) -> Result<std::path::PathBuf, String> {
+    let name = db::settings_get(db, crate::settings_keys::LOG_FILE)?
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "fmd-mvp.log".into());
+    let name = name.trim().trim_start_matches(['/', '\\']);
+    if name.is_empty() || name.contains("..") {
+        return Err("nombre de log inválido".into());
+    }
+    Ok(db::db_path().join(name))
+}
+
+#[tauri::command]
+pub fn shell_open_external(path: String, args: Option<String>) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("ruta vacía".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut cmd = if let Some(a) = args.as_ref().filter(|s| !s.trim().is_empty()) {
+            let mut c = std::process::Command::new(path);
+            for part in a.split_whitespace() {
+                c.arg(part);
+            }
+            c
+        } else {
+            // Open path with the default associated application.
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "start", "", path]);
+            c
+        };
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.spawn()
+            .map_err(|e| format!("no se pudo abrir '{path}': {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let mut cmd = if let Some(a) = args.as_ref().filter(|s| !s.trim().is_empty()) {
+            let mut c = std::process::Command::new(path);
+            for part in a.split_whitespace() {
+                c.arg(part);
+            }
+            c
+        } else {
+            let mut c = std::process::Command::new("xdg-open");
+            c.arg(path);
+            c
+        };
+        cmd.spawn()
+            .map_err(|e| format!("no se pudo abrir '{path}': {e}"))?;
+        Ok(())
+    }
+}
+
+/// Sustituye tokens `%PATH%` y `%CHAPTER%` en la plantilla de argumentos del
+/// visor externo (misma convención que FMD2).
+fn build_viewer_args(args_template: &str, target: &std::path::Path, chapter_name: &str) -> String {
+    args_template
+        .replace("%PATH%", &target.display().to_string())
+        .replace("%CHAPTER%", chapter_name)
+}
+
+/// Abre `target` (carpeta del capítulo o archivo empaquetado) con el visor
+/// externo configurado en Ajustes, si `external.viewer_on` está activo.
+/// Llamado justo después de que un ítem de la cola termina en "done".
+pub fn open_external_viewer(target: &std::path::Path, chapter_name: &str) {
+    if !crate::settings_keys::bool_setting(crate::settings_keys::EXTERNAL_VIEWER_ON, false) {
+        return;
+    }
+    if !target.exists() {
+        return;
+    }
+    let viewer_path = crate::db::settings_get_direct(crate::settings_keys::EXTERNAL_VIEWER_PATH)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let viewer_path = viewer_path.trim();
+    let target_str = target.display().to_string();
+    if viewer_path.is_empty() {
+        // Sin visor configurado: abre con la aplicación asociada del sistema.
+        let _ = shell_open_external(target_str, None);
+        return;
+    }
+    let args_template = crate::db::settings_get_direct(crate::settings_keys::EXTERNAL_VIEWER_ARGS)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let args = if args_template.trim().is_empty() {
+        target_str
+    } else {
+        build_viewer_args(&args_template, target, chapter_name)
+    };
+    let _ = shell_open_external(viewer_path.to_string(), Some(args));
+}
+
+#[tauri::command]
+pub fn log_open(state: State<QueueState>) -> Result<(), String> {
+    let path = log_file_path(&state.db)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if !path.exists() {
+        std::fs::write(&path, "").map_err(|e| e.to_string())?;
+    }
+    shell_open_external(path.display().to_string(), None)
+}
+
+#[tauri::command]
+pub fn log_clear(state: State<QueueState>) -> Result<(), String> {
+    let path = log_file_path(&state.db)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, "").map_err(|e| format!("no se pudo limpiar log: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn db_vacuum(state: State<QueueState>) -> Result<(), String> {
+    db::db_vacuum(&state.db)
+}
+
+#[tauri::command]
+pub async fn app_check_update() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("FMD-MVP/0.1")
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let urls = [
+            "https://api.github.com/repos/allydevper/FMD3/releases/latest",
+            "https://api.github.com/repos/dazedcat19/FMD2/releases/latest",
+        ];
+        let mut last_err = String::from("sin respuesta");
+        for url in urls {
+            match client
+                .get(url)
+                .header("Accept", "application/vnd.github+json")
+                .send()
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+                    if let Some(tag) = v.get("tag_name").and_then(|t| t.as_str()) {
+                        return Ok(format!("Última versión: {tag}"));
+                    }
+                    last_err = "respuesta sin tag_name".into();
+                }
+                Ok(resp) => {
+                    last_err = format!("HTTP {}", resp.status());
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                }
+            }
+        }
+        Err(format!("No se pudo comprobar actualizaciones: {last_err}"))
+    })
+    .await
+    .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub async fn modules_update_github() -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(modules_refresh)
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))
+}
+
+#[tauri::command]
+pub async fn catalog_download_fmd2db(url: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("URL vacía".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(
+                crate::db::settings_get_direct(crate::settings_keys::HTTP_USER_AGENT)
+                    .ok()
+                    .flatten()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "FMD-MVP/0.1".into()),
+            )
+            .timeout(std::time::Duration::from_secs(
+                crate::settings_keys::http_timeout_secs().max(1),
+            ))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client.get(&url).send().map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+        let bytes = resp.bytes().map_err(|e| e.to_string())?;
+        let fname = url
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty() && s.contains('.'))
+            .unwrap_or("catalog.fmd2db");
+        let fname = sanitize_filename::sanitize(fname);
+        let dest = std::env::temp_dir().join(format!(
+            "fmd2db-{}-{fname}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+        Ok(dest.display().to_string())
+    })
+    .await
+    .map_err(|e| format!("tarea cancelada: {e}"))?
 }

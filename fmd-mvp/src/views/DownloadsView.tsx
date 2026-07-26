@@ -4,6 +4,7 @@ import { ICO } from "../icons";
 import { DL_HIST, DL_ST } from "../constants";
 import * as api from "../api/tauri";
 import { useApp } from "../context/AppContext";
+import { confirmIfEnabled, settingBool, SK } from "../utils/settings";
 import type { LiveProgress, ModuleMeta, QueueItem } from "../types";
 
 type SortKey = "queue" | "title" | "status" | "pct" | "speed" | "site" | "path" | "added";
@@ -68,6 +69,13 @@ function dlFmtAdded(item: QueueItem): string {
   return `${(h / 8760).toFixed(1)} a`;
 }
 
+function formatBytesPerSec(bps: number | undefined): string {
+  if (bps == null || !Number.isFinite(bps) || bps <= 0) return "";
+  if (bps < 1024) return `${Math.round(bps)} B/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+  return `${(bps / (1024 * 1024)).toFixed(2)} MB/s`;
+}
+
 function dlItemPct(
   item: QueueItem,
   liveProgress: Map<number, LiveProgress>,
@@ -88,6 +96,12 @@ function dlItemPct(
   if (item.status === "running") return { pct: 8, pages: "", label: "…" };
   if (item.status === "failed") return { pct: 0, pages: "", label: "—" };
   return { pct: 0, pages: "", label: "—" };
+}
+
+function dlItemSpeed(item: QueueItem, liveProgress: Map<number, LiveProgress>): string {
+  if (item.status !== "running") return "—";
+  const live = liveProgress.get(item.id);
+  return formatBytesPerSec(live?.bytes_per_sec) || "…";
 }
 
 function orderedQueueItems(items: QueueItem[], order: number[]): QueueItem[] {
@@ -135,7 +149,7 @@ function filteredQueueItems(
       if (sortKey === "title") return it.manga_title.toLowerCase();
       if (sortKey === "status") return dlStatusMeta(it.status).label;
       if (sortKey === "pct") return dlItemPct(it, liveProgress).pct;
-      if (sortKey === "speed") return it.status === "running" ? 1 : 0;
+      if (sortKey === "speed") return liveProgress.get(it.id)?.bytes_per_sec ?? (it.status === "running" ? 1 : 0);
       if (sortKey === "site") return dlSiteName(it, modules).toLowerCase();
       if (sortKey === "path") return it.output_dir.toLowerCase();
       return Date.parse(it.created_at) || 0;
@@ -163,6 +177,9 @@ export function DownloadsView() {
   const [sortKey, setSortKey] = useState<SortKey>("added");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [order, setOrder] = useState<number[]>([]);
+  const [showToolbar, setShowToolbar] = useState(true);
+  const [showClearBtn, setShowClearBtn] = useState(true);
+  const [showLeftBar, setShowLeftBar] = useState(true);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   async function refreshQueue() {
@@ -173,6 +190,14 @@ export function DownloadsView() {
       log(String(e), "err");
     }
   }
+
+  useEffect(() => {
+    void (async () => {
+      setShowToolbar(await settingBool(SK.UI_DL_TOOLBAR, true));
+      setShowClearBtn(await settingBool(SK.UI_DL_CLEAR_BTN, true));
+      setShowLeftBar(await settingBool(SK.UI_DL_LEFT_BAR, true));
+    })();
+  }, [activeNav]);
 
   useEffect(() => {
     const ids = new Set(items.map((i) => i.id));
@@ -220,6 +245,7 @@ export function DownloadsView() {
             page_total: p.page_total,
             message: p.message,
             chapter_name: p.chapter_name,
+            bytes_per_sec: p.bytes_per_sec,
           });
           return next;
         });
@@ -242,22 +268,26 @@ export function DownloadsView() {
     if (!ids.length) return;
     setOrder((prev) => {
       const ord = [...prev];
+      let next: number[];
       if (edge) {
         const picked = ord.filter((id) => ids.includes(id));
         const rest = ord.filter((id) => !ids.includes(id));
-        return dir < 0 ? picked.concat(rest) : rest.concat(picked);
-      }
-      const idxs = dir < 0 ? [...ord.keys()] : [...ord.keys()].reverse();
-      for (const i of idxs) {
-        const j = i + dir;
-        if (j < 0 || j >= ord.length) continue;
-        if (ids.includes(ord[i]) && !ids.includes(ord[j])) {
-          const t = ord[i];
-          ord[i] = ord[j];
-          ord[j] = t;
+        next = dir < 0 ? picked.concat(rest) : rest.concat(picked);
+      } else {
+        const idxs = dir < 0 ? [...ord.keys()] : [...ord.keys()].reverse();
+        for (const i of idxs) {
+          const j = i + dir;
+          if (j < 0 || j >= ord.length) continue;
+          if (ids.includes(ord[i]) && !ids.includes(ord[j])) {
+            const t = ord[i];
+            ord[i] = ord[j];
+            ord[j] = t;
+          }
         }
+        next = ord;
       }
-      return ord;
+      void api.queueReorder(next).catch((e) => log(String(e), "err"));
+      return next;
     });
     setSortKey("queue");
   }
@@ -334,6 +364,12 @@ export function DownloadsView() {
 
   async function handleSelDelete() {
     const ids = Object.keys(sel).map(Number);
+    if (!ids.length) return;
+    const ok = await confirmIfEnabled(
+      SK.CONFIRM_DELETE,
+      `¿Eliminar ${ids.length} elemento(s) de la cola?`,
+    );
+    if (!ok) return;
     for (const id of ids) await api.queueRemove(id);
     await refreshQueue();
   }
@@ -359,6 +395,11 @@ export function DownloadsView() {
   }
 
   async function handleClearDone() {
+    const ok = await confirmIfEnabled(
+      SK.CONFIRM_EMPTY_LIST,
+      "¿Eliminar todos los elementos terminados de la cola?",
+    );
+    if (!ok) return;
     const n = await api.queueClearFinished();
     log(`Eliminados ${n} terminados`, "ok");
     await refreshQueue();
@@ -377,6 +418,12 @@ export function DownloadsView() {
   const activeN = items.filter((i) => i.status === "running").length;
   const queuedN = items.filter((i) => i.status === "pending").length;
   const doneN = items.filter((i) => i.status === "done").length;
+  const totalBps = items
+    .filter((i) => i.status === "running")
+    .reduce((sum, i) => sum + (liveProgress.get(i.id)?.bytes_per_sec ?? 0), 0);
+  const transferLabel = activeN
+    ? formatBytesPerSec(totalBps) || "…"
+    : "0 KB/s";
   const selIds = Object.keys(sel)
     .filter((k) => sel[Number(k)])
     .map(Number);
@@ -395,7 +442,7 @@ export function DownloadsView() {
           </div>
           <div className="dl-header-actions">
             <div className="dl-speed-block">
-              <div className="dl-speed-value mono">{activeN ? "…" : "0 KB/s"}</div>
+              <div className="dl-speed-value mono">{transferLabel}</div>
               <div className="dl-speed-label">Transferencia</div>
             </div>
             <div className="dl-header-sep" />
@@ -408,7 +455,7 @@ export function DownloadsView() {
           </div>
         </header>
         <div className="dl-body">
-          <aside className="dl-tree" aria-label="Filtros de descargas">
+          <aside className="dl-tree" aria-label="Filtros de descargas" hidden={!showLeftBar}>
             <button
               type="button"
               className={`dl-trow${cat === "all" ? " on" : ""}`}
@@ -505,7 +552,7 @@ export function DownloadsView() {
             })}
           </aside>
           <div className="dl-main">
-            <div className="dl-toolbar">
+            <div className="dl-toolbar" hidden={!showToolbar}>
               <div className="dl-search-wrap">
                 <Icon ico={ICO.search} className="ico ico-sm dl-search-ico" />
                 <input
@@ -683,7 +730,7 @@ export function DownloadsView() {
                           className="mono dl-ratio"
                           style={{ color: it.status === "running" ? "var(--text)" : "var(--muted)" }}
                         >
-                          {it.status === "running" ? "…" : "—"}
+                          {dlItemSpeed(it, liveProgress)}
                         </span>
                         <span className="ell dl-site">{site}</span>
                         <span className="ell mono dl-path" title={it.output_dir}>
@@ -746,7 +793,12 @@ export function DownloadsView() {
               <span className="dl-footer-muted">{`${queuedN} en cola`}</span>
               <span className="dl-footer-muted">{`${doneN} completadas`}</span>
               <div className="dl-toolbar-spacer" />
-              <button type="button" className="lnk" onClick={() => void handleClearDone()}>
+              <button
+                type="button"
+                className="lnk"
+                hidden={!showClearBtn}
+                onClick={() => void handleClearDone()}
+              >
                 Limpiar completadas
               </button>
             </footer>

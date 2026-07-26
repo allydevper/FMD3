@@ -16,6 +16,7 @@ pub fn emit_lua_log(msg: &str) {
         return;
     }
     eprintln!("[lua] {line}");
+    crate::log_file::append(line);
     if let Some(app) = APP.get() {
         let _ = app.emit("lua-log", line);
     }

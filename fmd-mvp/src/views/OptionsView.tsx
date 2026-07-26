@@ -10,9 +10,9 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import { Icon } from "../components/Icon";
 import { ICO } from "../icons";
-import { DEFAULT_USER_AGENT, RENAME_SAMPLE, PACK_EXT } from "../constants";
+import { DEFAULT_USER_AGENT, RENAME_SAMPLE, PACK_EXT, SK } from "../constants";
 import * as api from "../api/tauri";
-import { useApp } from "../context/AppContext";
+import { useApp, type AppTheme } from "../context/AppContext";
 import type { ModuleMeta } from "../types";
 
 /* ---------------------------------------------------------------------- */
@@ -61,20 +61,65 @@ type OptionsFormState = {
   proxyUser: string;
   proxyPass: string;
   threads: number;
+  parallelTasks: number;
+  taskRetries: number;
+  httpTimeout: number;
+  httpRetries: number;
   packFormat: string;
+  packDelete: boolean;
+  convertTo: string;
   patManga: string;
   patChapter: string;
   patPage: string;
   outputDirField: string;
   extOn: boolean;
+  extPath: string;
+  extArgs: string;
   logOn: boolean;
+  logFile: string;
   mangaFolderOn: boolean;
   chapterFolderOn: boolean;
   volPadOn: boolean;
   chapPadOn: boolean;
+  volDigits: number;
+  chapDigits: number;
   asciiOn: boolean;
   asciiChar: string;
   favIntervalOn: boolean;
+  favIntervalMin: number;
+  favCheckOnStart: boolean;
+  favOpenOnStart: boolean;
+  favDownloadAfter: boolean;
+  favRemoveCompleted: boolean;
+  loadCovers: boolean;
+  liveSearch: boolean;
+  gotoDl: boolean;
+  gotoFav: boolean;
+  newDays: number;
+  theme: AppTheme;
+  afterFinish: string;
+  trayMinimize: boolean;
+  trayStart: boolean;
+  singleInstance: boolean;
+  notify: boolean;
+  vacuum: boolean;
+  clearDoneExit: boolean;
+  longPaths: boolean;
+  confirmExit: boolean;
+  confirmDelete: boolean;
+  confirmEmptyList: boolean;
+  pngAsJpeg: boolean;
+  webpAs: string;
+  pngLevel: string;
+  jpegQuality: number;
+  pdfQuality: number;
+  removeMangaFromChapter: boolean;
+  sortOnAdd: boolean;
+  dlToolbar: boolean;
+  dlClearBtn: boolean;
+  dlLeftBar: boolean;
+  checkUpdateStart: boolean;
+  updateListNoInfo: boolean;
 };
 
 const DEFAULT_SETTINGS: OptionsFormState = {
@@ -86,21 +131,74 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   proxyUser: "",
   proxyPass: "",
   threads: 1,
+  parallelTasks: 1,
+  taskRetries: 1,
+  httpTimeout: 30,
+  httpRetries: 5,
   packFormat: "none",
+  packDelete: false,
+  convertTo: "keep",
   patManga: "%MANGA%",
   patChapter: "%CHAPTER%",
   patPage: "%FILENAME%",
   outputDirField: "",
   extOn: false,
+  extPath: "",
+  extArgs: "%PATH%%CHAPTER%",
   logOn: false,
+  logFile: "fmd.log",
   mangaFolderOn: true,
   chapterFolderOn: true,
   volPadOn: true,
   chapPadOn: true,
+  volDigits: 2,
+  chapDigits: 3,
   asciiOn: false,
   asciiChar: "_",
   favIntervalOn: true,
+  favIntervalMin: 60,
+  favCheckOnStart: true,
+  favOpenOnStart: false,
+  favDownloadAfter: false,
+  favRemoveCompleted: false,
+  loadCovers: true,
+  liveSearch: true,
+  gotoDl: true,
+  gotoFav: false,
+  newDays: 1,
+  theme: "system",
+  afterFinish: "none",
+  trayMinimize: false,
+  trayStart: false,
+  singleInstance: true,
+  notify: true,
+  vacuum: false,
+  clearDoneExit: false,
+  longPaths: false,
+  confirmExit: true,
+  confirmDelete: true,
+  confirmEmptyList: true,
+  pngAsJpeg: false,
+  webpAs: "1",
+  pngLevel: "1",
+  jpegQuality: 80,
+  pdfQuality: 85,
+  removeMangaFromChapter: false,
+  sortOnAdd: false,
+  dlToolbar: true,
+  dlClearBtn: false,
+  dlLeftBar: true,
+  checkUpdateStart: true,
+  updateListNoInfo: false,
 };
+
+function boolStr(v: boolean) {
+  return v ? "1" : "0";
+}
+function parseB(raw: string | null, def: boolean) {
+  if (raw == null || raw === "") return def;
+  return raw === "1" || raw.toLowerCase() === "true";
+}
 
 type SiteMod = { id: string; name: string; domain: string };
 type SiteGroup = { id: string; label: string; sites: SiteMod[] };
@@ -142,6 +240,16 @@ type ModRow = {
 function clampNum(v: number, min: number, max: number): number {
   if (!Number.isFinite(v)) return min;
   return Math.min(max, Math.max(min, Math.trunc(v)));
+}
+
+/** When no explicit `convertTo` is set, derive it from the per-format toggles
+ * (PNG→JPEG switch, WebP target) so `download.convert_to` stays consistent. */
+function deriveConvertTo(convertTo: string, pngAsJpeg: boolean, webpAs: string): string {
+  if (convertTo !== "keep") return convertTo;
+  if (pngAsJpeg) return "jpg";
+  if (webpAs === "2") return "jpg";
+  if (webpAs === "1") return "png";
+  return "keep";
 }
 
 function resolveRenamePattern(pattern: string): string {
@@ -302,9 +410,26 @@ function useVirtualRange(length: number, rowHeight: number, overscan: number) {
 /* Pequeños componentes reutilizables                                     */
 /* ---------------------------------------------------------------------- */
 
-function OptRow({ label, desc, children }: { label: string; desc: string; children: ReactNode }) {
+function OptRow({
+  label,
+  desc,
+  children,
+  status,
+  title,
+}: {
+  label: string;
+  desc: string;
+  children: ReactNode;
+  status?: "none" | "partial";
+  title?: string;
+}) {
+  const statusClass =
+    status === "none" ? " ui-status-none" : status === "partial" ? " ui-status-partial" : "";
   return (
-    <div className="st-row">
+    <div
+      className={`st-row${statusClass}`}
+      title={title ?? (status === "none" ? "Sin función" : status === "partial" ? "Incompleto" : undefined)}
+    >
       <div className="st-meta">
         <div className="st-label">{label}</div>
         <div className="st-desc">{desc}</div>
@@ -361,6 +486,8 @@ function SwitchRow({
   warn,
   checked,
   onChange,
+  status,
+  title,
 }: {
   id?: string;
   label: string;
@@ -368,9 +495,16 @@ function SwitchRow({
   warn?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  status?: "none" | "partial";
+  title?: string;
 }) {
+  const statusClass =
+    status === "none" ? " ui-status-none" : status === "partial" ? " ui-status-partial" : "";
   return (
-    <label className="st-row click">
+    <label
+      className={`st-row click${statusClass}`}
+      title={title ?? (status === "none" ? "Sin función" : status === "partial" ? "Incompleto" : undefined)}
+    >
       <div className="st-meta">
         <div className="st-label">
           {label}
@@ -388,20 +522,20 @@ function SwitchRow({
   );
 }
 
+/** Stub sin cablear: fondo rojo, no marca dirty. */
 function StubSwitchRow({
   id,
   label,
   desc,
   warn,
   defaultChecked = false,
-  onDirty,
 }: {
   id?: string;
   label: string;
   desc: string;
   warn?: string;
   defaultChecked?: boolean;
-  onDirty: () => void;
+  onDirty?: () => void;
 }) {
   const [checked, setChecked] = useState(defaultChecked);
   return (
@@ -411,10 +545,8 @@ function StubSwitchRow({
       desc={desc}
       warn={warn}
       checked={checked}
-      onChange={(v) => {
-        setChecked(v);
-        onDirty();
-      }}
+      status="none"
+      onChange={setChecked}
     />
   );
 }
@@ -425,27 +557,23 @@ function StubSelectRow({
   desc,
   options,
   defaultValue,
-  onDirty,
 }: {
   id?: string;
   label: string;
   desc: string;
   options: { value: string; label: string }[];
   defaultValue: string;
-  onDirty: () => void;
+  onDirty?: () => void;
 }) {
   const [value, setValue] = useState(defaultValue);
   return (
-    <OptRow label={label} desc={desc}>
+    <OptRow label={label} desc={desc} status="none">
       <div className="st-select filter-select-wrap">
         <select
           id={id}
           className="opt-stub"
           value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-            onDirty();
-          }}
+          onChange={(e) => setValue(e.target.value)}
         >
           {options.map((o) => (
             <option key={o.value} value={o.value}>
@@ -467,7 +595,6 @@ function StubStepperRow({
   max,
   suffix,
   unit,
-  onDirty,
 }: {
   id?: string;
   label: string;
@@ -477,11 +604,11 @@ function StubStepperRow({
   max: number;
   suffix?: string;
   unit?: string;
-  onDirty: () => void;
+  onDirty?: () => void;
 }) {
   const [value, setValue] = useState(defaultValue);
   return (
-    <OptRow label={label} desc={desc}>
+    <OptRow label={label} desc={desc} status="none">
       <div className="st-num-wrap">
         <Stepper
           id={id}
@@ -489,10 +616,7 @@ function StubStepperRow({
           min={min}
           max={max}
           suffix={suffix}
-          onChange={(v) => {
-            setValue(v);
-            onDirty();
-          }}
+          onChange={setValue}
         />
         {unit ? <span className="st-unit">{unit}</span> : null}
       </div>
@@ -506,58 +630,87 @@ function StubRangeRow({
   defaultValue,
   min,
   max,
-  onDirty,
 }: {
   label: string;
   desc: string;
   defaultValue: number;
   min: number;
   max: number;
-  onDirty: () => void;
+  onDirty?: () => void;
 }) {
   const [value, setValue] = useState(defaultValue);
   return (
-    <OptRow label={label} desc={desc}>
+    <OptRow label={label} desc={desc} status="none">
       <input
         className="st-range opt-stub"
         type="range"
         min={min}
         max={max}
         value={value}
-        onChange={(e) => {
-          setValue(Number(e.target.value));
-          onDirty();
-        }}
+        onChange={(e) => setValue(Number(e.target.value))}
       />
     </OptRow>
   );
 }
 
-function StubPlainInput({
-  defaultValue,
-  placeholder,
-  mono,
-  onDirty,
+function SelectRow({
+  id,
+  label,
+  desc,
+  value,
+  onChange,
+  options,
 }: {
-  defaultValue: string;
-  placeholder?: string;
-  mono?: boolean;
-  onDirty: () => void;
+  id?: string;
+  label: string;
+  desc: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
 }) {
-  const [value, setValue] = useState(defaultValue);
   return (
-    <input
-      className={`st-field opt-stub${mono ? " st-mono" : ""}`}
-      type="text"
-      value={value}
-      placeholder={placeholder}
-      autoComplete="off"
-      spellCheck={false}
-      onChange={(e) => {
-        setValue(e.target.value);
-        onDirty();
-      }}
-    />
+    <OptRow label={label} desc={desc}>
+      <div className="st-select filter-select-wrap">
+        <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
+          {options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+    </OptRow>
+  );
+}
+
+function BoundStepperRow({
+  id,
+  label,
+  desc,
+  value,
+  onChange,
+  min,
+  max,
+  suffix,
+  unit,
+}: {
+  id?: string;
+  label: string;
+  desc: string;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  suffix?: string;
+  unit?: string;
+}) {
+  return (
+    <OptRow label={label} desc={desc}>
+      <div className="st-num-wrap">
+        <Stepper id={id} value={value} min={min} max={max} suffix={suffix} onChange={onChange} />
+        {unit ? <span className="st-unit">{unit}</span> : null}
+      </div>
+    </OptRow>
   );
 }
 
@@ -579,7 +732,8 @@ function TokenInsert({ tokens, onInsert }: { tokens: string[]; onInsert: (token:
 /* ---------------------------------------------------------------------- */
 
 export function OptionsView() {
-  const { activeNav, log, outputDir, setOutputDir, modules, refreshModules } = useApp();
+  const { activeNav, log, outputDir, setOutputDir, modules, refreshModules, setTheme, refreshDisabledModules } =
+    useApp();
 
   const [optTab, setOptTab] = useState<OptTabId>("general");
   const [dirty, setDirty] = useState(false);
@@ -590,6 +744,9 @@ export function OptionsView() {
     outputDirRef.current = outputDir;
   }, [outputDir]);
 
+  /** Últimos valores de bandeja aplicados (para avisar si cambian y requieren reinicio). */
+  const trayRef = useRef({ trayMinimize: false, trayStart: false });
+
   const markDirty = useCallback(() => setDirty(true), []);
 
   const update = useCallback(<K extends keyof OptionsFormState>(key: K, value: OptionsFormState[K]) => {
@@ -597,20 +754,104 @@ export function OptionsView() {
     setDirty(true);
   }, []);
 
+  const [siteOn, setSiteOn] = useState<Record<string, true>>({});
+  const disabledIdsRef = useRef<Set<string>>(new Set());
+  const knownModulesRef = useRef<Set<string>>(new Set());
+
   /* ---- Cargar / guardar ajustes reales ---- */
 
   const loadSettings = useCallback(async () => {
     const get = (k: string) => api.settingsGet(k);
-    const savedUa = ((await get("http.user_agent")) ?? "").trim();
-    const proxyRaw = (await get("http.proxy")) ?? "";
+    const savedUa = ((await get(SK.UA)) ?? "").trim();
+    const proxyRaw = (await get(SK.PROXY)) ?? "";
     const parsed = parseProxyUrl(proxyRaw);
-    const threadsRaw = (await get("download.max_threads")) ?? "1";
-    const packRaw = (await get("download.pack_format")) ?? "none";
+    const packRaw = (await get(SK.PACK)) ?? "none";
     const packOk = (PACK_FORMATS as readonly string[]).includes(packRaw) ? packRaw : "none";
-    const patM = (await get("download.manga_folder_pattern")) ?? "%MANGA%";
-    const patC = (await get("download.chapter_folder_pattern")) ?? "%CHAPTER%";
-    const patP = (await get("download.page_name_pattern")) ?? "%FILENAME%";
-    const savedDir = (await get("default_output_dir")) ?? outputDirRef.current ?? "";
+    const disabledRaw = (await get(SK.MODULES_DISABLED)) ?? "[]";
+    let disabled: string[] = [];
+    try {
+      disabled = JSON.parse(disabledRaw);
+    } catch {
+      disabled = [];
+    }
+    const disabledSet = new Set(disabled);
+    disabledIdsRef.current = disabledSet;
+    knownModulesRef.current = new Set(modules.map((m) => m.id));
+    setSiteOn(() => {
+      const next: Record<string, true> = {};
+      for (const m of modules) {
+        if (!disabledSet.has(m.id)) next[m.id] = true;
+      }
+      return next;
+    });
+
+    const maxThreads = Number((await get(SK.MAX_THREADS)) ?? "1") || 1;
+    const parallelTasks = Number((await get(SK.PARALLEL_TASKS)) ?? "1") || 1;
+    const taskRetries = Number((await get(SK.TASK_RETRIES)) ?? "1") || 0;
+    const httpTimeout = Number((await get(SK.TIMEOUT)) ?? "30") || 30;
+    const httpRetries = Number((await get(SK.HTTP_RETRIES)) ?? "5") || 0;
+    const packDelete = parseB(await get(SK.PACK_DELETE), false);
+    const convertTo = (await get(SK.CONVERT)) ?? "keep";
+    const patManga = (await get(SK.PAT_MANGA)) ?? "%MANGA%";
+    const patChapter = (await get(SK.PAT_CHAPTER)) ?? "%CHAPTER%";
+    const patPage = (await get(SK.PAT_PAGE)) ?? "%FILENAME%";
+    const outputDirField = (await get(SK.OUTPUT_DIR)) ?? outputDirRef.current ?? "";
+    const mangaFolderOn = parseB(await get(SK.MANGA_FOLDER_ON), true);
+    const chapterFolderOn = parseB(await get(SK.CHAPTER_FOLDER_ON), true);
+    const asciiOn = parseB(await get(SK.ASCII_ON), false);
+    const asciiChar = (await get(SK.ASCII_CHAR)) || "_";
+    const volPadOn = parseB(await get(SK.VOL_PAD), true);
+    const chapPadOn = parseB(await get(SK.CHAP_PAD), true);
+    const volDigits = Number((await get(SK.VOL_DIGITS)) ?? "2") || 2;
+    const chapDigits = Number((await get(SK.CHAP_DIGITS)) ?? "3") || 3;
+    const favIntervalOn = parseB(await get(SK.FAV_INTERVAL_ON), true);
+    const favIntervalMin = Number((await get(SK.FAV_INTERVAL_MIN)) ?? "60") || 60;
+    const favCheckOnStart = parseB(await get(SK.FAV_CHECK_ON_START), true);
+    const favOpenOnStart = parseB(await get(SK.FAV_OPEN_ON_START), false);
+    const favDownloadAfter = parseB(await get(SK.FAV_DOWNLOAD_AFTER), false);
+    const favRemoveCompleted = parseB(await get(SK.FAV_REMOVE_COMPLETED), false);
+    const loadCovers = parseB(await get(SK.UI_LOAD_COVERS), true);
+    const liveSearch = parseB(await get(SK.UI_LIVE_SEARCH), true);
+    const gotoDl = parseB(await get(SK.UI_GOTO_DL), true);
+    const gotoFav = parseB(await get(SK.UI_GOTO_FAV), false);
+    const newDays = Number((await get(SK.UI_NEW_DAYS)) ?? "1") || 1;
+    const themeRaw = ((await get(SK.APP_THEME)) || "system").toLowerCase();
+    const theme: AppTheme =
+      themeRaw === "dark" || themeRaw === "oscuro"
+        ? "dark"
+        : themeRaw === "light" || themeRaw === "claro"
+          ? "light"
+          : "system";
+    const afterFinish =
+      ((await get(SK.AFTER_FINISH)) || "none").toLowerCase() === "exit" ? "exit" : "none";
+    const logOn = parseB(await get(SK.LOG_ON), false);
+    const logFile = (await get(SK.LOG_FILE)) || "fmd.log";
+    const extOn = parseB(await get(SK.EXT_ON), false);
+    const extPath = (await get(SK.EXT_PATH)) || "";
+    const extArgs = (await get(SK.EXT_ARGS)) || "%PATH%%CHAPTER%";
+    const trayMinimize = parseB(await get(SK.TRAY_MINIMIZE), false);
+    const trayStart = parseB(await get(SK.TRAY_START), false);
+    const singleInstance = parseB(await get(SK.SINGLE_INSTANCE), true);
+    const notify = parseB(await get(SK.NOTIFY), true);
+    const vacuum = parseB(await get(SK.VACUUM), false);
+    const clearDoneExit = parseB(await get(SK.CLEAR_DONE_EXIT), false);
+    const longPaths = parseB(await get(SK.LONG_PATHS), false);
+    const confirmExit = parseB(await get(SK.CONFIRM_EXIT), true);
+    const confirmDelete = parseB(await get(SK.CONFIRM_DELETE), true);
+    const confirmEmptyList = parseB(await get(SK.CONFIRM_EMPTY_LIST), true);
+    const pngAsJpeg = parseB(await get(SK.PNG_AS_JPEG), false);
+    const webpAs = (await get(SK.WEBP_AS)) || "1";
+    const pngLevel = (await get(SK.PNG_LEVEL)) || "1";
+    const jpegQuality = Number((await get(SK.JPEG_QUALITY)) ?? "80") || 80;
+    const pdfQuality = Number((await get(SK.PDF_QUALITY)) ?? "85") || 85;
+    const removeMangaFromChapter = parseB(await get(SK.REMOVE_MANGA_FROM_CHAPTER), false);
+    const sortOnAdd = parseB(await get(SK.SORT_ON_ADD), false);
+    const dlToolbar = parseB(await get(SK.UI_DL_TOOLBAR), true);
+    const dlClearBtn = parseB(await get(SK.UI_DL_CLEAR_BTN), false);
+    const dlLeftBar = parseB(await get(SK.UI_DL_LEFT_BAR), true);
+    const checkUpdateStart = parseB(await get(SK.CHECK_UPDATE_START), true);
+    const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
+
     setS((prev) => ({
       ...prev,
       ua: savedUa || DEFAULT_USER_AGENT,
@@ -620,40 +861,160 @@ export function OptionsView() {
       proxyPort: parsed.port,
       proxyUser: parsed.user,
       proxyPass: parsed.pass,
-      threads: Number(threadsRaw) || 1,
+      threads: maxThreads,
+      parallelTasks,
+      taskRetries,
+      httpTimeout,
+      httpRetries,
       packFormat: packOk,
-      patManga: patM,
-      patChapter: patC,
-      patPage: patP,
-      outputDirField: savedDir,
+      packDelete,
+      convertTo,
+      patManga,
+      patChapter,
+      patPage,
+      outputDirField,
+      mangaFolderOn,
+      chapterFolderOn,
+      asciiOn,
+      asciiChar,
+      volPadOn,
+      chapPadOn,
+      volDigits,
+      chapDigits,
+      favIntervalOn,
+      favIntervalMin,
+      favCheckOnStart,
+      favOpenOnStart,
+      favDownloadAfter,
+      favRemoveCompleted,
+      loadCovers,
+      liveSearch,
+      gotoDl,
+      gotoFav,
+      newDays,
+      theme,
+      afterFinish,
+      logOn,
+      logFile,
+      extOn,
+      extPath,
+      extArgs,
+      trayMinimize,
+      trayStart,
+      singleInstance,
+      notify,
+      vacuum,
+      clearDoneExit,
+      longPaths,
+      confirmExit,
+      confirmDelete,
+      confirmEmptyList,
+      pngAsJpeg,
+      webpAs,
+      pngLevel,
+      jpegQuality,
+      pdfQuality,
+      removeMangaFromChapter,
+      sortOnAdd,
+      dlToolbar,
+      dlClearBtn,
+      dlLeftBar,
+      checkUpdateStart,
+      updateListNoInfo,
     }));
+    trayRef.current = { trayMinimize, trayStart };
     setDirty(false);
-  }, []);
+  }, [modules]);
 
   useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
 
   const handleSave = useCallback(async () => {
+    const trayChanged =
+      s.trayMinimize !== trayRef.current.trayMinimize || s.trayStart !== trayRef.current.trayStart;
     const uaVal = s.ua.trim();
-    await api.settingsSet("http.user_agent", uaVal === DEFAULT_USER_AGENT ? "" : uaVal);
+    await api.settingsSet(SK.UA, uaVal === DEFAULT_USER_AGENT ? "" : uaVal);
     await api.settingsSet(
-      "http.proxy",
+      SK.PROXY,
       s.useProxy ? composeProxyUrl(s.proxyType, s.proxyHost, s.proxyPort, s.proxyUser, s.proxyPass) : "",
     );
-    await api.settingsSet("download.max_threads", String(s.threads));
-    await api.settingsSet("download.pack_format", s.packFormat);
-    await api.settingsSet("download.manga_folder_pattern", s.patManga);
-    await api.settingsSet("download.chapter_folder_pattern", s.patChapter);
-    await api.settingsSet("download.page_name_pattern", s.patPage);
+    await api.settingsSet(SK.MAX_THREADS, String(s.threads));
+    await api.settingsSet(SK.PARALLEL_TASKS, String(s.parallelTasks));
+    await api.settingsSet(SK.TASK_RETRIES, String(s.taskRetries));
+    await api.settingsSet(SK.TIMEOUT, String(s.httpTimeout));
+    await api.settingsSet(SK.HTTP_RETRIES, String(s.httpRetries));
+    await api.settingsSet(SK.PACK, s.packFormat);
+    await api.settingsSet(SK.PACK_DELETE, boolStr(s.packDelete));
+    await api.settingsSet(SK.CONVERT, deriveConvertTo(s.convertTo, s.pngAsJpeg, s.webpAs));
+    await api.settingsSet(SK.PDF_QUALITY, String(s.pdfQuality));
+    await api.settingsSet(SK.PAT_MANGA, s.patManga);
+    await api.settingsSet(SK.PAT_CHAPTER, s.patChapter);
+    await api.settingsSet(SK.PAT_PAGE, s.patPage);
+    await api.settingsSet(SK.MANGA_FOLDER_ON, boolStr(s.mangaFolderOn));
+    await api.settingsSet(SK.CHAPTER_FOLDER_ON, boolStr(s.chapterFolderOn));
+    await api.settingsSet(SK.ASCII_ON, boolStr(s.asciiOn));
+    await api.settingsSet(SK.ASCII_CHAR, s.asciiChar || "_");
+    await api.settingsSet(SK.VOL_PAD, boolStr(s.volPadOn));
+    await api.settingsSet(SK.CHAP_PAD, boolStr(s.chapPadOn));
+    await api.settingsSet(SK.VOL_DIGITS, String(s.volDigits));
+    await api.settingsSet(SK.CHAP_DIGITS, String(s.chapDigits));
+    await api.settingsSet(SK.FAV_INTERVAL_ON, boolStr(s.favIntervalOn));
+    await api.settingsSet(SK.FAV_INTERVAL_MIN, String(s.favIntervalMin));
+    await api.settingsSet(SK.FAV_CHECK_ON_START, boolStr(s.favCheckOnStart));
+    await api.settingsSet(SK.FAV_OPEN_ON_START, boolStr(s.favOpenOnStart));
+    await api.settingsSet(SK.FAV_DOWNLOAD_AFTER, boolStr(s.favDownloadAfter));
+    await api.settingsSet(SK.FAV_REMOVE_COMPLETED, boolStr(s.favRemoveCompleted));
+    await api.settingsSet(SK.UI_LOAD_COVERS, boolStr(s.loadCovers));
+    await api.settingsSet(SK.UI_LIVE_SEARCH, boolStr(s.liveSearch));
+    await api.settingsSet(SK.UI_GOTO_DL, boolStr(s.gotoDl));
+    await api.settingsSet(SK.UI_GOTO_FAV, boolStr(s.gotoFav));
+    await api.settingsSet(SK.UI_NEW_DAYS, String(s.newDays));
+    await api.settingsSet(SK.APP_THEME, s.theme);
+    await api.settingsSet(SK.AFTER_FINISH, s.afterFinish === "exit" ? "exit" : "none");
+    await api.settingsSet(SK.LOG_ON, boolStr(s.logOn));
+    await api.settingsSet(SK.LOG_FILE, s.logFile || "fmd.log");
+    await api.settingsSet(SK.EXT_ON, boolStr(s.extOn));
+    await api.settingsSet(SK.EXT_PATH, s.extPath);
+    await api.settingsSet(SK.EXT_ARGS, s.extArgs);
+    await api.settingsSet(SK.TRAY_MINIMIZE, boolStr(s.trayMinimize));
+    await api.settingsSet(SK.TRAY_START, boolStr(s.trayStart));
+    await api.settingsSet(SK.SINGLE_INSTANCE, boolStr(s.singleInstance));
+    await api.settingsSet(SK.NOTIFY, boolStr(s.notify));
+    await api.settingsSet(SK.VACUUM, boolStr(s.vacuum));
+    await api.settingsSet(SK.CLEAR_DONE_EXIT, boolStr(s.clearDoneExit));
+    await api.settingsSet(SK.LONG_PATHS, boolStr(s.longPaths));
+    await api.settingsSet(SK.CONFIRM_EXIT, boolStr(s.confirmExit));
+    await api.settingsSet(SK.CONFIRM_DELETE, boolStr(s.confirmDelete));
+    await api.settingsSet(SK.CONFIRM_EMPTY_LIST, boolStr(s.confirmEmptyList));
+    await api.settingsSet(SK.PNG_AS_JPEG, boolStr(s.pngAsJpeg));
+    await api.settingsSet(SK.WEBP_AS, s.webpAs);
+    await api.settingsSet(SK.PNG_LEVEL, s.pngLevel);
+    await api.settingsSet(SK.JPEG_QUALITY, String(s.jpegQuality));
+    await api.settingsSet(SK.REMOVE_MANGA_FROM_CHAPTER, boolStr(s.removeMangaFromChapter));
+    await api.settingsSet(SK.SORT_ON_ADD, boolStr(s.sortOnAdd));
+    await api.settingsSet(SK.UI_DL_TOOLBAR, boolStr(s.dlToolbar));
+    await api.settingsSet(SK.UI_DL_CLEAR_BTN, boolStr(s.dlClearBtn));
+    await api.settingsSet(SK.UI_DL_LEFT_BAR, boolStr(s.dlLeftBar));
+    await api.settingsSet(SK.CHECK_UPDATE_START, boolStr(s.checkUpdateStart));
+    await api.settingsSet(SK.UPDATE_LIST_NO_INFO, boolStr(s.updateListNoInfo));
+    const disabled = modules.filter((m) => !siteOn[m.id]).map((m) => m.id);
+    disabledIdsRef.current = new Set(disabled);
+    await api.settingsSet(SK.MODULES_DISABLED, JSON.stringify(disabled));
     const dir = s.outputDirField.trim();
     if (dir) {
-      await api.settingsSet("default_output_dir", dir);
+      await api.settingsSet(SK.OUTPUT_DIR, dir);
       setOutputDir(dir);
     }
+    setTheme(s.theme);
+    await refreshDisabledModules();
+    trayRef.current = { trayMinimize: s.trayMinimize, trayStart: s.trayStart };
     setDirty(false);
     log("Ajustes guardados", "ok");
-  }, [s, setOutputDir, log]);
+    if (trayChanged) {
+      log("Algunos ajustes de bandeja requieren reiniciar la aplicación", "");
+    }
+  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshDisabledModules]);
 
   const handleBrowseOutputDir = useCallback(async () => {
     const dir = await open({ directory: true, multiple: false });
@@ -708,19 +1069,11 @@ export function OptionsView() {
     [s, update],
   );
 
-  /* ---- Campos "stub" con revelado propio (no persistidos) ---- */
-
-  const [pdfQuality, setPdfQuality] = useState(100);
-  const [volDigits, setVolDigits] = useState(2);
-  const [chapDigits, setChapDigits] = useState(3);
-  const [favIntervalMin, setFavIntervalMin] = useState(60);
-
   /* ---- Panel Sitios Web ---- */
 
   const [sitesTab, setSitesTab] = useState<SitesTabId>("list");
   const [sitesQuery, setSitesQuery] = useState("");
   const [sitesOnlyActive, setSitesOnlyActive] = useState(false);
-  const [siteOn, setSiteOn] = useState<Record<string, true>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const siteGroups = useMemo<SiteGroup[]>(() => {
@@ -739,13 +1092,24 @@ export function OptionsView() {
   }, [modules]);
 
   useEffect(() => {
-    const alive = new Set(modules.map((m) => m.id));
     setSiteOn((prev) => {
-      let changed = false;
       const next: Record<string, true> = {};
+      let changed = false;
+      const alive = new Set(modules.map((m) => m.id));
       for (const id of Object.keys(prev)) {
         if (alive.has(id)) next[id] = true;
         else changed = true;
+      }
+      for (const m of modules) {
+        if (!knownModulesRef.current.has(m.id)) {
+          knownModulesRef.current.add(m.id);
+          if (!disabledIdsRef.current.has(m.id)) {
+            next[m.id] = true;
+            changed = true;
+          }
+        } else if (prev[m.id]) {
+          next[m.id] = true;
+        }
       }
       return changed ? next : prev;
     });
@@ -917,38 +1281,40 @@ export function OptionsView() {
                           { value: "el_GR", label: "Ελληνικά" },
                         ]}
                       />
-                      <StubSelectRow
+                      <SelectRow
                         label="Tema"
                         desc="Apariencia clara, oscura o según el sistema"
-                        defaultValue="Sistema"
-                        onDirty={markDirty}
+                        value={s.theme}
+                        onChange={(v) => {
+                          const t = (v === "dark" || v === "light" || v === "system" ? v : "system") as AppTheme;
+                          update("theme", t);
+                          setTheme(t);
+                        }}
                         options={[
-                          { value: "Sistema", label: "Sistema" },
-                          { value: "Claro", label: "Claro" },
-                          { value: "Oscuro", label: "Oscuro" },
+                          { value: "system", label: "Sistema" },
+                          { value: "light", label: "Claro" },
+                          { value: "dark", label: "Oscuro" },
                         ]}
                       />
-                      <StubSelectRow
+                      <SelectRow
                         label="Tras terminar"
                         desc="Acción al completar todas las descargas"
-                        defaultValue="nada"
-                        onDirty={markDirty}
+                        value={s.afterFinish === "exit" ? "exit" : "none"}
+                        onChange={(v) => update("afterFinish", v === "exit" ? "exit" : "none")}
                         options={[
-                          { value: "nada", label: "No hacer nada" },
+                          { value: "none", label: "No hacer nada" },
                           { value: "exit", label: "Salir del programa" },
-                          { value: "shutdown", label: "Apagar equipo" },
-                          { value: "suspend", label: "Suspender" },
                         ]}
                       />
-                      <StubStepperRow
+                      <BoundStepperRow
                         id="opt-new-days"
                         label="Marcar manga como nuevo"
                         desc="Días desde la última actualización"
-                        defaultValue={1}
+                        value={s.newDays}
                         min={1}
                         max={365}
                         unit="días"
-                        onDirty={markDirty}
+                        onChange={(v) => update("newDays", v)}
                       />
                     </div>
                   </section>
@@ -959,40 +1325,63 @@ export function OptionsView() {
                       <h2>Comportamiento</h2>
                     </div>
                     <div className="st-card">
-                      <StubSwitchRow label="Minimizar al iniciar" desc="Arranca en la bandeja del sistema" onDirty={markDirty} />
-                      <StubSwitchRow
+                      <SwitchRow
+                        id="opt-tray-start"
+                        label="Minimizar al iniciar"
+                        desc="Arranca en la bandeja del sistema"
+                        checked={s.trayStart}
+                        onChange={(v) => update("trayStart", v)}
+                      />
+                      <SwitchRow
+                        id="opt-tray-minimize"
                         label="Minimizar a la bandeja"
                         desc="Al cerrar, oculta en la bandeja en vez de salir"
-                        onDirty={markDirty}
+                        checked={s.trayMinimize}
+                        onChange={(v) => update("trayMinimize", v)}
                       />
-                      <StubSwitchRow
+                      <SwitchRow
+                        id="opt-single-instance"
                         label="Permitir solo una instancia"
                         desc="Evita abrir la app dos veces"
-                        defaultChecked
-                        onDirty={markDirty}
+                        checked={s.singleInstance}
+                        onChange={(v) => update("singleInstance", v)}
                       />
-                      <StubSwitchRow
+                      <SwitchRow
+                        id="opt-live-search"
                         label="Búsqueda en vivo"
                         desc="Filtra mientras escribes (lento en listas largas)"
-                        defaultChecked
-                        onDirty={markDirty}
+                        checked={s.liveSearch}
+                        onChange={(v) => update("liveSearch", v)}
                       />
-                      <StubSwitchRow
+                      <SwitchRow
+                        id="opt-clear-done"
                         label="Borrar tareas completadas al cerrar"
                         desc="Limpia la cola de descargas al salir"
-                        onDirty={markDirty}
+                        checked={s.clearDoneExit}
+                        onChange={(v) => update("clearDoneExit", v)}
                       />
-                      <StubSwitchRow
+                      <SwitchRow
+                        id="opt-sort-on-add"
                         label="Ordenar descargas al añadir tareas"
                         desc="Reordena la cola automáticamente"
-                        onDirty={markDirty}
+                        checked={s.sortOnAdd}
+                        onChange={(v) => update("sortOnAdd", v)}
                       />
-                      <StubSwitchRow label="Vacuum de bases al salir" desc="Compacta las bases de datos al cerrar" onDirty={markDirty} />
-                      <StubSwitchRow
+                      <SwitchRow
+                        id="opt-vacuum"
+                        label="Vacuum de bases al salir"
+                        desc="Compacta las bases de datos al cerrar"
+                        checked={s.vacuum}
+                        onChange={(v) => update("vacuum", v)}
+                      />
+                      <SwitchRow
+                        id="opt-long-paths"
                         label="Rutas de nombre largo"
-                        warn="Cuidado"
-                        desc="Permite rutas de más de 260 caracteres"
-                        onDirty={markDirty}
+                        warn="Sin función aún"
+                        desc="Permite rutas de más de 260 caracteres (\\?\). Pendiente de cablear en I/O."
+                        checked={s.longPaths}
+                        status="none"
+                        onChange={(v) => update("longPaths", v)}
                       />
                     </div>
                   </section>
@@ -1013,14 +1402,25 @@ export function OptionsView() {
                       <div className="st-row st-row-stack" hidden={!s.extOn}>
                         <div className="st-form-grid">
                           <label>Ruta</label>
-                          <StubPlainInput
-                            defaultValue=""
+                          <input
+                            className="st-field st-mono"
+                            type="text"
+                            value={s.extPath}
                             placeholder="C:\Program Files\...\visor.exe"
-                            mono
-                            onDirty={markDirty}
+                            autoComplete="off"
+                            spellCheck={false}
+                            onChange={(e) => update("extPath", e.target.value)}
                           />
                           <label>Parámetros</label>
-                          <StubPlainInput defaultValue="%PATH%%CHAPTER%" placeholder="%PATH%%CHAPTER%" mono onDirty={markDirty} />
+                          <input
+                            className="st-field st-mono"
+                            type="text"
+                            value={s.extArgs}
+                            placeholder="%PATH%%CHAPTER%"
+                            autoComplete="off"
+                            spellCheck={false}
+                            onChange={(e) => update("extArgs", e.target.value)}
+                          />
                         </div>
                       </div>
                     </div>
@@ -1043,18 +1443,36 @@ export function OptionsView() {
                         <div className="st-row">
                           <div className="st-form-inline">
                             <span className="st-form-key">Archivo</span>
-                            <StubPlainInput defaultValue="fmd.log" mono onDirty={markDirty} />
+                            <input
+                              className="st-field st-mono"
+                              type="text"
+                              value={s.logFile}
+                              autoComplete="off"
+                              spellCheck={false}
+                              onChange={(e) => update("logFile", e.target.value)}
+                            />
                           </div>
                         </div>
                         <div className="st-row st-row-actions">
                           <button
                             type="button"
-                            className="secondary opt-stub"
-                            onClick={() => log("Borrar archivo de log: próximamente", "ok")}
+                            className="secondary"
+                            onClick={() => {
+                              void api
+                                .clearLogFile()
+                                .then(() => log("Log borrado", "ok"))
+                                .catch((e) => log(String(e), "err"));
+                            }}
                           >
                             Borrar archivo de log
                           </button>
-                          <button type="button" className="secondary opt-stub" onClick={() => log("Abrir log: próximamente", "ok")}>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => {
+                              void api.openLogFile().catch((e) => log(String(e), "err"));
+                            }}
+                          >
                             Abrir log
                           </button>
                         </div>
@@ -1095,41 +1513,13 @@ export function OptionsView() {
                       <h2>Interfaz</h2>
                     </div>
                     <div className="st-card">
-                      <StubSwitchRow label="Mostrar barra de descargas" desc="Toolbar superior en la cola" defaultChecked onDirty={markDirty} />
-                      <StubSwitchRow
-                        label="Botón borrar completadas"
-                        desc="Mostrar «Borrar todas las tareas completadas»"
-                        onDirty={markDirty}
-                      />
-                      <StubSwitchRow
-                        label="Barra izquierda de descargas"
-                        desc="Controles adicionales a la izquierda"
-                        defaultChecked
-                        onDirty={markDirty}
-                      />
-                      <StubSwitchRow
-                        label="Cargar portada del manga"
-                        desc="Descarga y muestra la imagen de portada"
-                        defaultChecked
-                        onDirty={markDirty}
-                      />
-                      <StubSwitchRow
-                        label="Globo de notificación"
-                        desc="Avisos del sistema al completar tareas"
-                        defaultChecked
-                        onDirty={markDirty}
-                      />
-                      <StubSwitchRow
-                        label="Ir a Descargas al añadir"
-                        desc="Cambia a la vista Descargas al crear tareas"
-                        defaultChecked
-                        onDirty={markDirty}
-                      />
-                      <StubSwitchRow
-                        label="Ir a Favoritos al añadir manga"
-                        desc="Cambia a Favoritos al guardar un título"
-                        onDirty={markDirty}
-                      />
+                      <SwitchRow id="opt-dl-toolbar" label="Mostrar barra de descargas" desc="Toolbar superior en la cola" checked={s.dlToolbar} onChange={(v) => update("dlToolbar", v)} />
+                      <SwitchRow id="opt-dl-clear" label="Botón borrar completadas" desc="Mostrar «Borrar todas las tareas completadas»" checked={s.dlClearBtn} onChange={(v) => update("dlClearBtn", v)} />
+                      <SwitchRow id="opt-dl-left" label="Barra izquierda de descargas" desc="Controles adicionales a la izquierda" checked={s.dlLeftBar} onChange={(v) => update("dlLeftBar", v)} />
+                      <SwitchRow id="opt-load-covers" label="Cargar portada del manga" desc="Descarga y muestra la imagen de portada" checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
+                      <SwitchRow id="opt-notify" label="Globo de notificación" desc="Avisos del sistema al completar tareas" checked={s.notify} onChange={(v) => update("notify", v)} />
+                      <SwitchRow id="opt-goto-dl" label="Ir a Descargas al añadir" desc="Cambia a la vista Descargas al crear tareas" checked={s.gotoDl} onChange={(v) => update("gotoDl", v)} />
+                      <SwitchRow id="opt-goto-fav" label="Ir a Favoritos al añadir manga" desc="Cambia a Favoritos al guardar un título" checked={s.gotoFav} onChange={(v) => update("gotoFav", v)} />
                     </div>
                   </section>
                 </div>
@@ -1146,7 +1536,7 @@ export function OptionsView() {
                       <h2>Descargas</h2>
                     </div>
                     <div className="st-card">
-                      <StubStepperRow label="Tareas en paralelo" desc="Mangas descargando a la vez" defaultValue={1} min={1} max={8} onDirty={markDirty} />
+                      <BoundStepperRow label="Tareas en paralelo" desc="Mangas descargando a la vez" value={s.parallelTasks} min={1} max={8} onChange={(v) => update("parallelTasks", v)} />
                       <OptRow label="Archivos por tarea" desc="Hilos de descarga dentro de un capítulo">
                         <div className="st-num-wrap">
                           <Stepper
@@ -1158,7 +1548,7 @@ export function OptionsView() {
                           />
                         </div>
                       </OptRow>
-                      <StubStepperRow label="Reintentos de tarea" desc="Si la tarea falla, cuántas veces reintentar" defaultValue={1} min={0} max={10} onDirty={markDirty} />
+                      <BoundStepperRow label="Reintentos de tarea" desc="Si la tarea falla, cuántas veces reintentar" value={s.taskRetries} min={0} max={10} onChange={(v) => update("taskRetries", v)} />
                       <StubSwitchRow
                         label="Reiniciar desde capítulos fallidos"
                         desc="Continúa siempre desde el último fallo"
@@ -1184,14 +1574,14 @@ export function OptionsView() {
                       <h2>Red</h2>
                     </div>
                     <div className="st-card">
-                      <StubStepperRow label="Timeout" desc="Segundos de espera de conexión" defaultValue={30} min={1} max={300} suffix="s" onDirty={markDirty} />
-                      <StubStepperRow
+                      <BoundStepperRow label="Timeout" desc="Segundos de espera de conexión" value={s.httpTimeout} min={1} max={300} suffix="s" onChange={(v) => update("httpTimeout", v)} />
+                      <BoundStepperRow
                         label="Reintentos de conexión"
                         desc="−1 = reintentar siempre"
-                        defaultValue={5}
+                        value={s.httpRetries}
                         min={-1}
                         max={5}
-                        onDirty={markDirty}
+                        onChange={(v) => update("httpRetries", v)}
                       />
                       <OptRow label="User-Agent" desc="Cabecera HTTP enviada por defecto">
                         <input
@@ -1351,6 +1741,13 @@ export function OptionsView() {
                           ))}
                         </div>
                       </div>
+                      <SwitchRow
+                        id="set-pack-delete"
+                        label="Borrar carpeta tras empaquetar"
+                        desc="Elimina la carpeta de imágenes al crear el archivo"
+                        checked={s.packDelete}
+                        onChange={(v) => update("packDelete", v)}
+                      />
                       <div className="st-row" id="set-pdf-quality-row" hidden={s.packFormat !== "pdf"}>
                         <div className="st-meta">
                           <div className="st-label">Calidad del PDF</div>
@@ -1359,14 +1756,11 @@ export function OptionsView() {
                         <div className="st-num-wrap">
                           <Stepper
                             id="set-pdf-quality"
-                            value={pdfQuality}
+                            value={s.pdfQuality}
                             min={5}
                             max={100}
                             suffix="%"
-                            onChange={(v) => {
-                              setPdfQuality(v);
-                              markDirty();
-                            }}
+                            onChange={(v) => update("pdfQuality", v)}
                           />
                         </div>
                       </div>
@@ -1379,30 +1773,31 @@ export function OptionsView() {
                       <h2>Conversión de imagen</h2>
                     </div>
                     <div className="st-card">
-                      <StubSwitchRow
+                      <SwitchRow
                         id="set-png-as-jpeg"
                         label="Guardar PNG como JPEG"
                         desc="Reduce mucho el peso; pierde la transparencia"
-                        onDirty={markDirty}
+                        checked={s.pngAsJpeg}
+                        onChange={(v) => update("pngAsJpeg", v)}
                       />
-                      <StubSelectRow
+                      <SelectRow
                         id="set-webp-as"
                         label="Guardar WebP como"
                         desc="Formato al convertir imágenes WebP"
-                        defaultValue="1"
-                        onDirty={markDirty}
+                        value={s.webpAs}
+                        onChange={(v) => update("webpAs", v)}
                         options={[
                           { value: "0", label: "WebP" },
                           { value: "1", label: "PNG" },
                           { value: "2", label: "JPEG" },
                         ]}
                       />
-                      <StubSelectRow
+                      <SelectRow
                         id="set-png-level"
                         label="Compresión PNG"
                         desc="Más compresión, guardado más lento"
-                        defaultValue="1"
-                        onDirty={markDirty}
+                        value={s.pngLevel}
+                        onChange={(v) => update("pngLevel", v)}
                         options={[
                           { value: "0", label: "Ninguno" },
                           { value: "1", label: "El más rápido" },
@@ -1410,15 +1805,15 @@ export function OptionsView() {
                           { value: "3", label: "Máximo" },
                         ]}
                       />
-                      <StubStepperRow
+                      <BoundStepperRow
                         id="set-jpeg-quality"
                         label="Calidad JPEG"
                         desc="Aplica a las imágenes convertidas a JPEG"
-                        defaultValue={80}
+                        value={s.jpegQuality}
                         min={1}
                         max={100}
                         suffix="%"
-                        onDirty={markDirty}
+                        onChange={(v) => update("jpegQuality", v)}
                       />
                     </div>
                   </section>
@@ -1497,11 +1892,12 @@ export function OptionsView() {
                         <TokenInsert tokens={TOKENS_PAGE} onInsert={(t) => insertTokenInto(patPageRef, "patPage", t)} />
                       </div>
 
-                      <StubSwitchRow
+                      <SwitchRow
                         id="set-remove-manga-name"
                         label="Quitar el nombre del manga del capítulo"
                         desc="Evita repetir el título en cada capítulo"
-                        onDirty={markDirty}
+                        checked={s.removeMangaFromChapter}
+                        onChange={(v) => update("removeMangaFromChapter", v)}
                       />
 
                       <SwitchRow
@@ -1515,7 +1911,7 @@ export function OptionsView() {
                         <div className="st-nest-inner">
                           <div className="st-nest-row">
                             <label htmlFor="set-vol-digits">Dígitos</label>
-                            <Stepper id="set-vol-digits" value={volDigits} min={1} max={4} onChange={(v) => { setVolDigits(v); markDirty(); }} />
+                            <Stepper id="set-vol-digits" value={s.volDigits} min={1} max={4} onChange={(v) => update("volDigits", v)} />
                           </div>
                         </div>
                       </div>
@@ -1531,7 +1927,7 @@ export function OptionsView() {
                         <div className="st-nest-inner">
                           <div className="st-nest-row">
                             <label htmlFor="set-chap-digits">Dígitos</label>
-                            <Stepper id="set-chap-digits" value={chapDigits} min={1} max={5} onChange={(v) => { setChapDigits(v); markDirty(); }} />
+                            <Stepper id="set-chap-digits" value={s.chapDigits} min={1} max={5} onChange={(v) => update("chapDigits", v)} />
                           </div>
                         </div>
                       </div>
@@ -1587,11 +1983,17 @@ export function OptionsView() {
                       <h2>Actualizaciones</h2>
                     </div>
                     <div className="st-card">
-                      <StubSwitchRow label="Comprobar versión al iniciar" desc="Busca actualizaciones de la app" defaultChecked onDirty={markDirty} />
-                      <StubSwitchRow
+                      <SwitchRow
+                        label="Comprobar versión al iniciar"
+                        desc="Busca actualizaciones de la app"
+                        checked={s.checkUpdateStart}
+                        onChange={(v) => update("checkUpdateStart", v)}
+                      />
+                      <SwitchRow
                         label="No cargar info al actualizar lista"
                         desc="Más rápido; el filtro avanzado no funcionará"
-                        onDirty={markDirty}
+                        checked={s.updateListNoInfo}
+                        onChange={(v) => update("updateListNoInfo", v)}
                       />
                     </div>
                   </section>
@@ -1601,8 +2003,18 @@ export function OptionsView() {
                       <h2>Favoritos</h2>
                     </div>
                     <div className="st-card">
-                      <StubSwitchRow label="Comprobar al iniciar" desc="Busca capítulos nuevos al arrancar" defaultChecked onDirty={markDirty} />
-                      <StubSwitchRow label="Abrir Favoritos al iniciar" desc="Muestra esa vista al abrir la app" onDirty={markDirty} />
+                      <SwitchRow
+                        label="Comprobar al iniciar"
+                        desc="Busca capítulos nuevos al arrancar"
+                        checked={s.favCheckOnStart}
+                        onChange={(v) => update("favCheckOnStart", v)}
+                      />
+                      <SwitchRow
+                        label="Abrir Favoritos al iniciar"
+                        desc="Muestra esa vista al abrir la app"
+                        checked={s.favOpenOnStart}
+                        onChange={(v) => update("favOpenOnStart", v)}
+                      />
                       <SwitchRow
                         id="set-fav-interval"
                         label="Comprobar en intervalo"
@@ -1617,22 +2029,29 @@ export function OptionsView() {
                             <div className="st-inline-end">
                               <Stepper
                                 id="set-fav-interval-min"
-                                value={favIntervalMin}
+                                value={s.favIntervalMin}
                                 min={1}
                                 max={1440}
                                 wide
-                                onChange={(v) => {
-                                  setFavIntervalMin(v);
-                                  markDirty();
-                                }}
+                                onChange={(v) => update("favIntervalMin", v)}
                               />
                               <span className="st-unit">min</span>
                             </div>
                           </div>
                         </div>
                       </div>
-                      <StubSwitchRow label="Descargar tras comprobar" desc="Encola capítulos nuevos automáticamente" onDirty={markDirty} />
-                      <StubSwitchRow label="Quitar mangas completados" desc="Los elimina de Favoritos al terminar" onDirty={markDirty} />
+                      <SwitchRow
+                        label="Descargar tras comprobar"
+                        desc="Encola capítulos nuevos automáticamente"
+                        checked={s.favDownloadAfter}
+                        onChange={(v) => update("favDownloadAfter", v)}
+                      />
+                      <SwitchRow
+                        label="Quitar mangas completados"
+                        desc="Los elimina de Favoritos al terminar"
+                        checked={s.favRemoveCompleted}
+                        onChange={(v) => update("favRemoveCompleted", v)}
+                      />
                     </div>
                   </section>
                 </div>
@@ -1649,13 +2068,26 @@ export function OptionsView() {
                       <h2>Confirmaciones</h2>
                     </div>
                     <div className="st-card">
-                      <StubSwitchRow label="Salir" desc="Pedir confirmación antes de cerrar" defaultChecked onDirty={markDirty} />
-                      <StubSwitchRow label="Borrar descarga / manga / favorito" desc="Confirmar eliminaciones" defaultChecked onDirty={markDirty} />
-                      <StubSwitchRow
+                      <SwitchRow
+                        id="opt-confirm-exit"
+                        label="Salir"
+                        desc="Pedir confirmación antes de cerrar"
+                        checked={s.confirmExit}
+                        onChange={(v) => update("confirmExit", v)}
+                      />
+                      <SwitchRow
+                        id="opt-confirm-delete"
+                        label="Borrar descarga / manga / favorito"
+                        desc="Confirmar eliminaciones"
+                        checked={s.confirmDelete}
+                        onChange={(v) => update("confirmDelete", v)}
+                      />
+                      <SwitchRow
+                        id="opt-confirm-empty"
                         label="Descargar lista si está vacía"
                         desc="Preguntar antes de Update List"
-                        defaultChecked
-                        onDirty={markDirty}
+                        checked={s.confirmEmptyList}
+                        onChange={(v) => update("confirmEmptyList", v)}
                       />
                     </div>
                   </section>

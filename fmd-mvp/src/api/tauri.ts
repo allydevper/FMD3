@@ -32,6 +32,10 @@ export function modulesRefresh() {
   return invoke<number>("modules_refresh_cmd");
 }
 
+export function modulesMatchUrl(url: string) {
+  return invoke<ModuleMeta[]>("modules_match_url_cmd", { url });
+}
+
 export function catalogStats(moduleId: string) {
   return invoke<CatalogStats>("catalog_stats", { moduleId });
 }
@@ -48,6 +52,10 @@ export function catalogSearch(
     limit,
     offset,
   });
+}
+
+export function catalogImport(moduleId: string, path: string) {
+  return invoke<CatalogStats>("catalog_import", { moduleId, path });
 }
 
 export function catalogUpdate(moduleId: string) {
@@ -117,6 +125,10 @@ export function queueClearFinished() {
   return invoke<number>("queue_clear_finished");
 }
 
+export function queueReorder(ids: number[]) {
+  return invoke("queue_reorder", { ids });
+}
+
 export function favoritesList() {
   return invoke<Favorite[]>("favorites_list");
 }
@@ -129,8 +141,48 @@ export function favoritesRemove(id: number) {
   return invoke("favorites_remove", { id });
 }
 
+export function favoritesSetEnabled(id: number, enabled: boolean) {
+  return invoke("favorites_set_enabled", { id, enabled });
+}
+
 export function favoritesCheck(id: number, enqueue: boolean) {
   return invoke<FavoriteCheckResult>("favorites_check", { id, enqueue });
+}
+
+export function favoritesCheckAll(enqueue: boolean) {
+  return invoke<FavoriteCheckResult[]>("favorites_check_all", { enqueue });
+}
+
+export function favoritesImportList(json: string) {
+  return invoke<number>("favorites_import_list", { json });
+}
+
+export function openExternal(path: string, args?: string) {
+  return invoke("shell_open_external", { path, args: args ?? null });
+}
+
+export function openLogFile() {
+  return invoke("log_open");
+}
+
+export function clearLogFile() {
+  return invoke("log_clear");
+}
+
+export function vacuumDb() {
+  return invoke("db_vacuum");
+}
+
+export function checkAppUpdate() {
+  return invoke<string>("app_check_update");
+}
+
+export function updateModulesFromGithub() {
+  return invoke<number>("modules_update_github");
+}
+
+export function downloadFmd2Db(url: string) {
+  return invoke<string>("catalog_download_fmd2db", { url });
 }
 
 export function onQueueChanged(handler: () => void): Promise<UnlistenFn> {
@@ -151,6 +203,6 @@ export function onCatalogProgress(
   );
 }
 
-export function onLuaLog(handler: (msg: string) => void): Promise<UnlistenFn> {
+export function onLuaLog(handler: (msg: string) => Promise<void> | void): Promise<UnlistenFn> {
   return listen<string>("lua-log", (e) => handler(e.payload));
 }

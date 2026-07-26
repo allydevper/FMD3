@@ -77,6 +77,10 @@ fn build_client(ua: &str) -> Result<reqwest::blocking::Client, String> {
         .cookie_store(true)
         .http1_only()
         .redirect(reqwest::redirect::Policy::none());
+    let timeout_secs = crate::settings_keys::http_timeout_secs();
+    if timeout_secs > 0 {
+        b = b.timeout(std::time::Duration::from_secs(timeout_secs));
+    }
     if let Ok(Some(proxy)) = crate::db::settings_get_direct(crate::settings_keys::HTTP_PROXY) {
         let proxy = proxy.trim().to_string();
         if !proxy.is_empty() {
@@ -370,15 +374,21 @@ impl HttpClient {
     }
 
     fn send_raw(&self, method: &str, url: &str, body: Option<&str>) -> bool {
-        let (mut headers, mime, follow) = {
+        let (mut headers, mime, follow, max_retries) = {
             let inner = self.inner.lock();
             if inner.terminated {
                 return false;
             }
+            let retries = if inner.retry_count > 0 {
+                inner.retry_count as u32
+            } else {
+                crate::settings_keys::http_retries() as u32
+            };
             (
                 inner.headers.clone(),
                 inner.mime_type.clone(),
                 inner.follow_redirection,
+                retries,
             )
         };
 
@@ -387,6 +397,7 @@ impl HttpClient {
         let mut current_url = url.to_string();
         let mut body_owned = body.map(|s| s.to_string());
         let mut redirects = 0u32;
+        let mut attempt = 0u32;
 
         loop {
             let cookie = {
@@ -424,6 +435,13 @@ impl HttpClient {
             let resp = match req.send() {
                 Ok(r) => r,
                 Err(_e) => {
+                    if attempt < max_retries {
+                        attempt += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            200 * u64::from(attempt),
+                        ));
+                        continue;
+                    }
                     let mut inner = self.inner.lock();
                     inner.result_code = 0;
                     inner.document.clear();
@@ -470,6 +488,14 @@ impl HttpClient {
                 body_owned = None;
                 redirects += 1;
                 let _ = resp; // drop body unread
+                continue;
+            }
+
+            // Retry on transient HTTP errors
+            if matches!(status, 408 | 429 | 500 | 502 | 503 | 504) && attempt < max_retries {
+                attempt += 1;
+                let _ = resp;
+                std::thread::sleep(std::time::Duration::from_millis(200 * u64::from(attempt)));
                 continue;
             }
 

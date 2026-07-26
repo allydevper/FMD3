@@ -1,7 +1,11 @@
-//! Shared settings keys for download / HTTP options.
+//! Shared settings keys for download / HTTP / UI / favorites options.
+#![allow(dead_code)] // keys are public API for UI / future features
 
 pub const HTTP_USER_AGENT: &str = "http.user_agent";
 pub const HTTP_PROXY: &str = "http.proxy";
+pub const HTTP_TIMEOUT_SECS: &str = "http.timeout_secs";
+pub const HTTP_RETRIES: &str = "http.retries";
+
 pub const DOWNLOAD_MAX_THREADS: &str = "download.max_threads";
 pub const DOWNLOAD_PACK_FORMAT: &str = "download.pack_format";
 pub const DOWNLOAD_PACK_DELETE_FOLDER: &str = "download.pack_delete_folder";
@@ -9,57 +13,190 @@ pub const DOWNLOAD_MANGA_FOLDER_PATTERN: &str = "download.manga_folder_pattern";
 pub const DOWNLOAD_CHAPTER_FOLDER_PATTERN: &str = "download.chapter_folder_pattern";
 pub const DOWNLOAD_PAGE_NAME_PATTERN: &str = "download.page_name_pattern";
 pub const DOWNLOAD_CONVERT_TO: &str = "download.convert_to";
+pub const DOWNLOAD_MANGA_FOLDER_ON: &str = "download.manga_folder_on";
+pub const DOWNLOAD_CHAPTER_FOLDER_ON: &str = "download.chapter_folder_on";
+pub const DOWNLOAD_ASCII_ON: &str = "download.ascii_on";
+pub const DOWNLOAD_ASCII_CHAR: &str = "download.ascii_char";
+pub const DOWNLOAD_VOL_PAD: &str = "download.vol_pad";
+pub const DOWNLOAD_CHAP_PAD: &str = "download.chap_pad";
+pub const DOWNLOAD_VOL_DIGITS: &str = "download.vol_digits";
+pub const DOWNLOAD_CHAP_DIGITS: &str = "download.chap_digits";
+pub const DOWNLOAD_TASK_RETRIES: &str = "download.task_retries";
+pub const DOWNLOAD_PARALLEL_TASKS: &str = "download.parallel_tasks";
+pub const DOWNLOAD_REMOVE_MANGA_FROM_CHAPTER: &str = "download.remove_manga_from_chapter";
+pub const DOWNLOAD_PDF_QUALITY: &str = "download.pdf_quality";
+
+pub const QUEUE_SORT_ON_ADD: &str = "queue.sort_on_add";
+
+pub const MODULES_DISABLED: &str = "modules.disabled";
+
+pub const FAVORITES_CHECK_INTERVAL_MIN: &str = "favorites.check_interval_min";
+pub const FAVORITES_CHECK_INTERVAL_ON: &str = "favorites.check_interval_on";
+pub const FAVORITES_CHECK_ON_START: &str = "favorites.check_on_start";
+pub const FAVORITES_OPEN_ON_START: &str = "favorites.open_on_start";
+pub const FAVORITES_DOWNLOAD_AFTER_CHECK: &str = "favorites.download_after_check";
+pub const FAVORITES_REMOVE_COMPLETED: &str = "favorites.remove_completed";
+
+pub const UI_LOAD_COVERS: &str = "ui.load_covers";
+pub const UI_LIVE_SEARCH: &str = "ui.live_search";
+pub const UI_GOTO_DOWNLOADS_ON_ADD: &str = "ui.goto_downloads_on_add";
+pub const UI_GOTO_FAVORITES_ON_ADD: &str = "ui.goto_favorites_on_add";
+pub const UI_NEW_DAYS: &str = "ui.new_days";
+
+pub const APP_THEME: &str = "app.theme";
+pub const AFTER_FINISH: &str = "app.after_finish";
+
+pub const LOG_ENABLED: &str = "log.enabled";
+pub const LOG_FILE: &str = "log.file";
+
+pub const EXTERNAL_VIEWER_ON: &str = "external.viewer_on";
+pub const EXTERNAL_VIEWER_PATH: &str = "external.viewer_path";
+pub const EXTERNAL_VIEWER_ARGS: &str = "external.viewer_args";
+
+pub const CONFIRM_EXIT: &str = "dialogs.confirm_exit";
+pub const CONFIRM_DELETE: &str = "dialogs.confirm_delete";
+
+pub const TRAY_MINIMIZE: &str = "shell.tray_minimize";
+pub const TRAY_START_MINIMIZED: &str = "shell.tray_start_minimized";
+pub const SINGLE_INSTANCE: &str = "shell.single_instance";
+pub const NOTIFY_ON_DONE: &str = "shell.notify_on_done";
+
+pub const VACUUM_ON_EXIT: &str = "db.vacuum_on_exit";
+pub const CLEAR_DONE_ON_EXIT: &str = "queue.clear_done_on_exit";
+pub const LONG_PATHS: &str = "paths.long_paths";
+
+fn get_direct(key: &str) -> Option<String> {
+    crate::db::settings_get_direct(key).ok().flatten()
+}
+
+pub fn parse_bool(s: Option<&str>, default: bool) -> bool {
+    match s.map(|v| v.trim().to_ascii_lowercase()) {
+        None => default,
+        Some(ref v) if v.is_empty() => default,
+        Some(ref v) => matches!(v.as_str(), "1" | "true" | "yes" | "on"),
+    }
+}
+
+pub fn bool_setting(key: &str, default: bool) -> bool {
+    parse_bool(get_direct(key).as_deref(), default)
+}
+
+pub fn parse_usize(s: Option<&str>, default: usize) -> usize {
+    s.and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(default)
+}
+
+pub fn usize_setting(key: &str, default: usize) -> usize {
+    parse_usize(get_direct(key).as_deref(), default)
+}
 
 pub fn max_threads() -> usize {
-    crate::db::settings_get_direct(DOWNLOAD_MAX_THREADS)
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1)
-        .clamp(1, 32)
+    usize_setting(DOWNLOAD_MAX_THREADS, 1).clamp(1, 32)
+}
+
+pub fn parallel_tasks() -> usize {
+    usize_setting(DOWNLOAD_PARALLEL_TASKS, 1).clamp(1, 8)
+}
+
+pub fn task_retries() -> usize {
+    usize_setting(DOWNLOAD_TASK_RETRIES, 0)
+}
+
+pub fn http_timeout_secs() -> u64 {
+    usize_setting(HTTP_TIMEOUT_SECS, 45) as u64
+}
+
+pub fn http_retries() -> usize {
+    usize_setting(HTTP_RETRIES, 0)
 }
 
 pub fn pack_format() -> String {
-    crate::db::settings_get_direct(DOWNLOAD_PACK_FORMAT)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "none".into())
+    get_direct(DOWNLOAD_PACK_FORMAT).unwrap_or_else(|| "none".into())
 }
 
 pub fn pack_delete_folder() -> bool {
-    matches!(
-        crate::db::settings_get_direct(DOWNLOAD_PACK_DELETE_FOLDER)
-            .ok()
-            .flatten()
-            .as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    )
+    bool_setting(DOWNLOAD_PACK_DELETE_FOLDER, false)
 }
 
 pub fn convert_to() -> String {
-    crate::db::settings_get_direct(DOWNLOAD_CONVERT_TO)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "keep".into())
+    get_direct(DOWNLOAD_CONVERT_TO).unwrap_or_else(|| "keep".into())
 }
 
 pub fn manga_folder_pattern() -> String {
-    crate::db::settings_get_direct(DOWNLOAD_MANGA_FOLDER_PATTERN)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "%MANGA%".into())
+    get_direct(DOWNLOAD_MANGA_FOLDER_PATTERN).unwrap_or_else(|| "%MANGA%".into())
 }
 
 pub fn chapter_folder_pattern() -> String {
-    crate::db::settings_get_direct(DOWNLOAD_CHAPTER_FOLDER_PATTERN)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "%CHAPTER%".into())
+    get_direct(DOWNLOAD_CHAPTER_FOLDER_PATTERN).unwrap_or_else(|| "%CHAPTER%".into())
 }
 
 pub fn page_name_pattern() -> String {
-    crate::db::settings_get_direct(DOWNLOAD_PAGE_NAME_PATTERN)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "%FILENAME%".into())
+    get_direct(DOWNLOAD_PAGE_NAME_PATTERN).unwrap_or_else(|| "%FILENAME%".into())
+}
+
+pub fn manga_folder_on() -> bool {
+    bool_setting(DOWNLOAD_MANGA_FOLDER_ON, true)
+}
+
+pub fn chapter_folder_on() -> bool {
+    bool_setting(DOWNLOAD_CHAPTER_FOLDER_ON, true)
+}
+
+pub fn ascii_on() -> bool {
+    bool_setting(DOWNLOAD_ASCII_ON, false)
+}
+
+pub fn ascii_char() -> char {
+    get_direct(DOWNLOAD_ASCII_CHAR)
+        .and_then(|s| s.chars().next())
+        .unwrap_or('_')
+}
+
+pub fn chap_digits() -> usize {
+    usize_setting(DOWNLOAD_CHAP_DIGITS, 3).clamp(1, 8)
+}
+
+pub fn vol_digits() -> usize {
+    usize_setting(DOWNLOAD_VOL_DIGITS, 2).clamp(1, 8)
+}
+
+pub fn vol_pad_on() -> bool {
+    bool_setting(DOWNLOAD_VOL_PAD, true)
+}
+
+pub fn chap_pad_on() -> bool {
+    bool_setting(DOWNLOAD_CHAP_PAD, true)
+}
+
+pub fn remove_manga_from_chapter() -> bool {
+    bool_setting(DOWNLOAD_REMOVE_MANGA_FROM_CHAPTER, false)
+}
+
+pub fn pdf_quality() -> u8 {
+    usize_setting(DOWNLOAD_PDF_QUALITY, 85).clamp(1, 100) as u8
+}
+
+pub fn sort_on_add() -> bool {
+    bool_setting(QUEUE_SORT_ON_ADD, false)
+}
+
+pub fn after_finish_exit() -> bool {
+    get_direct(AFTER_FINISH)
+        .map(|v| v.trim().eq_ignore_ascii_case("exit"))
+        .unwrap_or(false)
+}
+
+/// True if `id` is present in the JSON array stored under [`MODULES_DISABLED`].
+pub fn module_disabled(id: &str) -> bool {
+    if id.trim().is_empty() {
+        return false;
+    }
+    let Some(raw) = get_direct(MODULES_DISABLED) else {
+        return false;
+    };
+    if raw.trim().is_empty() {
+        return false;
+    }
+    serde_json::from_str::<Vec<String>>(&raw)
+        .map(|list| list.iter().any(|x| x == id))
+        .unwrap_or(false)
 }

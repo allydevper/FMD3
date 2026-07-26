@@ -23,6 +23,7 @@ export type QueueItem = {
   id: number;
   manga_title: string;
   root_url: string;
+  manga_url?: string;
   module_id: string;
   chapter_index: number;
   chapter_name: string;
@@ -32,6 +33,8 @@ export type QueueItem = {
   error: string;
   created_at: string;
   updated_at: string;
+  position?: number;
+  retry_count?: number;
 };
 
 export type QueueAddRequest = {
@@ -41,6 +44,8 @@ export type QueueAddRequest = {
   module_id: string;
   output_dir: string;
   chapters: ChapterInfo[];
+  /** If false, enqueue without starting the worker (tarea detenida). Default true. */
+  start?: boolean;
 };
 
 export type ModuleMeta = {
@@ -63,6 +68,8 @@ export type Favorite = {
   last_chapter_name: string;
   chapter_count: number;
   updated_at: string;
+  enabled?: boolean;
+  last_checked_at?: string;
 };
 
 export type FavoriteAddRequest = {
@@ -88,6 +95,8 @@ export type QueueProgressEvent = {
   pending_left: number;
   page_current: number;
   page_total: number;
+  bytes_per_sec?: number;
+  bytes_current?: number;
 };
 
 export type CatalogEntry = {
@@ -161,4 +170,5 @@ export type LiveProgress = {
   page_total: number;
   message: string;
   chapter_name: string;
+  bytes_per_sec?: number;
 };

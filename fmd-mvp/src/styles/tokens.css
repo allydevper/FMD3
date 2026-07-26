@@ -68,6 +68,8 @@ body {
   --ok-bg: #dce8e0;
   --bad: #a8432c;
   --bad-bg: #f0dcd6;
+  --status-none-bg: color-mix(in srgb, var(--bad) 22%, var(--card));
+  --status-partial-bg: color-mix(in srgb, #3b6ea5 22%, var(--card));
   --sel: #d3dde9;
   --ink: var(--text);
   --line: var(--border);
@@ -130,6 +132,26 @@ body {
   --ok-bg: #16261f;
   --bad: #e09480;
   --bad-bg: #2a1815;
+  --status-none-bg: color-mix(in srgb, var(--bad) 28%, var(--card));
+  --status-partial-bg: color-mix(in srgb, #5a8fd0 28%, var(--card));
   --sel: #26323f;
+}
+
+/* Wiring status: red = no function, blue = incomplete, none = ready */
+.ui-status-none {
+  background: var(--status-none-bg) !important;
+  border-radius: 6px;
+}
+.ui-status-partial {
+  background: var(--status-partial-bg) !important;
+  border-radius: 6px;
+}
+.st-row.ui-status-none,
+.st-row.ui-status-partial,
+.opt-row.ui-status-none,
+.opt-row.ui-status-partial {
+  margin-inline: -4px;
+  padding-inline: 8px;
+  padding-block: 2px;
 }
 

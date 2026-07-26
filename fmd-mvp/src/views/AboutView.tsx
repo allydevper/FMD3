@@ -2,6 +2,7 @@ import { useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Icon } from "../components/Icon";
 import { ICO } from "../icons";
+import * as api from "../api/tauri";
 import { useApp } from "../context/AppContext";
 
 const GITHUB_URL = "https://github.com/dazedcat19/FMD2";
@@ -66,7 +67,16 @@ export function AboutView() {
             <button
               type="button"
               className="about-btn-p"
-              onClick={() => log("Comprobar actualizaciones: próximamente", "ok")}
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const msg = await api.checkAppUpdate();
+                    log(msg || "Sin actualizaciones disponibles", "ok");
+                  } catch (e) {
+                    log(String(e), "err");
+                  }
+                })();
+              }}
             >
               <Icon ico={ICO.refresh} className="ico ico-sm" />
               Revisar última versión
