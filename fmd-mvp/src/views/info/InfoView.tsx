@@ -23,6 +23,7 @@ import {
   FILTER_CUSTOM_HINT,
   GENRE_TRI_CYCLE,
   emptyAdvFilter,
+  cloneAdvFilter,
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
@@ -301,6 +302,8 @@ export function InfoView() {
    * ------------------------------------------------------------------- */
   const [infoMode, setInfoModeState] = useState<InfoMode>("search");
   const [advFilter, setAdvFilter] = useState<AdvFilterState>(() => emptyAdvFilter());
+  /** Snapshot used for the list; only updates on Aplicar / Quitar. */
+  const [appliedAdvFilter, setAppliedAdvFilter] = useState<AdvFilterState>(() => emptyAdvFilter());
   const [advFilterApplied, setAdvFilterApplied] = useState(false);
   const [filterNewDays, setFilterNewDays] = useState(1);
   const [liveSearch, setLiveSearch] = useState(true);
@@ -408,17 +411,19 @@ export function InfoView() {
   const visibleCatalog = useMemo((): (CatalogEntry | undefined)[] => {
     if (!advFilterApplied) return catalogRows;
     return catalogRows.filter(
-      (e): e is CatalogEntry => !!e && entryMatchesFilter(e, advFilter, filterNewDays),
+      (e): e is CatalogEntry => !!e && entryMatchesFilter(e, appliedAdvFilter, filterNewDays),
     );
-  }, [catalogRows, advFilter, advFilterApplied, filterNewDays]);
+  }, [catalogRows, appliedAdvFilter, advFilterApplied, filterNewDays]);
 
   function applyAdvFilter() {
     void (async () => {
       setCatalogLoading(true);
       setCatalogLoadingText("Cargando títulos…");
       try {
+        const snapshot = cloneAdvFilter(advFilter);
         const all = await ensureAllPagesLoaded();
-        const n = all.filter((e) => entryMatchesFilter(e, advFilter, filterNewDays)).length;
+        const n = all.filter((e) => entryMatchesFilter(e, snapshot, filterNewDays)).length;
+        setAppliedAdvFilter(snapshot);
         setAdvFilterApplied(true);
         setCatalogStatsText(String(n));
         log(`Filtro aplicado: ${n} títulos`, "ok");
@@ -432,7 +437,6 @@ export function InfoView() {
 
   function removeAdvFilter() {
     clearAllFilters();
-    setAdvFilterApplied(false);
   }
 
   useEffect(() => {
@@ -802,6 +806,7 @@ export function InfoView() {
     setCatalogText("");
     catalogQueryRef.current = "";
     setAdvFilter(emptyAdvFilter());
+    setAppliedAdvFilter(emptyAdvFilter());
     setAdvFilterApplied(false);
     void loadCatalog(true, true);
     log("Filtro quitado.", "ok");

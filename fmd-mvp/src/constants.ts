@@ -73,6 +73,11 @@ export function emptyAdvFilter(): AdvFilterState {
   };
 }
 
+/** Snapshot for “Aplicar”: form edits must not change the list until Apply. */
+export function cloneAdvFilter(f: AdvFilterState): AdvFilterState {
+  return { ...f, genres: { ...f.genres } };
+}
+
 export const CATALOG_PAGE = 250;
 export const LOLI_VAULT_ID = "218b722b1eb34f2aa3863f84538c5b08";
 export const THEME_KEY = "fmd-theme-dark";
