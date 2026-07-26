@@ -130,6 +130,9 @@ export function InfoView() {
   const catalogQueryRef = useRef("");
   const catalogLoadedKeyRef = useRef("");
   const catalogSearchTimerRef = useRef<number | undefined>(undefined);
+  const catalogLoadGenRef = useRef(0);
+  const catalogLoadingDelayRef = useRef<number | undefined>(undefined);
+  const catalogSpinnerShownRef = useRef(false);
   const lastCatalogClickRef = useRef<{ idx: number; at: number }>({ idx: -1, at: 0 });
 
   function bumpCatalogReset() {
@@ -360,6 +363,8 @@ export function InfoView() {
   async function loadCatalog(force = false, silent = false) {
     const id = selectedModuleId;
     if (!enabledModules.length) {
+      catalogLoadGenRef.current += 1;
+      window.clearTimeout(catalogLoadingDelayRef.current);
       setCatalogEntries([]);
       setCatalogError(false);
       setCatalogLoading(false);
@@ -374,6 +379,8 @@ export function InfoView() {
       return;
     }
     if (!id || !enabledModuleIds.has(id)) {
+      catalogLoadGenRef.current += 1;
+      window.clearTimeout(catalogLoadingDelayRef.current);
       setCatalogEntries([]);
       setCatalogError(false);
       setCatalogLoading(false);
@@ -386,35 +393,53 @@ export function InfoView() {
     if (!force && key === catalogLoadedKeyRef.current && catalogEntriesRef.current.length) {
       return;
     }
+
+    const gen = ++catalogLoadGenRef.current;
+    window.clearTimeout(catalogLoadingDelayRef.current);
     const keepList = silent && catalogEntriesRef.current.length > 0;
+
+    // Avoid spinner flash on fast/empty responses: only show loading after a short delay.
     if (!keepList) {
-      setCatalogLoading(true);
-      setCatalogLoadingText("Cargando títulos…");
+      setCatalogEntries([]);
       setCatalogError(false);
+      setCatalogLoading(false);
+      catalogSpinnerShownRef.current = false;
+      catalogLoadingDelayRef.current = window.setTimeout(() => {
+        if (gen !== catalogLoadGenRef.current) return;
+        catalogSpinnerShownRef.current = true;
+        setCatalogLoading(true);
+        setCatalogLoadingText("Cargando títulos…");
+      }, 200);
     }
-    if (!silent) log("Cargando catálogo…");
+
     try {
       const all: CatalogEntry[] = [];
       let offset = 0;
       for (;;) {
         const rows = await api.catalogSearch(id, catalogQueryRef.current, CATALOG_BATCH, offset);
+        if (gen !== catalogLoadGenRef.current) return;
         all.push(...rows);
         if (rows.length < CATALOG_BATCH) break;
         offset += rows.length;
-        if (!keepList) setCatalogLoadingText(`Cargando títulos… (${all.length})`);
+        if (catalogSpinnerShownRef.current) {
+          setCatalogLoadingText(`Cargando títulos… (${all.length})`);
+        }
       }
+      if (gen !== catalogLoadGenRef.current) return;
       setCatalogEntries(all);
       catalogLoadedKeyRef.current = key;
       if (silent) bumpCatalogReset();
       await refreshCatalogStats();
-      if (!silent) log(`Catálogo: ${all.length} títulos`, "ok");
-      else setCatalogStatsText(String(all.length));
+      if (gen !== catalogLoadGenRef.current) return;
+      if (!silent && all.length > 0) log(`Catálogo: ${all.length} títulos`, "ok");
+      else if (silent) setCatalogStatsText(String(all.length));
     } catch (e) {
+      if (gen !== catalogLoadGenRef.current) return;
       catalogLoadedKeyRef.current = "";
       setCatalogEntries([]);
       setCatalogError(true);
       const msg = String(e);
-      if (/deshabilitado|disabled/i.test(msg)) {
+      if (/deshabilitado|disabled|no activado/i.test(msg)) {
         log(
           "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
           "err",
@@ -423,7 +448,10 @@ export function InfoView() {
         log(msg, "err");
       }
     } finally {
-      setCatalogLoading(false);
+      if (gen === catalogLoadGenRef.current) {
+        window.clearTimeout(catalogLoadingDelayRef.current);
+        setCatalogLoading(false);
+      }
     }
   }
 
