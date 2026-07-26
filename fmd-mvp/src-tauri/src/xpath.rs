@@ -1,10 +1,12 @@
 //! Minimal HTML XPath engine aligned with FMD2 TXQuery usage in Lua modules.
 //!
 //! Supported (HTML subset): `//` `/` `.//` `./` `*` `@attr` `/@attr` `/text()`,
-//! predicates `@a='…'` `contains(@a,'…')` `contains(.,'…')` `starts-with(.,'…')`
-//! `text()='…'` `self::tag` `and`/`or`, positional `[n]` `[last()]` `[last()-n]`,
-//! `(path)[n|last()|last()-n]/rest`, `following-sibling::text()[n]`,
-//! union `|`, mid-path `/substring-after(.,…)` `/substring-before(.,…)` `/normalize-space(.)`.
+//! predicates `@a='…'` `contains(@a,'…')` `contains(.,'…')` `contains(tag,'…')`
+//! `contains(./tag,'…')` `starts-with(.,'…')` `ends-with(.,'…')` `text()='…'` `.='…'`
+//! `tag='…'` `./tag='…'` `tag[pred]` nested, `not(…)`, `self::tag` `and`/`or`,
+//! positional `[n]` `[last()]` `[last()-n]`, `(path)[n|last()|last()-n]/rest`,
+//! `following-sibling::text()[n]`, union `|` and `,`, mid-path `/substring-after(.,…)`
+//! `/substring-before(.,…)` `/normalize-space(.)`.
 //!
 //! JSON (`json(*)`, `parse-json`, `?*`) lives in `lua_host::json_xpath`, not here.
 
@@ -217,11 +219,20 @@ fn string_of_nodes(nodes: &[DomNode], terminal: Terminal) -> String {
             .first()
             .and_then(|n| n.attr(&name).map(|s| s.to_string()))
             .unwrap_or_default(),
-        Terminal::Text => nodes.first().map(|n| n.direct_text()).unwrap_or_default(),
+        // FMD2 XQuery `toString` on a nodeset concatenates all string-values (e.g. two
+        // `span.estado` → "#7558En desarrollo" so MangaInfoStatusIfPos still matches).
+        Terminal::Text => nodes
+            .iter()
+            .map(|n| n.direct_text())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(""),
         Terminal::None => nodes
-            .first()
+            .iter()
             .map(|n| n.all_text())
-            .unwrap_or_default(),
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(""),
     }
 }
 
@@ -251,6 +262,20 @@ fn eval_expr_term(roots: &[DomNode], expr: &str) -> (Vec<DomNode>, Terminal) {
         return (Vec::new(), Terminal::None);
     }
     let parts = split_top_level(expr, '|');
+    if parts.len() > 1 {
+        let mut out = Vec::new();
+        let mut term = Terminal::None;
+        for (i, p) in parts.iter().enumerate() {
+            let (nodes, t) = eval_expr_term(roots, p.trim());
+            if i == 0 {
+                term = t;
+            }
+            out.extend(nodes);
+        }
+        return (out, term);
+    }
+    // TXQuery sequence constructor `(//a, //b)` — same as union for HTML nodesets.
+    let parts = split_top_level(expr, ',');
     if parts.len() > 1 {
         let mut out = Vec::new();
         let mut term = Terminal::None;
@@ -589,6 +614,75 @@ mod tests {
     }
 
     #[test]
+    fn mangaoni_info_i_dot_eq_and_estado() {
+        let html = r#"
+        <div id="info-i">
+        <strong>Alterno:</strong> Sekimen Shinaide Sekime-San!<br>
+        <strong>Ranking:</strong> <span id="ranking" class="estado">#123</span><br>
+        <strong>Autor:</strong> Some Author<br>
+        <strong>Fecha:</strong> 2016<br>
+        <strong>Estado:</strong> <span id="desarrollo" class="estado">Finalizado</span><br>
+        </div>
+        "#;
+        let q = TxQuery::parse(html);
+        let alt = q.xpath_string(
+            r#"//div[@id="info-i"]/strong[.="Alterno:"]/following-sibling::text()[1]"#,
+        );
+        let authors = q.xpath_string(
+            r#"//div[@id="info-i"]/strong[.="Autor:"]/following-sibling::text()[1]"#,
+        );
+        let estado = q.xpath_string(r#"//span[@class="estado"]"#);
+        assert_eq!(alt.trim(), "Sekimen Shinaide Sekime-San!");
+        assert_eq!(authors.trim(), "Some Author");
+        assert!(
+            estado.contains("Finalizado"),
+            "must concatenate all span.estado like FMD2 XQuery toString; got {estado:?}"
+        );
+    }
+
+    #[test]
+    fn contains_child_element_and_child_eq() {
+        let html = r##"
+        <div class="box"><strong>Autor:</strong> Alice</div>
+        <div><span>Author</span> Bob</div>
+        <div class="summary-heading"><h5>Alternative</h5></div>
+        <a href="/ok">keep</a><a href="#">skip</a>
+        "##;
+        let q = TxQuery::parse(html);
+        assert!(
+            q.xpath_string(r#"//div[contains(strong, "Autor:")]"#)
+                .contains("Alice"),
+            "contains(strong,…)"
+        );
+        assert_eq!(
+            q.xpath_string(r#"//div[span="Author"]"#).trim(),
+            "Author Bob"
+        );
+        assert!(
+            q.xpath_string(r#"//div[@class="summary-heading" and contains(./h5, "Alternativ")]"#)
+                .contains("Alternative"),
+            "contains(./h5,…)"
+        );
+        assert_eq!(q.xpath_string(r##"//a[not(@href="#")]"##), "keep");
+    }
+
+    #[test]
+    fn nested_child_pred_orcku_style() {
+        let html = r#"<div><span>Autor:</span> Pepe</div><div><span>Artista:</span> Juan</div>"#;
+        let q = TxQuery::parse(html);
+        let authors = q.xpath_string(r#"//div[span[contains(text(),"Autor:")]]/text()"#);
+        assert!(authors.contains("Pepe"), "got {authors:?}");
+    }
+
+    #[test]
+    fn comma_sequence_union() {
+        let html = r#"<a href="/a">A</a><span>B</span>"#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(r#"//a, //span"#);
+        assert_eq!(s, "AB");
+    }
+
+    #[test]
     fn positional_child_index() {
         // 18Kami: div[4]/a/@href
         let html = r#"
@@ -643,8 +737,9 @@ mod tests {
     fn union_pipe() {
         let html = r#"<div class="info"><h1>A</h1></div><h1 class="tag_info"><span>B</span></h1>"#;
         let q = TxQuery::parse(html);
+        // FMD2 XQuery toString concatenates the sequence (not XPath 1.0 first-only).
         let s = q.xpath_string(r#"//div[@class="info"]/h1|//h1[@class="tag_info"]/span"#);
-        assert_eq!(s, "A");
+        assert_eq!(s, "AB");
         let all = q.xpath_string_all_values(
             r#"//div[@class="info"]/h1|//h1[@class="tag_info"]/span"#,
         );
@@ -827,9 +922,16 @@ enum Pred {
     TextContains(String),
     TextStartsWith(String),
     TextEndsWith(String),
-    /// `text()="Exact"` — string-value of element (collapsed).
+    /// `text()="Exact"` / `.="Exact"` — string-value of element (collapsed).
     TextEq(String),
+    /// `contains(strong, "Autor")` / `contains(./h5, "Summary")`.
+    ChildTextContains(String, String),
+    /// `span="Author"` / `./td="Status"` / `b="Alternative Name:"`.
+    ChildTextEq(String, String),
+    /// `div[span[contains(text(),"Autor:")]]` — child element with nested predicate.
+    ChildPred(String, Box<Pred>),
     SelfName(String),
+    Not(Box<Pred>),
     And(Vec<Pred>),
     Or(Vec<Pred>),
 }
@@ -1138,6 +1240,16 @@ fn parse_pred_atom(inner: &str) -> Option<Pred> {
     static SW: OnceLock<Regex> = OnceLock::new();
     static SF: OnceLock<Regex> = OnceLock::new();
 
+    // not(...)
+    if let Some(rest) = inner.strip_prefix("not(") {
+        if rest.ends_with(')') {
+            let nested = rest[..rest.len() - 1].trim();
+            if let Some(p) = parse_pred(nested) {
+                return Some(Pred::Not(Box::new(p)));
+            }
+        }
+    }
+
     let eq = EQ.get_or_init(|| {
         Regex::new(r#"^@([a-zA-Z0-9_\-:]+)\s*=\s*['"]([^'"]*)['"]$"#).unwrap()
     });
@@ -1154,10 +1266,35 @@ fn parse_pred_atom(inner: &str) -> Option<Pred> {
     if let Some(c) = te.captures(inner) {
         return Some(Pred::TextEq(c[1].to_string()));
     }
+    // `.="Autor:"` / `.='Alterno:'` — string-value equality (MangaOni and many modules).
+    static DOT_EQ: OnceLock<Regex> = OnceLock::new();
+    let dot_eq = DOT_EQ.get_or_init(|| Regex::new(r#"^\.\s*=\s*['"]([^'"]*)['"]$"#).unwrap());
+    if let Some(c) = dot_eq.captures(inner) {
+        return Some(Pred::TextEq(c[1].to_string()));
+    }
+    // `span="Author"` / `./td="Status"` / `b="Alternative Name:"`
+    static CHILD_EQ: OnceLock<Regex> = OnceLock::new();
+    let child_eq = CHILD_EQ.get_or_init(|| {
+        Regex::new(r#"^\.?/?([a-zA-Z0-9_-]+)\s*=\s*['"]([^'"]*)['"]$"#).unwrap()
+    });
+    if let Some(c) = child_eq.captures(inner) {
+        return Some(Pred::ChildTextEq(c[1].to_string(), c[2].to_string()));
+    }
     let sw = SW.get_or_init(|| {
         Regex::new(r#"^starts-with\(\s*\.\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
     });
     if let Some(c) = sw.captures(inner) {
+        return Some(Pred::TextStartsWith(c[1].to_string()));
+    }
+    // starts-with(normalize-space(.), "Status")
+    static SW_NORM: OnceLock<Regex> = OnceLock::new();
+    let sw_norm = SW_NORM.get_or_init(|| {
+        Regex::new(
+            r#"^starts-with\(\s*normalize-space\(\s*\.\s*\)\s*,\s*['"]([^'"]*)['"]\s*\)$"#,
+        )
+        .unwrap()
+    });
+    if let Some(c) = sw_norm.captures(inner) {
         return Some(Pred::TextStartsWith(c[1].to_string()));
     }
     static EW: OnceLock<Regex> = OnceLock::new();
@@ -1173,9 +1310,38 @@ fn parse_pred_atom(inner: &str) -> Option<Pred> {
     if let Some(c) = tc.captures(inner) {
         return Some(Pred::TextContains(c[1].to_string()));
     }
+    // contains(text(), "Autor:")
+    static CTXT: OnceLock<Regex> = OnceLock::new();
+    let ctxt = CTXT.get_or_init(|| {
+        Regex::new(r#"^contains\(\s*text\(\)\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
+    });
+    if let Some(c) = ctxt.captures(inner) {
+        return Some(Pred::TextContains(c[1].to_string()));
+    }
+    // contains(strong, "Autor") / contains(./h5, "Summary") / contains(b, "Author")
+    static CCHILD: OnceLock<Regex> = OnceLock::new();
+    let cchild = CCHILD.get_or_init(|| {
+        Regex::new(r#"^contains\(\s*\.?/?([a-zA-Z0-9_-]+)\s*,\s*['"]([^'"]*)['"]\s*\)$"#)
+            .unwrap()
+    });
+    if let Some(c) = cchild.captures(inner) {
+        return Some(Pred::ChildTextContains(c[1].to_string(), c[2].to_string()));
+    }
     let sf = SF.get_or_init(|| Regex::new(r#"^self::([a-zA-Z0-9_-]+)$"#).unwrap());
     if let Some(c) = sf.captures(inner) {
         return Some(Pred::SelfName(c[1].to_string()));
+    }
+    // Nested child predicate: `span[contains(text(),"Autor:")]` / `div[text()="Status"]`
+    static CHILD_PRED: OnceLock<Regex> = OnceLock::new();
+    let child_pred = CHILD_PRED.get_or_init(|| {
+        Regex::new(r#"^\.?/?([a-zA-Z0-9_-]+)\[(.+)\]$"#).unwrap()
+    });
+    if let Some(c) = child_pred.captures(inner) {
+        let name = c[1].to_string();
+        let nested = c[2].to_string();
+        if let Some(p) = parse_pred(&nested) {
+            return Some(Pred::ChildPred(name, Box::new(p)));
+        }
     }
     None
 }
@@ -1188,10 +1354,29 @@ fn match_pred(node: &DomNode, pred: &Pred) -> bool {
         Pred::TextStartsWith(v) => node.all_text().starts_with(v.as_str()),
         Pred::TextEndsWith(v) => node.all_text().ends_with(v.as_str()),
         Pred::TextEq(v) => node.all_text() == v.as_str(),
+        Pred::ChildTextContains(tag, needle) => match node {
+            DomNode::Elem { children, .. } => children.iter().any(|c| {
+                match_name(c, tag) && c.all_text().contains(needle.as_str())
+            }),
+            _ => false,
+        },
+        Pred::ChildTextEq(tag, value) => match node {
+            DomNode::Elem { children, .. } => {
+                children.iter().any(|c| match_name(c, tag) && c.all_text() == value.as_str())
+            }
+            _ => false,
+        },
+        Pred::ChildPred(tag, inner) => match node {
+            DomNode::Elem { children, .. } => children
+                .iter()
+                .any(|c| match_name(c, tag) && match_pred(c, inner)),
+            _ => false,
+        },
         Pred::SelfName(name) => match node {
             DomNode::Elem { tag, .. } => tag.eq_ignore_ascii_case(name),
             _ => false,
         },
+        Pred::Not(inner) => !match_pred(node, inner),
         Pred::And(parts) => parts.iter().all(|p| match_pred(node, p)),
         Pred::Or(parts) => parts.iter().any(|p| match_pred(node, p)),
     }

@@ -72,6 +72,25 @@ type PaintOpts = {
   moduleName?: string;
 };
 
+/** FMD2 stores status as "0"/"1"/"2"/"3"; sidebar shows the label like ShowInformation. */
+function formatMangaStatus(raw: string | undefined): string {
+  const s = (raw || "").trim();
+  switch (s) {
+    case "0":
+      return "Completado";
+    case "1":
+      return "En curso";
+    case "2":
+      return "Hiatus";
+    case "3":
+      return "Cancelado";
+    case "Unknown":
+      return "";
+    default:
+      return s;
+  }
+}
+
 function chapterNum(index: number): string {
   return String(index + 1).padStart(4, "0");
 }
@@ -295,15 +314,16 @@ export function InfoView() {
     if (!textMatch(e.artists || "", f.artists)) return false;
     if (!textMatch(e.summary || "", f.summary)) return false;
     if (f.status !== 4) {
-      const st = (e.status || "").toLowerCase();
+      const st = (e.status || "").trim().toLowerCase();
+      // Dropdown: 0=Completado, 1=En curso, 2=Hiatus, 3=Cancelado (FMD codes 0/1/2/3).
       const map: Record<number, string[]> = {
-        0: ["ongoing", "en curso", "1"],
-        1: ["completed", "completo", "2"],
-        2: ["hiatus", "pausado"],
-        3: ["cancelled", "cancelado"],
+        0: ["0", "completed", "completo", "completado", "finalizado", "tamat"],
+        1: ["1", "ongoing", "en curso", "en desarrollo", "berjalan", "releasing"],
+        2: ["2", "hiatus", "pausado", "on hold"],
+        3: ["3", "cancelled", "canceled", "cancelado"],
       };
       const want = map[f.status] || [];
-      if (want.length && !want.some((w) => st.includes(w))) return false;
+      if (want.length && !want.some((w) => st === w || st.includes(w))) return false;
     }
     const genreList = (e.genres || "")
       .split(/[,;]/)
@@ -617,7 +637,7 @@ export function InfoView() {
       authors: (opts.authors || "").trim(),
       artists: (opts.artists || "").trim(),
       genres: (opts.genres || "").trim(),
-      status: (opts.status || "").trim(),
+      status: formatMangaStatus(opts.status),
       summary: (opts.summary || "").trim(),
       numchapter: opts.numchapter && opts.numchapter > 0 ? opts.numchapter : 0,
       moduleName: (opts.moduleName || "").trim(),

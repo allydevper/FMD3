@@ -280,8 +280,20 @@ pub fn manga_info_status_if_pos(
     } else if matches(cancelled) {
         "3".into()
     } else {
-        String::new()
+        // FMD2 returns RS_InfoStatus_Unknown ("Unknown") when nothing matches.
+        "Unknown".into()
     }
+}
+
+/// Apply FMD2 Pascal default args when Lua omits them:
+/// `ongoing` / `complete` / `hiatus` / `cancel`.
+pub fn manga_info_status_if_pos_args(args: &[String]) -> String {
+    let search = args.first().map(|s| s.as_str()).unwrap_or("");
+    let ongoing = args.get(1).map(|s| s.as_str()).unwrap_or("ongoing");
+    let completed = args.get(2).map(|s| s.as_str()).unwrap_or("complete");
+    let hiatus = args.get(3).map(|s| s.as_str()).unwrap_or("hiatus");
+    let cancelled = args.get(4).map(|s| s.as_str()).unwrap_or("cancel");
+    manga_info_status_if_pos(search, ongoing, completed, hiatus, cancelled)
 }
 
 fn opt_str(v: Option<Value>) -> String {
@@ -339,18 +351,15 @@ pub fn register_helpers(lua: &Lua) -> mlua::Result<()> {
         "GetBetween",
         lua.create_function(|_, (a, b, v): (String, String, String)| Ok(get_between(&a, &b, &v)))?,
     )?;
-    // FMD allows 3–5 args: (search, ongoing, completed[, hiatus[, cancelled]])
+    // FMD allows 1–5 args; omitted args use Pascal defaults (ongoing/complete/hiatus/cancel).
     globals.set(
         "MangaInfoStatusIfPos",
         lua.create_function(|_, args: mlua::Variadic<Value>| {
-            let search = opt_str(args.get(0).cloned());
-            let ongoing = opt_str(args.get(1).cloned());
-            let completed = opt_str(args.get(2).cloned());
-            let hiatus = opt_str(args.get(3).cloned());
-            let cancelled = opt_str(args.get(4).cloned());
-            Ok(manga_info_status_if_pos(
-                &search, &ongoing, &completed, &hiatus, &cancelled,
-            ))
+            let mut owned = Vec::new();
+            for i in 0..args.len() {
+                owned.push(opt_str(args.get(i).cloned()));
+            }
+            Ok(manga_info_status_if_pos_args(&owned))
         })?,
     )?;
     globals.set(
@@ -409,5 +418,22 @@ mod tests {
         );
         assert_eq!(get_between("(", ")", "()"), "");
         assert_eq!(get_between("<a>", "</a>", "nope"), "nope");
+    }
+
+    #[test]
+    fn status_if_pos_defaults_like_fmd2() {
+        assert_eq!(manga_info_status_if_pos_args(&["Ongoing".into()]), "1");
+        assert_eq!(manga_info_status_if_pos_args(&["Completed".into()]), "0");
+        assert_eq!(manga_info_status_if_pos_args(&["Hiatus".into()]), "2");
+        assert_eq!(manga_info_status_if_pos_args(&["Cancelled".into()]), "3");
+        assert_eq!(
+            manga_info_status_if_pos_args(&[
+                "Finalizado".into(),
+                "En desarrollo".into(),
+                "Finalizado".into(),
+            ]),
+            "0"
+        );
+        assert_eq!(manga_info_status_if_pos_args(&["#123".into()]), "Unknown");
     }
 }

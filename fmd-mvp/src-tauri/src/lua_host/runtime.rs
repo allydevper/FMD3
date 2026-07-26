@@ -388,8 +388,12 @@ impl UserData for MangaInfoHandle {
                 "Title" => Value::String(lua.create_string(this.title.lock().as_str())?),
                 "AltTitles" => Value::String(lua.create_string(this.alt_titles.lock().as_str())?),
                 "CoverLink" => Value::String(lua.create_string(this.cover.lock().as_str())?),
-                "Authors" => Value::String(lua.create_string(this.authors.lock().as_str())?),
-                "Artists" => Value::String(lua.create_string(this.artists.lock().as_str())?),
+                "Authors" | "Author" => {
+                    Value::String(lua.create_string(this.authors.lock().as_str())?)
+                }
+                "Artists" | "Artist" => {
+                    Value::String(lua.create_string(this.artists.lock().as_str())?)
+                }
                 "Genres" => Value::String(lua.create_string(this.genres.lock().as_str())?),
                 "Status" => Value::String(lua.create_string(this.status.lock().as_str())?),
                 "Summary" => Value::String(lua.create_string(this.summary.lock().as_str())?),
@@ -412,8 +416,8 @@ impl UserData for MangaInfoHandle {
                     "Title" => *this.title.lock() = s,
                     "AltTitles" => *this.alt_titles.lock() = s,
                     "CoverLink" => *this.cover.lock() = s,
-                    "Authors" => *this.authors.lock() = s,
-                    "Artists" => *this.artists.lock() = s,
+                    "Authors" | "Author" => *this.authors.lock() = s,
+                    "Artists" | "Artist" => *this.artists.lock() = s,
                     "Genres" => *this.genres.lock() = s,
                     "Status" => *this.status.lock() = s,
                     "Summary" => *this.summary.lock() = s,
