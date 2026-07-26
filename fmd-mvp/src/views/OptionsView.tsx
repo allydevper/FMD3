@@ -737,6 +737,8 @@ export function OptionsView() {
 
   const [optTab, setOptTab] = useState<OptTabId>("general");
   const [dirty, setDirty] = useState(false);
+  const [saveFlash, setSaveFlash] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const saveFlashTimerRef = useRef<number | undefined>(undefined);
   const [s, setS] = useState<OptionsFormState>(DEFAULT_SETTINGS);
 
   const outputDirRef = useRef(outputDir);
@@ -747,11 +749,32 @@ export function OptionsView() {
   /** Últimos valores de bandeja aplicados (para avisar si cambian y requieren reinicio). */
   const trayRef = useRef({ trayMinimize: false, trayStart: false });
 
-  const markDirty = useCallback(() => setDirty(true), []);
+  const clearSaveFlash = useCallback(() => {
+    if (saveFlashTimerRef.current != null) {
+      window.clearTimeout(saveFlashTimerRef.current);
+      saveFlashTimerRef.current = undefined;
+    }
+    setSaveFlash("idle");
+  }, []);
 
-  const update = useCallback(<K extends keyof OptionsFormState>(key: K, value: OptionsFormState[K]) => {
-    setS((prev) => ({ ...prev, [key]: value }));
+  const markDirty = useCallback(() => {
+    clearSaveFlash();
     setDirty(true);
+  }, [clearSaveFlash]);
+
+  const update = useCallback(
+    <K extends keyof OptionsFormState>(key: K, value: OptionsFormState[K]) => {
+      setS((prev) => ({ ...prev, [key]: value }));
+      clearSaveFlash();
+      setDirty(true);
+    },
+    [clearSaveFlash],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (saveFlashTimerRef.current != null) window.clearTimeout(saveFlashTimerRef.current);
+    };
   }, []);
 
   const [siteOn, setSiteOn] = useState<Record<string, true>>({});
@@ -931,8 +954,11 @@ export function OptionsView() {
   }, [loadSettings]);
 
   const handleSave = useCallback(async () => {
+    if (saveFlash === "saving") return;
+    setSaveFlash("saving");
     const trayChanged =
       s.trayMinimize !== trayRef.current.trayMinimize || s.trayStart !== trayRef.current.trayStart;
+    try {
     const uaVal = s.ua.trim();
     await api.settingsSet(SK.UA, uaVal === DEFAULT_USER_AGENT ? "" : uaVal);
     await api.settingsSet(
@@ -1010,11 +1036,31 @@ export function OptionsView() {
     await refreshEnabledModules();
     trayRef.current = { trayMinimize: s.trayMinimize, trayStart: s.trayStart };
     setDirty(false);
-    log("Ajustes guardados", "ok");
+    setSaveFlash("saved");
+    if (saveFlashTimerRef.current != null) window.clearTimeout(saveFlashTimerRef.current);
+    saveFlashTimerRef.current = window.setTimeout(() => {
+      setSaveFlash("idle");
+      saveFlashTimerRef.current = undefined;
+    }, 2200);
+    log(
+      enabled.length
+        ? `Ajustes guardados · ${enabled.length} sitio${enabled.length === 1 ? "" : "s"} activo${enabled.length === 1 ? "" : "s"}`
+        : "Ajustes guardados · ningún sitio activo",
+      "ok",
+    );
     if (trayChanged) {
       log("Algunos ajustes de bandeja requieren reiniciar la aplicación", "");
     }
-  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshEnabledModules]);
+    } catch (e) {
+      setSaveFlash("error");
+      if (saveFlashTimerRef.current != null) window.clearTimeout(saveFlashTimerRef.current);
+      saveFlashTimerRef.current = window.setTimeout(() => {
+        setSaveFlash("idle");
+        saveFlashTimerRef.current = undefined;
+      }, 2800);
+      log(`No se pudieron guardar los ajustes: ${e}`, "err");
+    }
+  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshEnabledModules, saveFlash]);
 
   const handleBrowseOutputDir = useCallback(async () => {
     const dir = await open({ directory: true, multiple: false });
@@ -1120,17 +1166,20 @@ export function OptionsView() {
 
   const allSiteIds = useMemo(() => siteGroups.flatMap((g) => g.sites.map((st) => st.id)), [siteGroups]);
 
-  const setSitesOn = useCallback((ids: string[], on: boolean) => {
-    setSiteOn((prev) => {
-      const next = { ...prev };
-      for (const id of ids) {
-        if (on) next[id] = true;
-        else delete next[id];
-      }
-      return next;
-    });
-    setDirty(true);
-  }, []);
+  const setSitesOn = useCallback(
+    (ids: string[], on: boolean) => {
+      setSiteOn((prev) => {
+        const next = { ...prev };
+        for (const id of ids) {
+          if (on) next[id] = true;
+          else delete next[id];
+        }
+        return next;
+      });
+      markDirty();
+    },
+    [markDirty],
+  );
 
   const toggleGroupExpand = useCallback((gid: string) => {
     setExpanded((prev) => ({ ...prev, [gid]: !prev[gid] }));
@@ -2406,15 +2455,43 @@ export function OptionsView() {
         </div>
 
         <footer className="options-footer">
-          <span className="options-dirty" id="opt-dirty" hidden={!dirty}>
-            Cambios sin guardar
-          </span>
+          {saveFlash === "saved" ? (
+            <span className="options-saved" id="opt-saved" role="status">
+              <Icon ico={ICO.check} className="ico ico-sm" />
+              Guardado
+            </span>
+          ) : saveFlash === "error" ? (
+            <span className="options-save-err" id="opt-save-err" role="status">
+              Error al guardar
+            </span>
+          ) : dirty ? (
+            <span className="options-dirty" id="opt-dirty">
+              Cambios sin guardar
+            </span>
+          ) : (
+            <span className="options-dirty" id="opt-dirty" hidden />
+          )}
           <div className="options-footer-spacer" />
-          <button type="button" className="secondary" id="set-cancel" onClick={() => void loadSettings()}>
+          <button
+            type="button"
+            className="secondary"
+            id="set-cancel"
+            disabled={saveFlash === "saving"}
+            onClick={() => {
+              clearSaveFlash();
+              void loadSettings();
+            }}
+          >
             Cancelar
           </button>
-          <button type="button" className="btn" id="set-save" onClick={() => void handleSave()}>
-            Aplicar
+          <button
+            type="button"
+            className={`btn${saveFlash === "saved" ? " is-saved" : ""}`}
+            id="set-save"
+            disabled={saveFlash === "saving"}
+            onClick={() => void handleSave()}
+          >
+            {saveFlash === "saving" ? "Guardando…" : saveFlash === "saved" ? "Guardado" : "Aplicar"}
           </button>
         </footer>
       </div>
