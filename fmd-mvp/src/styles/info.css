@@ -1419,9 +1419,8 @@
 .info-sidebar-notch {
   position: absolute;
   left: 0;
-  top: 50%;
+  top: 10px;
   z-index: 6;
-  transform: translateY(-50%);
   width: 16px;
   height: 48px;
   padding: 0;
@@ -1818,7 +1817,7 @@
   filter: grayscale(0.15);
 }
 
-/* Source tools modal (placeholder) */
+/* Catalog modal — aligned with OmniManga Tracker v2.dc.html */
 .info-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1826,17 +1825,20 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, #000 45%, transparent);
+  background: rgba(4, 29, 51, 0.34);
   padding: 24px;
 }
 
+.app.dark .info-modal-backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
 .info-modal {
-  width: min(420px, 100%);
-  min-height: 160px;
-  background: var(--panel, var(--bg));
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 12px 40px var(--shadow);
+  position: relative;
+  width: min(480px, calc(100% - 48px));
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  box-shadow: 0 24px 60px var(--shadow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1847,20 +1849,141 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
+  padding: 16px 18px 15px;
   border-bottom: 1px solid var(--border);
+}
+
+.info-modal-head .ghost {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  flex: 0 0 30px;
 }
 
 .info-modal-title {
   margin: 0;
-  font-size: 14px;
+  font-size: 14.5px;
   font-weight: 600;
   color: var(--text);
 }
 
 .info-modal-body {
   flex: 1 1 auto;
-  min-height: 96px;
-  padding: 16px;
+  padding: 20px 22px;
+}
+
+.info-modal-catalog {
+  width: min(480px, calc(100% - 48px));
+}
+
+.info-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.info-modal-btn {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-2);
+  padding: 8px 16px;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1.2;
+}
+
+.info-modal-btn:hover:not(:disabled) {
+  background: var(--hover-tint);
+}
+
+.info-modal-btn-primary {
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  padding: 8px 18px;
+}
+
+.info-modal-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.info-modal-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.catalog-tools-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.catalog-tools-group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.catalog-tools-group.is-split {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.catalog-tools-radio {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.catalog-tools-radio input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.catalog-tools-radio-mark {
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  background: var(--field-bg);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.catalog-tools-radio.is-on .catalog-tools-radio-mark {
+  border-color: var(--accent);
+}
+
+.catalog-tools-radio.is-on .catalog-tools-radio-mark::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.catalog-tools-radio > span:last-child {
+  flex: 1 1 auto;
+}
+
+.catalog-tools-radio:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 

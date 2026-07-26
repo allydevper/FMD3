@@ -152,6 +152,40 @@ pub async fn catalog_update(
     .map_err(|e| format!("tarea cancelada: {e}"))?
 }
 
+#[tauri::command]
+pub fn catalog_job_cancel() -> Result<(), String> {
+    crate::catalog_job::request_cancel();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn catalog_job_begin() -> Result<(), String> {
+    crate::catalog_job::reset_cancel();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn catalog_fetch_from_server(
+    app: AppHandle,
+    module_id: String,
+) -> Result<crate::catalog::CatalogStats, String> {
+    if crate::settings_keys::module_disabled(&module_id) {
+        return Err(
+            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+        );
+    }
+    let id = module_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let app2 = app.clone();
+        let mut progress = |p: crate::catalog_job::CatalogFetchProgress| {
+            let _ = app2.emit("catalog-fetch-progress", &p);
+        };
+        crate::catalog_job::fetch_from_server(&id, Some(&mut progress))
+    })
+    .await
+    .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct DownloadChapterInput {
     pub index: usize,

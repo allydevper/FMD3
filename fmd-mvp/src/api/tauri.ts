@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CatalogEntry,
+  CatalogFetchProgressEvent,
   CatalogProgressEvent,
   CatalogStats,
   Favorite,
@@ -60,6 +61,22 @@ export function catalogImport(moduleId: string, path: string) {
 
 export function catalogUpdate(moduleId: string) {
   return invoke<UpdateListStats>("catalog_update", { moduleId });
+}
+
+export function catalogFetchFromServer(moduleId: string) {
+  return invoke<CatalogStats>("catalog_fetch_from_server", { moduleId });
+}
+
+export function catalogJobBegin() {
+  return invoke("catalog_job_begin");
+}
+
+export function catalogJobCancel() {
+  return invoke("catalog_job_cancel");
+}
+
+export function downloadFmd2Db(url: string) {
+  return invoke<string>("catalog_download_fmd2db", { url });
 }
 
 export function mangaCacheUpsert(args: {
@@ -181,10 +198,6 @@ export function updateModulesFromGithub() {
   return invoke<number>("modules_update_github");
 }
 
-export function downloadFmd2Db(url: string) {
-  return invoke<string>("catalog_download_fmd2db", { url });
-}
-
 export function onQueueChanged(handler: () => void): Promise<UnlistenFn> {
   return listen("queue-changed", handler);
 }
@@ -199,6 +212,14 @@ export function onCatalogProgress(
   handler: (payload: CatalogProgressEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<CatalogProgressEvent>("catalog-progress", (e) =>
+    handler(e.payload),
+  );
+}
+
+export function onCatalogFetchProgress(
+  handler: (payload: CatalogFetchProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<CatalogFetchProgressEvent>("catalog-fetch-progress", (e) =>
     handler(e.payload),
   );
 }

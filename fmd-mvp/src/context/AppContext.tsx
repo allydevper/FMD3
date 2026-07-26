@@ -9,11 +9,24 @@ import {
   type ReactNode,
 } from "react";
 import { SK, THEME_KEY } from "../constants";
-import type { ModuleMeta, NavId } from "../types";
+import type {
+  CatalogJobMode,
+  CatalogJobScope,
+  CatalogJobState,
+  ModuleMeta,
+  NavId,
+} from "../types";
 import * as api from "../api/tauri";
 
 export type LogKind = "ok" | "err" | "";
 export type AppTheme = "system" | "light" | "dark";
+
+export type StartCatalogJobArgs = {
+  mode: CatalogJobMode;
+  scope: CatalogJobScope;
+  /** Required when scope is "one". */
+  moduleId?: string | null;
+};
 
 type AppContextValue = {
   activeNav: NavId;
@@ -49,6 +62,12 @@ type AppContextValue = {
   /** Favorites auto-check interval (Options + Favorites footer). */
   favAutoCheck: boolean;
   setFavAutoCheck: (on: boolean) => Promise<void>;
+  catalogJob: CatalogJobState | null;
+  /** Bumps when a catalog job finishes (success or cancel) so Info can refresh. */
+  catalogJobDoneSeq: number;
+  lastCatalogJobModuleIds: string[];
+  startCatalogJob: (args: StartCatalogJobArgs) => Promise<void>;
+  cancelCatalogJob: () => Promise<void>;
 };
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -96,6 +115,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [showMangaInfo, setShowMangaInfo] = useState(false);
   const [enabledModuleIds, setEnabledModuleIds] = useState<Set<string>>(() => new Set());
   const [favAutoCheck, setFavAutoCheckState] = useState(true);
+  const [catalogJob, setCatalogJob] = useState<CatalogJobState | null>(null);
+  const [catalogJobDoneSeq, setCatalogJobDoneSeq] = useState(0);
+  const [lastCatalogJobModuleIds, setLastCatalogJobModuleIds] = useState<string[]>([]);
+  const catalogJobRunningRef = useRef(false);
+  const catalogCancelRequestedRef = useRef(false);
   const [{ narrow, hideInfo }, setLayout] = useState(() =>
     layoutFromWidth(typeof window !== "undefined" ? window.innerWidth : 1280),
   );
@@ -230,6 +254,160 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [refreshEnabledModules]);
 
   useEffect(() => {
+    let un1: (() => void) | undefined;
+    let un2: (() => void) | undefined;
+    void api
+      .onCatalogProgress((p) => {
+        setCatalogJob((prev) =>
+          prev
+            ? {
+                ...prev,
+                moduleId: p.module_id || prev.moduleId,
+                page: p.page,
+                pageTotal: p.page_total,
+                message:
+                  p.page_total > 0
+                    ? `página ${p.page + 1}/${p.page_total} · +${p.inserted_total}`
+                    : prev.message,
+              }
+            : prev,
+        );
+      })
+      .then((u) => {
+        un1 = u;
+      });
+    void api
+      .onCatalogFetchProgress((p) => {
+        setCatalogJob((prev) =>
+          prev
+            ? {
+                ...prev,
+                moduleId: p.module_id || prev.moduleId,
+                bytesDone: p.bytes_done,
+                bytesTotal: p.bytes_total,
+                message: p.message || prev.message,
+              }
+            : prev,
+        );
+      })
+      .then((u) => {
+        un2 = u;
+      });
+    return () => {
+      un1?.();
+      un2?.();
+    };
+  }, []);
+
+  const cancelCatalogJob = useCallback(async () => {
+    catalogCancelRequestedRef.current = true;
+    setCatalogJob((prev) => (prev ? { ...prev, cancelling: true } : prev));
+    try {
+      await api.catalogJobCancel();
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const startCatalogJob = useCallback(
+    async (args: StartCatalogJobArgs) => {
+      if (catalogJobRunningRef.current) {
+        log("Ya hay una actualización de catálogo en curso.", "err");
+        return;
+      }
+      const enabled = modules.filter((m) => enabledModuleIds.has(m.id));
+      let targets: ModuleMeta[] = [];
+      if (args.scope === "one") {
+        const id = args.moduleId;
+        if (!id) {
+          log("Elige una fuente en el selector primero.", "err");
+          return;
+        }
+        const m = modules.find((x) => x.id === id);
+        if (!m || !enabledModuleIds.has(id)) {
+          log("La fuente no está activa. Actívala en Ajustes → Sitios Web.", "err");
+          return;
+        }
+        targets = [m];
+      } else {
+        targets = [...enabled].sort((a, b) => a.name.localeCompare(b.name));
+        if (!targets.length) {
+          log(
+            "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
+            "err",
+          );
+          return;
+        }
+      }
+
+      catalogJobRunningRef.current = true;
+      catalogCancelRequestedRef.current = false;
+      const doneIds: string[] = [];
+      try {
+        await api.catalogJobBegin();
+        const verb = args.mode === "fetch" ? "Descarga" : "Actualización";
+        log(
+          `${verb} de catálogo: ${targets.length} sitio${targets.length === 1 ? "" : "s"}…`,
+          "",
+        );
+        for (let i = 0; i < targets.length; i++) {
+          if (catalogCancelRequestedRef.current) break;
+          const m = targets[i];
+          setCatalogJob({
+            mode: args.mode,
+            scope: args.scope,
+            moduleId: m.id,
+            moduleName: m.name,
+            index: i + 1,
+            total: targets.length,
+            page: 0,
+            pageTotal: 0,
+            bytesDone: 0,
+            bytesTotal: 0,
+            message: args.mode === "fetch" ? "Descargando…" : "Actualizando…",
+            cancelling: false,
+          });
+          try {
+            if (args.mode === "update") {
+              const st = await api.catalogUpdate(m.id);
+              doneIds.push(m.id);
+              log(
+                `Catálogo OK (${m.name}): +${st.inserted} · ${st.total_in_db} total · ${st.pages_fetched} páginas`,
+                "ok",
+              );
+            } else {
+              const st = await api.catalogFetchFromServer(m.id);
+              doneIds.push(m.id);
+              log(`Catálogo descargado (${m.name}): ${st.count} títulos`, "ok");
+            }
+          } catch (e) {
+            const msg = String(e);
+            if (/cancelado/i.test(msg) || catalogCancelRequestedRef.current) {
+              log(`${verb} cancelada.`, "");
+              break;
+            }
+            log(`${verb} falló (${m.name}): ${msg}`, "err");
+            // Continue with next module on error (FMD2-like for multi).
+            if (args.scope === "one") break;
+          }
+        }
+        if (catalogCancelRequestedRef.current) {
+          log(`${verb} interrumpida.`, "");
+        } else if (doneIds.length) {
+          log(`${verb} terminada.`, "ok");
+        }
+      } finally {
+        catalogJobRunningRef.current = false;
+        catalogCancelRequestedRef.current = false;
+        setCatalogJob(null);
+        setLastCatalogJobModuleIds(doneIds);
+        setCatalogJobDoneSeq((n) => n + 1);
+      }
+    },
+    [enabledModuleIds, log, modules],
+  );
+
+  useEffect(() => {
     if (bootDoneRef.current) return;
     bootDoneRef.current = true;
     let cancelled = false;
@@ -320,6 +498,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshEnabledModules,
     favAutoCheck,
     setFavAutoCheck,
+    catalogJob,
+    catalogJobDoneSeq,
+    lastCatalogJobModuleIds,
+    startCatalogJob,
+    cancelCatalogJob,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

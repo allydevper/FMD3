@@ -29,6 +29,7 @@ pub const DOWNLOAD_PDF_QUALITY: &str = "download.pdf_quality";
 pub const QUEUE_SORT_ON_ADD: &str = "queue.sort_on_add";
 
 pub const MODULES_ENABLED: &str = "modules.enabled";
+pub const CATALOG_DB_URL: &str = "catalog.db_url";
 
 pub const FAVORITES_CHECK_INTERVAL_MIN: &str = "favorites.check_interval_min";
 pub const FAVORITES_CHECK_INTERVAL_ON: &str = "favorites.check_interval_on";
@@ -67,6 +68,10 @@ pub const LONG_PATHS: &str = "paths.long_paths";
 
 fn get_direct(key: &str) -> Option<String> {
     crate::db::settings_get_direct(key).ok().flatten()
+}
+
+pub fn get_string_opt(key: &str) -> Option<String> {
+    get_direct(key)
 }
 
 pub fn parse_bool(s: Option<&str>, default: bool) -> bool {

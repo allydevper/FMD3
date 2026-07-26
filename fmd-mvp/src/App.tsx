@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { CatalogJobBar } from "./components/CatalogJobBar";
 import { Icon } from "./components/Icon";
 import { ICO } from "./icons";
 import { AppProvider, useApp } from "./context/AppContext";
@@ -140,12 +141,12 @@ function Shell() {
         </nav>
 
         <div className="main-region">
-          <p id="busy" className="busy-bar" hidden />
           <InfoView />
           <DownloadsView />
           <FavoritesView />
           <OptionsView />
           <AboutView />
+          <CatalogJobBar />
           <LogDrawer />
         </div>
       </div>

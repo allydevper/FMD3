@@ -179,6 +179,7 @@ export const SK = {
   PARALLEL_TASKS: "download.parallel_tasks",
   OUTPUT_DIR: "default_output_dir",
   MODULES_ENABLED: "modules.enabled",
+  CATALOG_DB_URL: "catalog.db_url",
   FAV_INTERVAL_ON: "favorites.check_interval_on",
   FAV_INTERVAL_MIN: "favorites.check_interval_min",
   FAV_CHECK_ON_START: "favorites.check_on_start",

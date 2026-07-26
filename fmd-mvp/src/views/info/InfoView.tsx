@@ -97,6 +97,10 @@ export function InfoView() {
     setShowMangaInfo,
     enabledModuleIds,
     hideInfo,
+    catalogJob,
+    catalogJobDoneSeq,
+    lastCatalogJobModuleIds,
+    startCatalogJob,
   } = useApp();
 
   /* ---------------------------------------------------------------------
@@ -123,7 +127,6 @@ export function InfoView() {
   const [catalogLoadingText, setCatalogLoadingText] = useState("Cargando títulos…");
   const [catalogError, setCatalogError] = useState(false);
   const [catalogStatsText, setCatalogStatsText] = useState("0");
-  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
   const [catalogResetSeq, setCatalogResetSeq] = useState(0);
   const [activeCatalogTitle, setActiveCatalogTitle] = useState("");
 
@@ -159,6 +162,9 @@ export function InfoView() {
   const [infoPanelOpen, setInfoPanelOpen] = useState(false);
   const [infoSidebarCollapsed, setInfoSidebarCollapsed] = useState(false);
   const [sourceToolsOpen, setSourceToolsOpen] = useState(false);
+  const [sourceToolsAction, setSourceToolsAction] = useState<
+    "update_one" | "fetch_one" | "update_all" | "fetch_all"
+  >("update_one");
   const [isFavorite, setIsFavorite] = useState(false);
   const [taskStopped, setTaskStopped] = useState(false);
   const [loadCovers, setLoadCovers] = useState(true);
@@ -472,17 +478,12 @@ export function InfoView() {
   }, [enabledModules.length]);
 
   useEffect(() => {
-    let un: (() => void) | undefined;
-    void api
-      .onCatalogProgress((p) => {
-        log(`Catálogo [${p.page + 1}/${p.page_total}] +${p.batch_rows} (acum ${p.inserted_total})`);
-      })
-      .then((u) => {
-        un = u;
-      });
-    return () => un?.();
+    if (!catalogJobDoneSeq) return;
+    if (!selectedModuleId) return;
+    if (!lastCatalogJobModuleIds.includes(selectedModuleId)) return;
+    void loadCatalog(true, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [catalogJobDoneSeq]);
 
   /* ---------------------------------------------------------------------
    * Show right info sidebar on the .app shell (CSS: .app.show-manga-info)
@@ -590,31 +591,6 @@ export function InfoView() {
     setAdvFilterApplied(false);
     void loadCatalog(true, true);
     log("Filtro quitado.", "ok");
-  }
-
-  async function handleCatalogUpdate() {
-    const id = selectedModuleId;
-    if (!id) {
-      log("Elige una fuente primero.", "err");
-      return;
-    }
-    setCatalogRefreshing(true);
-    log("Actualizando lista (GetNameAndLink)…");
-    try {
-      const st = await api.catalogUpdate(id);
-      log(
-        `Catálogo OK: +${st.inserted} nuevas · ${st.total_in_db} total · ${st.pages_fetched} páginas`,
-        "ok",
-      );
-      setCatalogText("");
-      catalogQueryRef.current = "";
-      catalogLoadedKeyRef.current = "";
-      await loadCatalog(true);
-    } catch (e) {
-      log(String(e), "err");
-    } finally {
-      setCatalogRefreshing(false);
-    }
   }
 
   /* ---------------------------------------------------------------------
@@ -1092,32 +1068,6 @@ export function InfoView() {
     }
   }
 
-  async function handleCatalogImport() {
-    const id = selectedModuleId;
-    if (!id) {
-      log("Elige una fuente primero.", "err");
-      return;
-    }
-    const path = await open({
-      multiple: false,
-      filters: [{ name: "Base de datos", extensions: ["db", "sqlite", "sqlite3"] }],
-    });
-    if (typeof path !== "string") return;
-    try {
-      const st = await api.catalogImport(id, path);
-      log(`Catálogo importado: ${st.count} títulos`, "ok");
-      await loadCatalog(true);
-      await refreshCatalogStats();
-    } catch (e) {
-      log(String(e), "err");
-    }
-  }
-
-  // Reserved for the source-tools modal (import / update).
-  void handleCatalogImport;
-  void handleCatalogUpdate;
-  void catalogRefreshing;
-
   async function handleOnlineClick() {
     if (!mangaUrl) return;
     try {
@@ -1418,6 +1368,7 @@ export function InfoView() {
               className="ghost"
               id="source-tools"
               title="Herramientas de catálogo"
+              disabled={!!catalogJob}
               onClick={() => setSourceToolsOpen(true)}
             >
               <Icon name="sliders" className="ico" />
@@ -2006,7 +1957,7 @@ export function InfoView() {
           onClick={() => setSourceToolsOpen(false)}
         >
           <div
-            className="info-modal"
+            className="info-modal info-modal-catalog"
             role="dialog"
             aria-modal="true"
             aria-labelledby="source-tools-title"
@@ -2025,7 +1976,98 @@ export function InfoView() {
                 <Icon name="x" className="ico" />
               </button>
             </header>
-            <div className="info-modal-body" />
+            <div className="info-modal-body">
+              <div className="catalog-tools-radios" role="radiogroup" aria-label="Acción de catálogo">
+                <div className="catalog-tools-group">
+                  <label
+                    className={`catalog-tools-radio${sourceToolsAction === "update_one" ? " is-on" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="catalog-tools-action"
+                      checked={sourceToolsAction === "update_one"}
+                      disabled={!!catalogJob}
+                      onChange={() => setSourceToolsAction("update_one")}
+                    />
+                    <span className="catalog-tools-radio-mark" aria-hidden="true" />
+                    <span>Actualizar lista de manga</span>
+                  </label>
+                  <label
+                    className={`catalog-tools-radio${sourceToolsAction === "fetch_one" ? " is-on" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="catalog-tools-action"
+                      checked={sourceToolsAction === "fetch_one"}
+                      disabled={!!catalogJob}
+                      onChange={() => setSourceToolsAction("fetch_one")}
+                    />
+                    <span className="catalog-tools-radio-mark" aria-hidden="true" />
+                    <span>Descargar la lista de manga desde el servidor FMD</span>
+                  </label>
+                </div>
+                <div className="catalog-tools-group is-split">
+                  <label
+                    className={`catalog-tools-radio${sourceToolsAction === "update_all" ? " is-on" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="catalog-tools-action"
+                      checked={sourceToolsAction === "update_all"}
+                      disabled={!!catalogJob}
+                      onChange={() => setSourceToolsAction("update_all")}
+                    />
+                    <span className="catalog-tools-radio-mark" aria-hidden="true" />
+                    <span>Actualizar todas las listas inmediatamente</span>
+                  </label>
+                  <label
+                    className={`catalog-tools-radio${sourceToolsAction === "fetch_all" ? " is-on" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="catalog-tools-action"
+                      checked={sourceToolsAction === "fetch_all"}
+                      disabled={!!catalogJob}
+                      onChange={() => setSourceToolsAction("fetch_all")}
+                    />
+                    <span className="catalog-tools-radio-mark" aria-hidden="true" />
+                    <span>Descargar todas las listas desde el servidor FMD inmediatamente</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <footer className="info-modal-foot">
+              <button
+                type="button"
+                className="info-modal-btn"
+                onClick={() => setSourceToolsOpen(false)}
+              >
+                Cerrar
+              </button>
+              <button
+                type="button"
+                className="info-modal-btn info-modal-btn-primary"
+                disabled={!!catalogJob}
+                onClick={() => {
+                  const scope =
+                    sourceToolsAction === "update_all" || sourceToolsAction === "fetch_all"
+                      ? "all"
+                      : "one";
+                  const mode =
+                    sourceToolsAction === "fetch_one" || sourceToolsAction === "fetch_all"
+                      ? "fetch"
+                      : "update";
+                  setSourceToolsOpen(false);
+                  void startCatalogJob({
+                    mode,
+                    scope,
+                    moduleId: selectedModuleId,
+                  });
+                }}
+              >
+                Aplicar
+              </button>
+            </footer>
           </div>
         </div>
       ) : null}

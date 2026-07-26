@@ -1,4 +1,5 @@
 mod catalog;
+mod catalog_job;
 mod commands;
 mod cover_cache;
 mod db;
@@ -249,6 +250,9 @@ pub fn run() {
             commands::cover_local_path,
             commands::cover_ensure,
             commands::catalog_update,
+            commands::catalog_job_cancel,
+            commands::catalog_job_begin,
+            commands::catalog_fetch_from_server,
             commands::download_chapters,
             commands::settings_get,
             commands::settings_set,

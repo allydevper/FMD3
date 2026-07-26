@@ -2158,6 +2158,7 @@ pub fn update_list(
     let mut pages_fetched = 0usize;
 
     for dir_idx in 0..total_dirs {
+        crate::catalog_job::check_cancel()?;
         {
             let mut s = module.inner.lock();
             s.current_directory_index = dir_idx;
@@ -2181,6 +2182,7 @@ pub fn update_list(
 
         let mut page: i64 = 0;
         while page < page_total {
+            crate::catalog_job::check_cancel()?;
             // FMD passes 0-based page index; FoOlSlide uses (URL + 1)
             globals
                 .set("URL", page)
