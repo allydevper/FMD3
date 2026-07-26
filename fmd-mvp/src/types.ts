@@ -111,6 +111,8 @@ export type CatalogEntry = {
   numchapter: number;
   jdn: number;
   cover: string;
+  /** GetInfo failed / inaccessible (`manga_cache.title = 'N/A'`). */
+  info_failed?: boolean;
 };
 
 export type MangaCacheRow = {

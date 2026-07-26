@@ -20,6 +20,9 @@ pub struct CatalogEntry {
     pub jdn: i64,
     #[serde(default)]
     pub cover: String,
+    /// True when `manga_cache.title = 'N/A'` (GetInfo failed / inaccessible).
+    #[serde(default)]
+    pub info_failed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,19 +289,28 @@ pub fn stats(module_id: &str) -> Result<CatalogStats, String> {
 const SEARCH_SELECT: &str = r#"
 SELECT
   m.link,
-  COALESCE(NULLIF(c.title,''), m.title, ''),
+  COALESCE(NULLIF(NULLIF(c.title,''),'N/A'), m.title, ''),
   COALESCE(NULLIF(c.alt_titles,''), m.alttitles, ''),
   COALESCE(c.authors, m.authors, ''),
   COALESCE(c.artists, m.artists, ''),
   COALESCE(c.genres, m.genres, ''),
   COALESCE(c.status, m.status, ''),
   COALESCE(c.summary, m.summary, ''),
-  COALESCE(NULLIF(c.numchapter, 0), m.numchapter, 0),
+  CASE
+    WHEN c.link IS NOT NULL AND IFNULL(c.title,'') = 'N/A' THEN COALESCE(m.numchapter, 0)
+    WHEN c.link IS NOT NULL THEN COALESCE(c.numchapter, 0)
+    ELSE COALESCE(m.numchapter, 0)
+  END,
   COALESCE(m.jdn, 0),
-  COALESCE(c.cover, '')
+  COALESCE(c.cover, ''),
+  CASE WHEN IFNULL(c.title,'') = 'N/A' THEN 1 ELSE 0 END
 FROM masterlist m
 LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = ?1
 "#;
+
+/// Hide FMD2-poisoned rows whose masterlist title was overwritten to empty/N/A.
+const MASTERLIST_USABLE: &str =
+    "lower(trim(IFNULL(m.title,''))) NOT IN ('', 'n/a')";
 
 pub fn search(
     module_id: &str,
@@ -317,7 +329,9 @@ pub fn search(
     let q = query.trim();
     let mut out = Vec::new();
     if q.is_empty() {
-        let sql = format!("{SEARCH_SELECT} ORDER BY m.title COLLATE NATCMP LIMIT ?2 OFFSET ?3");
+        let sql = format!(
+            "{SEARCH_SELECT} WHERE {MASTERLIST_USABLE} ORDER BY m.title COLLATE NATCMP LIMIT ?2 OFFSET ?3"
+        );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![module_id, limit, offset], map_entry)
@@ -334,8 +348,11 @@ pub fn search(
         );
         let sql = format!(
             "{SEARCH_SELECT}
-             WHERE lower(m.title) LIKE lower(?2) ESCAPE '\\'
-                OR lower(m.alttitles) LIKE lower(?2) ESCAPE '\\'
+             WHERE {MASTERLIST_USABLE}
+               AND (
+                 lower(m.title) LIKE lower(?2) ESCAPE '\\'
+                 OR lower(m.alttitles) LIKE lower(?2) ESCAPE '\\'
+               )
              ORDER BY m.title COLLATE NATCMP
              LIMIT ?3 OFFSET ?4"
         );
@@ -351,6 +368,7 @@ pub fn search(
 }
 
 fn map_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
+    let failed_flag: i64 = r.get(11)?;
     Ok(CatalogEntry {
         link: r.get(0)?,
         title: r.get(1)?,
@@ -363,6 +381,7 @@ fn map_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
         numchapter: r.get(8)?,
         jdn: r.get(9)?,
         cover: r.get(10)?,
+        info_failed: failed_flag != 0,
     })
 }
 
@@ -429,6 +448,11 @@ pub fn manga_cache_get(module_id: &str, link: &str) -> Result<Option<MangaCacheR
     Ok(row)
 }
 
+fn is_cache_fail_title(title: &str) -> bool {
+    let t = title.trim();
+    t.is_empty() || t.eq_ignore_ascii_case("N/A")
+}
+
 pub fn manga_cache_upsert(
     module_id: &str,
     link: &str,
@@ -443,24 +467,41 @@ pub fn manga_cache_upsert(
         return Err("link vacío".into());
     }
     let updated_at = chrono_now();
+
+    // Empty / N/A title → failure signal only (never touches masterlist).
+    if is_cache_fail_title(&data.title) {
+        conn.execute(
+            r#"INSERT INTO manga_cache(module_id, link, title, alt_titles, authors, artists, genres, status, summary, numchapter, cover, updated_at)
+               VALUES(?1, ?2, 'N/A', '', '', '', '', '', '', 0, '', ?3)
+               ON CONFLICT(module_id, link) DO UPDATE SET
+                 title='N/A',
+                 numchapter=0,
+                 updated_at=excluded.updated_at"#,
+            params![module_id, link, updated_at],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Success: merge non-empty fields; always take numchapter (may be 0).
     conn.execute(
         r#"INSERT INTO manga_cache(module_id, link, title, alt_titles, authors, artists, genres, status, summary, numchapter, cover, updated_at)
            VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
            ON CONFLICT(module_id, link) DO UPDATE SET
-             title=excluded.title,
-             alt_titles=excluded.alt_titles,
-             authors=excluded.authors,
-             artists=excluded.artists,
-             genres=excluded.genres,
-             status=excluded.status,
-             summary=excluded.summary,
+             title=COALESCE(NULLIF(excluded.title,''), manga_cache.title),
+             alt_titles=COALESCE(NULLIF(excluded.alt_titles,''), manga_cache.alt_titles),
+             authors=COALESCE(NULLIF(excluded.authors,''), manga_cache.authors),
+             artists=COALESCE(NULLIF(excluded.artists,''), manga_cache.artists),
+             genres=COALESCE(NULLIF(excluded.genres,''), manga_cache.genres),
+             status=COALESCE(NULLIF(excluded.status,''), manga_cache.status),
+             summary=COALESCE(NULLIF(excluded.summary,''), manga_cache.summary),
              numchapter=excluded.numchapter,
-             cover=excluded.cover,
+             cover=COALESCE(NULLIF(excluded.cover,''), manga_cache.cover),
              updated_at=excluded.updated_at"#,
         params![
             module_id,
             link,
-            data.title,
+            data.title.trim(),
             data.alt_titles,
             data.authors,
             data.artists,
@@ -613,6 +654,7 @@ mod tests {
         let e = hits.iter().find(|e| e.link == link).expect("in search");
         assert_eq!(e.numchapter, 7);
         assert_eq!(e.genres, "Action");
+        assert!(!e.info_failed);
 
         // cleanup
         let _ = std::fs::remove_file(path);
@@ -622,6 +664,70 @@ mod tests {
                 params![mid],
             );
         }
+    }
+
+    #[test]
+    fn cache_na_keeps_masterlist_title_and_flags_failed() {
+        let mid = "__test_manga_cache_na__";
+        let link = "/series/na_title/";
+        let path = catalog_db_path(mid);
+        let _ = std::fs::remove_file(&path);
+        upsert_links(mid, &[(link.into(), "Real Master Title".into())]).expect("links");
+        manga_cache_upsert(
+            mid,
+            link,
+            &MangaCacheUpsert {
+                title: "N/A".into(),
+                alt_titles: "".into(),
+                authors: "".into(),
+                artists: "".into(),
+                genres: "".into(),
+                status: "".into(),
+                summary: "".into(),
+                numchapter: 0,
+                cover: "".into(),
+            },
+        )
+        .expect("fail upsert");
+
+        let row = manga_cache_get(mid, link).expect("get").expect("row");
+        assert_eq!(row.title, "N/A");
+
+        let hits = search(mid, "", 10, 0).expect("search");
+        let e = hits.iter().find(|e| e.link == link).expect("in search");
+        assert_eq!(e.title, "Real Master Title");
+        assert!(e.info_failed);
+
+        let _ = std::fs::remove_file(path);
+        if let Ok(conn) = open_app_db() {
+            let _ = conn.execute(
+                "DELETE FROM manga_cache WHERE module_id = ?1",
+                params![mid],
+            );
+        }
+    }
+
+    #[test]
+    fn hides_masterlist_rows_poisoned_to_na() {
+        let mid = "__test_masterlist_na_hidden__";
+        let path = catalog_db_path(mid);
+        let _ = std::fs::remove_file(&path);
+        upsert_links(
+            mid,
+            &[
+                ("/ok/".into(), "Keep Me".into()),
+                ("/na/".into(), "N/A".into()),
+                ("/empty/".into(), "".into()),
+            ],
+        )
+        .expect("links");
+
+        let hits = search(mid, "", 20, 0).expect("search");
+        let titles: Vec<_> = hits.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, vec!["Keep Me"]);
+        assert!(hits.iter().all(|e| e.link == "/ok/"));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

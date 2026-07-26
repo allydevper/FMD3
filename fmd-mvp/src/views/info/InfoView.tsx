@@ -97,6 +97,16 @@ function chapterNum(index: number): string {
   return String(index + 1).padStart(4, "0");
 }
 
+function isNaTitle(title: string | undefined | null): boolean {
+  const t = (title || "").trim();
+  return !t || t.toUpperCase() === "N/A";
+}
+
+function inaccessibleInfoMessage(moduleName: string): string {
+  const mod = moduleName.trim() || "módulo";
+  return `✗ Info inaccesible (${mod}). Título N/A — ¿URL o scrape?`;
+}
+
 function genreChipClass(state: GenreTri): string {
   if (state === "include") return "chip inc";
   if (state === "exclude") return "chip exc";
@@ -151,6 +161,8 @@ export function InfoView() {
   const [catalogStatsText, setCatalogStatsText] = useState("0");
   const [catalogResetSeq, setCatalogResetSeq] = useState(0);
   const [activeCatalogTitle, setActiveCatalogTitle] = useState("");
+  /** Title from last catalog stub — survives async GetInfo when painting fail state. */
+  const pendingSidebarTitleRef = useRef("");
 
   const catalogQueryRef = useRef("");
   const catalogLoadedKeyRef = useRef("");
@@ -193,6 +205,8 @@ export function InfoView() {
 
   const [sidebarRows, setSidebarRows] = useState<SidebarRows>(EMPTY_SIDEBAR_ROWS);
   const [altTitles, setAltTitles] = useState("");
+  /** Set when GetInfo returned / cache has title N/A — chapters panel shows manual-update hint. */
+  const [infoInaccessible, setInfoInaccessible] = useState<{ moduleName: string } | null>(null);
 
   const mangaLoadSeqRef = useRef(0);
   const coverEnsureSeqRef = useRef(0);
@@ -651,6 +665,19 @@ export function InfoView() {
     }
   }
 
+  /** Prefer list/stub title over GetInfo "N/A" so the sidebar never shows N/A as name. */
+  function sidebarTitleOnFail(fallback: string): string {
+    const pending = pendingSidebarTitleRef.current.trim();
+    if (pending && !isNaTitle(pending)) return pending;
+    const fromSidebar = sidebarRows.title.trim();
+    if (fromSidebar && !isNaTitle(fromSidebar) && fromSidebar !== "(sin título)") {
+      return fromSidebar;
+    }
+    const fromList = activeCatalogTitle.trim();
+    if (fromList && !isNaTitle(fromList)) return fromList;
+    return fallback.trim() || fallback;
+  }
+
   async function applyCachedCover(moduleId: string, link: string) {
     const keys = [link.trim()].filter(Boolean);
     const root = currentModule?.root_url || "";
@@ -693,9 +720,11 @@ export function InfoView() {
   }
 
   function applyCatalogStub(e: CatalogEntry) {
+    const title = e.title || e.link;
+    pendingSidebarTitleRef.current = title;
     setInfoPanelOpen(true);
     paintRows({
-      title: e.title || e.link,
+      title,
       authors: e.authors,
       artists: e.artists,
       genres: e.genres,
@@ -711,8 +740,9 @@ export function InfoView() {
   }
 
   function syncMangaCacheFromInfo(mangaLink: string, info: MangaInfoResult) {
-    const count = info.chapters.length;
-    const cover = resolveCover(info.cover, info.root_url);
+    const failed = isNaTitle(info.title);
+    const count = failed ? 0 : info.chapters.length;
+    const cover = failed ? "" : resolveCover(info.cover, info.root_url);
     const key = catalogLinkKey(mangaLink);
     const root = currentModule?.root_url || info.root_url || "";
     let touched = false;
@@ -720,6 +750,9 @@ export function InfoView() {
       const full = maybeFillHost(root, e.link);
       if (catalogLinkKey(e.link) === key || catalogLinkKey(full) === key) {
         touched = true;
+        if (failed) {
+          return { ...e, info_failed: true };
+        }
         return {
           ...e,
           title: info.title || e.title,
@@ -731,6 +764,7 @@ export function InfoView() {
           status: info.status,
           summary: info.summary,
           cover,
+          info_failed: false,
         };
       }
       return e;
@@ -742,15 +776,49 @@ export function InfoView() {
         .mangaCacheUpsert({
           moduleId,
           link: mangaLink,
-          title: info.title,
-          altTitles: info.alt_titles,
-          authors: info.authors,
-          artists: info.artists,
-          genres: info.genres,
-          status: info.status,
-          summary: info.summary,
+          title: failed ? "N/A" : info.title,
+          altTitles: failed ? "" : info.alt_titles,
+          authors: failed ? "" : info.authors,
+          artists: failed ? "" : info.artists,
+          genres: failed ? "" : info.genres,
+          status: failed ? "" : info.status,
+          summary: failed ? "" : info.summary,
           numchapter: count,
           cover,
+        })
+        .catch(() => {
+          /* best-effort */
+        });
+    }
+  }
+
+  function markCatalogInfoFailed(mangaLink: string, moduleId: string | undefined) {
+    const key = catalogLinkKey(mangaLink);
+    const root = currentModule?.root_url || "";
+    let touched = false;
+    const next = catalogEntriesRef.current.map((e) => {
+      const full = maybeFillHost(root, e.link);
+      if (catalogLinkKey(e.link) === key || catalogLinkKey(full) === key) {
+        touched = true;
+        return { ...e, info_failed: true };
+      }
+      return e;
+    });
+    if (touched) setCatalogEntries(next);
+    if (moduleId) {
+      void api
+        .mangaCacheUpsert({
+          moduleId,
+          link: mangaLink,
+          title: "N/A",
+          altTitles: "",
+          authors: "",
+          artists: "",
+          genres: "",
+          status: "",
+          summary: "",
+          numchapter: 0,
+          cover: "",
         })
         .catch(() => {
           /* best-effort */
@@ -775,7 +843,10 @@ export function InfoView() {
   async function loadMangaInfo(explicitUrl?: string) {
     const seq = ++mangaLoadSeqRef.current;
     const raw = (explicitUrl ?? urlInput).trim();
+    // URL bar / Enter: don't reuse a previous catalog stub title.
+    if (explicitUrl === undefined) pendingSidebarTitleRef.current = "";
     setInfoPanelOpen(true);
+    setInfoInaccessible(null);
     clearLog();
 
     const url = normalizeMangaUrl(raw);
@@ -841,6 +912,7 @@ export function InfoView() {
         try {
           const cached = await api.mangaCacheGet(moduleId, url);
           if (seq !== mangaLoadSeqRef.current || !cached) return;
+          if (isNaTitle(cached.title)) return;
           if (!mangaRef.current) {
             paintRows({
               title: cached.title?.trim() || activeCatalogTitle || cached.link,
@@ -869,10 +941,39 @@ export function InfoView() {
       const result = await api.getMangaInfo(url, moduleId ?? null);
       if (seq !== mangaLoadSeqRef.current) return;
 
+      if (isNaTitle(result.title)) {
+        setManga(null);
+        setMangaUrl("");
+        setSelected(new Set());
+        bumpChaptersReset();
+        setChaptersLoading(false);
+        const modName = result.module_name || currentModule?.name || "";
+        setInfoInaccessible({ moduleName: modName });
+        paintRows({
+          title: sidebarTitleOnFail(url),
+          authors: "",
+          artists: "",
+          genres: "",
+          status: "",
+          summary: "",
+          numchapter: 0,
+          moduleName: modName,
+          altTitles: "",
+        });
+        syncMangaCacheFromInfo(url, result);
+        const msg = inaccessibleInfoMessage(modName);
+        log(
+          `${msg} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
+          "err",
+        );
+        return;
+      }
+
       setManga(result);
       setSelected(new Set());
       bumpChaptersReset();
       setChaptersLoading(false);
+      setInfoInaccessible(null);
       setActiveCatalogTitle((cur) => cur || result.title);
       paintRows({
         title: result.title,
@@ -923,8 +1024,27 @@ export function InfoView() {
     } catch (e) {
       if (seq !== mangaLoadSeqRef.current) return;
       setManga(null);
+      setMangaUrl("");
       setChaptersLoading(false);
-      log(String(e), "err");
+      const modName = currentModule?.name || "";
+      setInfoInaccessible({ moduleName: modName });
+      markCatalogInfoFailed(url, moduleId);
+      paintRows({
+        title: sidebarTitleOnFail(url),
+        authors: "",
+        artists: "",
+        genres: "",
+        status: "",
+        summary: "",
+        numchapter: 0,
+        moduleName: modName,
+        altTitles: "",
+      });
+      const msg = inaccessibleInfoMessage(modName);
+      log(
+        `${msg} ${String(e)} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
+        "err",
+      );
     } finally {
       if (seq === mangaLoadSeqRef.current) {
         setMangaLoadingUrl("");
@@ -938,6 +1058,7 @@ export function InfoView() {
     const url = maybeFillHost(root, e.link);
     const title = e.title || e.link;
     setActiveCatalogTitle(title);
+    pendingSidebarTitleRef.current = title;
     setUrlInput(url);
     if (mangaLoadingUrl === url) {
       log(`Ya se está cargando: ${title}`);
@@ -951,6 +1072,25 @@ export function InfoView() {
     applyCatalogStub(e);
     const moduleId = selectedModuleId;
     if (moduleId) void applyCachedCover(moduleId, e.link);
+
+    // Cache already marked inaccessible: do not hit the invalid URL again.
+    if (e.info_failed) {
+      setManga(null);
+      setMangaUrl("");
+      setSelected(new Set());
+      bumpChaptersReset();
+      setChaptersLoading(false);
+      const modName = currentModule?.name || "";
+      setInfoInaccessible({ moduleName: modName });
+      // Stub already painted real masterlist title; keep it (never show N/A in sidebar).
+      const msg = inaccessibleInfoMessage(modName);
+      log(
+        `${msg} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
+        "err",
+      );
+      return;
+    }
+
     log(`Abriendo ${title}…`);
     await loadMangaInfo(url);
   }
@@ -1197,6 +1337,38 @@ export function InfoView() {
         </div>
       );
     }
+    if (infoInaccessible) {
+      const mod = infoInaccessible.moduleName.trim() || "el sitio";
+      return (
+        <div className="chapters-list" id="chapters">
+          <div className="chapters-empty chapters-inaccessible">
+            <div className="chapters-fail-box">
+              <div className="chapters-fail">
+                <div className="chapters-fail-top">
+                  <div className="chapters-fail-ico" aria-hidden>
+                    <Icon name="unplug" className="ico ico-lg" />
+                  </div>
+                  <div className="chapters-fail-copy">
+                    <p className="chapters-fail-title">No se pudo leer la información</p>
+                    <p className="chapters-fail-desc">
+                      Revisa que sea la página de la obra en {mod}.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn chapters-fail-retry"
+                  disabled={loadBtnDisabled || !urlInput.trim()}
+                  onClick={() => void loadMangaInfo()}
+                >
+                  <Icon name="refresh" className="ico ico-sm" /> Reintentar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     if (!manga) {
       return (
         <div className="chapters-list" id="chapters">
@@ -1296,22 +1468,17 @@ export function InfoView() {
         getKey={(e, i) => `${i}:${e.link}`}
         renderItem={(e, i, style: CSSProperties) => {
           const title = e.title || e.link;
-          const caps =
-            e.numchapter > 0
-              ? e.numchapter
-              : manga && title === activeCatalogTitle
-                ? manga.chapters.length
-                : 0;
+          const meta = e.info_failed ? "N/A" : String(e.numchapter ?? 0);
           return (
             <button
               type="button"
               className={`catalog-row${title === activeCatalogTitle ? " active" : ""}`}
               style={style}
-              title={caps > 0 ? `${title} · ${caps} caps.` : title}
+              title={`${title} · ${meta}`}
               onClick={() => handleCatalogRowClick(i, e)}
             >
               <div className="catalog-row-title">{title}</div>
-              {caps > 0 && <span className="catalog-row-meta">{caps}</span>}
+              <span className="catalog-row-meta">{meta}</span>
             </button>
           );
         }}
@@ -1613,7 +1780,7 @@ export function InfoView() {
                     type="button"
                     className="info-action-btn"
                     id="btn-online"
-                    disabled={!mangaUrl}
+                    disabled={!mangaUrl || !!infoInaccessible}
                     onClick={() => void handleOnlineClick()}
                   >
                     <Icon name="external" className="ico ico-sm" /> Leer en línea

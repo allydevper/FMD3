@@ -786,7 +786,7 @@ export function OptionsView() {
     if (cacheClearFlash === "working") return;
     if (
       !window.confirm(
-        "¿Limpiar caché de info y portadas?\n\nNo se borran favoritos, cola ni listas de manga.",
+        "¿Limpiar caché de info y portadas?\n\nSe borrarán también las infos fallidas en caché (“desaparecidos”). El catálogo del sitio, favoritos y la cola no se tocan.",
       )
     ) {
       return;
@@ -1611,7 +1611,9 @@ export function OptionsView() {
                         <div className="st-meta">
                           <div className="st-label">Caché de info y portadas</div>
                           <div className="st-desc">
-                            Borra metadata en manga_cache y archivos en cover-cache (no toca favoritos ni listas)
+                            Borra la metadata de GetInfo (manga_cache), incluidas las infos fallidas
+                            (“desaparecidos” con N/A), y las portadas en cover-cache. No toca
+                            favoritos, cola ni la lista del sitio (masterlist).
                           </div>
                           {cacheClearFlash === "done" ? (
                             <div className="st-inline-ok" role="status">
