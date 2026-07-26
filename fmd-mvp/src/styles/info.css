@@ -1639,32 +1639,62 @@
 }
 
 .info-summary {
-  padding-top: 4px;
+  padding-top: 12px;
   border-top: 1px solid var(--deep-line);
-  margin-top: 2px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.info-summary-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--on-deep-dim);
+  line-height: 1.2;
 }
 
 .info-summary-text {
   font-size: 12.5px;
   font-weight: 400;
   color: var(--on-deep-dim);
-  line-height: 1.45;
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+  opacity: 0.92;
 }
 
 .info-meta-line {
-  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--deep-line) 60%, transparent);
+  font-size: 11px;
   font-weight: 500;
   color: var(--on-deep-dimmer);
   line-height: 1.35;
-  padding-top: 2px;
+  letter-spacing: 0.01em;
+  opacity: 0.9;
+}
+
+.info-meta-source {
+  opacity: 0.95;
+}
+
+.info-meta-caps {
+  opacity: 0.85;
 }
 
 .info-meta-sep {
-  opacity: 0.7;
-  margin: 0 2px;
+  opacity: 0.4;
+  margin: 0;
 }
 
 /* Action bar */

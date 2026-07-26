@@ -1643,12 +1643,14 @@ export function InfoView() {
                   ))}
                   {sidebarRows.summary ? (
                     <div className="info-summary">
-                      <div className="info-row-label">Sinopsis</div>
+                      <h3 className="info-summary-title">Sinopsis</h3>
                       <div className="info-summary-text">{sidebarRows.summary}</div>
                     </div>
                   ) : null}
                   <div className="info-meta-line">
-                    {fuente} <span className="info-meta-sep">—</span> {capsLabel}
+                    <span className="info-meta-source">{fuente}</span>
+                    <span className="info-meta-sep">·</span>
+                    <span className="info-meta-caps">{capsLabel}</span>
                   </div>
                 </div>
               </div>
