@@ -7,6 +7,25 @@ use std::sync::Arc;
 
 pub type Db = Arc<Mutex<Connection>>;
 
+/// Directory containing the running executable (portable default for "Guardar en").
+pub fn exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Saved `default_output_dir`, or exe directory when unset.
+pub fn resolve_output_dir(db: &Db) -> Result<String, String> {
+    let saved = settings_get(db, "default_output_dir")?.unwrap_or_default();
+    let t = saved.trim();
+    if !t.is_empty() {
+        return Ok(t.to_string());
+    }
+    Ok(exe_dir().to_string_lossy().into_owned())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Favorite {
     pub id: i64,

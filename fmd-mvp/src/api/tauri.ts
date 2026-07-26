@@ -25,6 +25,11 @@ export function settingsSet(key: string, value: string) {
   return invoke("settings_set", { key, value });
 }
 
+/** Carpeta del ejecutable — default de "Guardar en". */
+export function defaultSaveDir() {
+  return invoke<string>("default_save_dir");
+}
+
 export function modulesList() {
   return invoke<ModuleMeta[]>("modules_list_cmd");
 }

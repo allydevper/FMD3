@@ -230,6 +230,12 @@ pub fn settings_set(state: State<QueueState>, key: String, value: String) -> Res
     db::settings_set(&state.db, &key, &value)
 }
 
+/// Default "Guardar en" path = folder of the running executable.
+#[tauri::command]
+pub fn default_save_dir() -> Result<String, String> {
+    Ok(db::exe_dir().to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub fn favorites_list(state: State<QueueState>) -> Result<Vec<Favorite>, String> {
     db::favorites_list(&state.db)
@@ -377,9 +383,9 @@ async fn check_favorite_inner(
 
     let mut enqueued = 0usize;
     if enqueue && matched && !new_chapters.is_empty() {
-        let output = db::settings_get(&db, "default_output_dir")?.unwrap_or_default();
+        let output = db::resolve_output_dir(&db)?;
         if output.trim().is_empty() {
-            return Err("Configura carpeta de salida por defecto antes de encolar".into());
+            return Err("No se pudo resolver la carpeta de salida".into());
         }
         let items: Vec<NewQueueItem> = new_chapters
             .iter()

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { Icon } from "../components/Icon";
 import { ICO } from "../icons";
 import * as api from "../api/tauri";
@@ -125,18 +124,14 @@ export function FavoritesView() {
 
   const ensureOutputDir = useCallback(async (): Promise<string | null> => {
     if (outputDir) return outputDir;
-    const saved = await api.settingsGet("default_output_dir");
+    const saved = ((await api.settingsGet("default_output_dir")) ?? "").trim();
     if (saved) {
       setOutputDir(saved);
       return saved;
     }
-    const dir = await open({ directory: true, multiple: false });
-    if (typeof dir === "string") {
-      setOutputDir(dir);
-      await api.settingsSet("default_output_dir", dir);
-      return dir;
-    }
-    return null;
+    const def = await api.defaultSaveDir();
+    setOutputDir(def);
+    return def;
   }, [outputDir, setOutputDir]);
 
   const removeFavorite = useCallback(

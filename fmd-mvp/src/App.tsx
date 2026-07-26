@@ -58,8 +58,11 @@ function Shell() {
     let cancelled = false;
     void (async () => {
       try {
-        const saved = await api.settingsGet("default_output_dir");
-        if (!cancelled && saved) setOutputDir(saved);
+        const saved = ((await api.settingsGet("default_output_dir")) ?? "").trim();
+        if (!cancelled) {
+          if (saved) setOutputDir(saved);
+          else setOutputDir(await api.defaultSaveDir());
+        }
         const mods = await api.modulesList();
         if (cancelled) return;
         setModules(mods);

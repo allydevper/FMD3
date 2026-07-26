@@ -276,9 +276,11 @@ export function InfoView() {
   useEffect(() => {
     if (!modules.length) void refreshModules();
     if (!outputDir) {
-      void api.settingsGet("default_output_dir").then((saved) => {
+      void (async () => {
+        const saved = ((await api.settingsGet("default_output_dir")) ?? "").trim();
         if (saved) setOutputDir(saved);
-      });
+        else setOutputDir(await api.defaultSaveDir());
+      })();
     }
     void api.settingsGet("ui.load_covers").then((v) => {
       if (v === "0" || v === "false") setLoadCovers(false);
@@ -996,18 +998,14 @@ export function InfoView() {
    * ------------------------------------------------------------------- */
   async function ensureOutputDir(): Promise<string | null> {
     if (outputDir) return outputDir;
-    const saved = await api.settingsGet("default_output_dir");
+    const saved = ((await api.settingsGet("default_output_dir")) ?? "").trim();
     if (saved) {
       setOutputDir(saved);
       return saved;
     }
-    const dir = await open({ directory: true, multiple: false });
-    if (typeof dir === "string") {
-      setOutputDir(dir);
-      await api.settingsSet("default_output_dir", dir);
-      return dir;
-    }
-    return null;
+    const def = await api.defaultSaveDir();
+    setOutputDir(def);
+    return def;
   }
 
   async function handlePickOutputDir() {

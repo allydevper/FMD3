@@ -257,6 +257,7 @@ pub fn run() {
             commands::download_chapters,
             commands::settings_get,
             commands::settings_set,
+            commands::default_save_dir,
             commands::favorites_list,
             commands::favorites_add,
             commands::favorites_remove,

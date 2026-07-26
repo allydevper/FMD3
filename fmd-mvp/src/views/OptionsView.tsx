@@ -855,7 +855,10 @@ export function OptionsView() {
     const patManga = (await get(SK.PAT_MANGA)) ?? "%MANGA%";
     const patChapter = (await get(SK.PAT_CHAPTER)) ?? "%CHAPTER%";
     const patPage = (await get(SK.PAT_PAGE)) ?? "%FILENAME%";
-    const outputDirField = (await get(SK.OUTPUT_DIR)) ?? outputDirRef.current ?? "";
+    const outputDirField =
+      ((await get(SK.OUTPUT_DIR)) ?? "").trim() ||
+      outputDirRef.current.trim() ||
+      (await api.defaultSaveDir());
     const mangaFolderOn = parseB(await get(SK.MANGA_FOLDER_ON), true);
     const chapterFolderOn = parseB(await get(SK.CHAPTER_FOLDER_ON), true);
     const asciiOn = parseB(await get(SK.ASCII_ON), false);
@@ -1108,7 +1111,10 @@ export function OptionsView() {
   /* ---- Vista previa de renombrado ---- */
 
   const renamePreview = useMemo(() => {
-    const root = (s.outputDirField.trim() || "C:\\Users\\WILMER\\Desktop\\manga").replace(/[\\/]+$/, "");
+    const root = (s.outputDirField.trim() || outputDirRef.current.trim() || ".").replace(
+      /[\\/]+$/,
+      "",
+    );
     const parts = [root];
     if (s.mangaFolderOn) parts.push(resolveRenamePattern(s.patManga || "%MANGA%") || "Manga");
     if (s.chapterFolderOn) parts.push(resolveRenamePattern(s.patChapter || "%CHAPTER%") || "003");
