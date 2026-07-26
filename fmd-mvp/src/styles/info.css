@@ -1753,8 +1753,8 @@
   margin: 0;
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.01em;
-  text-transform: none;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--on-deep-dim);
   line-height: 1.2;
 }
@@ -1764,6 +1764,7 @@
   font-weight: 400;
   color: var(--on-deep-dim);
   line-height: 1.5;
+  text-align: justify;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;

@@ -291,11 +291,11 @@ SELECT
   m.link,
   COALESCE(NULLIF(NULLIF(c.title,''),'N/A'), m.title, ''),
   COALESCE(NULLIF(c.alt_titles,''), m.alttitles, ''),
-  COALESCE(c.authors, m.authors, ''),
-  COALESCE(c.artists, m.artists, ''),
-  COALESCE(c.genres, m.genres, ''),
-  COALESCE(c.status, m.status, ''),
-  COALESCE(c.summary, m.summary, ''),
+  COALESCE(NULLIF(c.authors,''), m.authors, ''),
+  COALESCE(NULLIF(c.artists,''), m.artists, ''),
+  COALESCE(NULLIF(c.genres,''), m.genres, ''),
+  COALESCE(NULLIF(c.status,''), m.status, ''),
+  COALESCE(NULLIF(c.summary,''), m.summary, ''),
   CASE
     WHEN c.link IS NOT NULL AND IFNULL(c.title,'') = 'N/A' THEN COALESCE(m.numchapter, 0)
     WHEN c.link IS NOT NULL THEN COALESCE(c.numchapter, 0)
@@ -729,6 +729,60 @@ mod tests {
         let e = hits.iter().find(|e| e.link == link).expect("in search");
         assert_eq!(e.title, "Real Master Title");
         assert!(e.info_failed);
+
+        let _ = std::fs::remove_file(path);
+        if let Ok(conn) = open_app_db() {
+            let _ = conn.execute(
+                "DELETE FROM manga_cache WHERE module_id = ?1",
+                params![mid],
+            );
+        }
+    }
+
+    #[test]
+    fn empty_cache_meta_falls_back_to_masterlist() {
+        let mid = "__test_cache_empty_meta__";
+        let link = "/series/genres_from_master/";
+        let path = catalog_db_path(mid);
+        let _ = std::fs::remove_file(&path);
+        upsert_links(mid, &[(link.into(), "Master Genres Title".into())]).expect("links");
+        {
+            let conn = open_catalog(mid).expect("open");
+            conn.execute(
+                "UPDATE masterlist SET genres = ?1, authors = ?2, status = ?3 WHERE link = ?4",
+                params![
+                    "Comedia, Deportes, Escolar",
+                    "Author M",
+                    "1",
+                    normalize_manga_link(link)
+                ],
+            )
+            .expect("seed masterlist meta");
+        }
+        manga_cache_upsert(
+            mid,
+            link,
+            &MangaCacheUpsert {
+                title: "Cached Title".into(),
+                alt_titles: "".into(),
+                authors: "".into(),
+                artists: "".into(),
+                genres: "".into(),
+                status: "".into(),
+                summary: "".into(),
+                numchapter: 3,
+                cover: "".into(),
+            },
+        )
+        .expect("cache with blank meta");
+
+        let hits = search(mid, "", 10, 0).expect("search");
+        let e = hits.iter().find(|e| e.link == normalize_manga_link(link)).expect("in search");
+        assert_eq!(e.title, "Cached Title");
+        assert_eq!(e.genres, "Comedia, Deportes, Escolar");
+        assert_eq!(e.authors, "Author M");
+        assert_eq!(e.status, "1");
+        assert_eq!(e.numchapter, 3);
 
         let _ = std::fs::remove_file(path);
         if let Ok(conn) = open_app_db() {

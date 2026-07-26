@@ -368,24 +368,34 @@ export function InfoView() {
       .split(/[,;]/)
       .map((g) => g.trim().toLowerCase())
       .filter(Boolean);
-    const includes: string[] = [];
-    const excludes: string[] = [];
+    /** One checkbox / custom token = one criterion; id+label are aliases (OR), not AND. */
+    const includeGroups: string[][] = [];
+    const excludeAliases: string[] = [];
+    const genreTokenHit = (aliases: string[]) =>
+      aliases.some(
+        (a) =>
+          !!a &&
+          genreList.some((g) => g === a || g.includes(a) || a.includes(g)),
+      );
     for (const g of DEFAULT_GENRES) {
       const state = f.genres[g.id] ?? "ignore";
-      if (state === "include") includes.push(g.id.toLowerCase(), g.label.toLowerCase());
-      if (state === "exclude") excludes.push(g.id.toLowerCase(), g.label.toLowerCase());
+      const aliases = [g.id.toLowerCase(), g.label.toLowerCase()];
+      if (state === "include") includeGroups.push(aliases);
+      if (state === "exclude") excludeAliases.push(...aliases);
     }
     for (const part of f.customGenres.split(",")) {
       const raw = part.trim();
       if (!raw) continue;
-      if (raw.startsWith("!") || raw.startsWith("-")) excludes.push(raw.slice(1).trim().toLowerCase());
-      else includes.push(raw.toLowerCase());
+      if (raw.startsWith("!") || raw.startsWith("-")) {
+        const a = raw.slice(1).trim().toLowerCase();
+        if (a) excludeAliases.push(a);
+      } else {
+        includeGroups.push([raw.toLowerCase()]);
+      }
     }
-    for (const ex of excludes) {
-      if (ex && genreList.some((g) => g.includes(ex))) return false;
-    }
-    if (includes.length) {
-      const hit = includes.filter(Boolean).map((inc) => genreList.some((g) => g.includes(inc)));
+    if (excludeAliases.length && genreTokenHit(excludeAliases)) return false;
+    if (includeGroups.length) {
+      const hit = includeGroups.map((aliases) => genreTokenHit(aliases));
       if (f.matchMode === "all" ? !hit.every(Boolean) : !hit.some(Boolean)) return false;
     }
     if (f.onlyNew && newDays > 0 && e.jdn) {
@@ -408,8 +418,9 @@ export function InfoView() {
       setCatalogLoadingText("Cargando títulos…");
       try {
         const all = await ensureAllPagesLoaded();
-        setAdvFilterApplied(true);
         const n = all.filter((e) => entryMatchesFilter(e, advFilter, filterNewDays)).length;
+        setAdvFilterApplied(true);
+        setCatalogStatsText(String(n));
         log(`Filtro aplicado: ${n} títulos`, "ok");
       } catch (e) {
         log(String(e), "err");
@@ -1248,6 +1259,7 @@ export function InfoView() {
   }
 
   function handleCatalogRowClick(idx: number, entry: CatalogEntry) {
+    setInfoMode("search");
     const title = entry.title || entry.link;
     setActiveCatalogTitle(title);
     const now = performance.now();
@@ -1775,22 +1787,13 @@ export function InfoView() {
                 <Icon name="x" className="ico ico-sm" />
               </button>
             </div>
-            <button
-              type="button"
-              className="ghost"
-              id="catalog-broom"
-              title="Limpiar filtro"
-              onClick={clearCatalogFilter}
-            >
-              <Icon name="broom" className="ico" />
-            </button>
           </div>
         </div>
         <div className="search-mode-bar">
           <span>
             Modo:{" "}
             <strong id="catalog-mode-label">
-              {advFilterApplied ? "filtro (UI)" : "búsqueda individual"}
+              {advFilterApplied ? "Avanzada" : "Individual"}
             </strong>
           </span>
           <div className="search-mode-right">
@@ -1804,7 +1807,7 @@ export function InfoView() {
               <Icon name="filterOff" className="ico ico-sm" />
             </button>
             <span className="result-badge" id="catalog-stats">
-              {catalogStatsText}
+              {advFilterApplied ? visibleCatalog.length : catalogStatsText}
             </span>
           </div>
         </div>
