@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type SyntheticEvent,
 } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -182,8 +183,11 @@ export function InfoView() {
   /* ---------------------------------------------------------------------
    * Cover
    * ------------------------------------------------------------------- */
+  /** Apply sharpen/contrast only for small source covers (natural height). */
+  const COVER_ENHANCE_MAX_H = 300;
   const [coverSrc, setCoverSrc] = useState(coverDefaultUrl);
   const [coverIsDefault, setCoverIsDefaultState] = useState(true);
+  const [coverEnhanced, setCoverEnhanced] = useState(false);
   const coverIsDefaultRef = useRef(true);
   const coverLocalFallbackRef = useRef("");
   const coverDisplayKeyRef = useRef("");
@@ -196,6 +200,7 @@ export function InfoView() {
   function applyDefaultCover() {
     coverDisplayKeyRef.current = "";
     setCoverIsDefault(true);
+    setCoverEnhanced(false);
     setCoverSrc(coverDefaultUrl);
   }
 
@@ -213,7 +218,17 @@ export function InfoView() {
     }
     coverDisplayKeyRef.current = url;
     setCoverIsDefault(false);
+    setCoverEnhanced(false);
     setCoverSrc(url);
+  }
+
+  function handleCoverImgLoad(e: SyntheticEvent<HTMLImageElement>) {
+    if (coverIsDefaultRef.current) {
+      setCoverEnhanced(false);
+      return;
+    }
+    const h = e.currentTarget.naturalHeight;
+    setCoverEnhanced(h > 0 && h < COVER_ENHANCE_MAX_H);
   }
 
   function handleCoverImgError() {
@@ -1544,7 +1559,13 @@ export function InfoView() {
                     id="cover-img"
                     alt="portada"
                     src={coverSrc}
-                    className={coverIsDefault ? "is-default" : undefined}
+                    className={[
+                      coverIsDefault ? "is-default" : "",
+                      coverEnhanced ? "is-enhanced" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ") || undefined}
+                    onLoad={handleCoverImgLoad}
                     onError={handleCoverImgError}
                   />
                   <div className="cover-placeholder" id="cover-ph" hidden>

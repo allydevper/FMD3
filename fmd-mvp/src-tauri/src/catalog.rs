@@ -3,6 +3,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,8 +143,112 @@ pub fn open_catalog(module_id: &str) -> Result<Connection, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = catalog_db_path(module_id);
     let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    register_natcmp(&conn)?;
     ensure_schema(&conn)?;
     Ok(conn)
+}
+
+/// FMD2-compatible `NATCMP`: case-insensitive natural order (digits as numbers).
+/// Specials (`!`, `"`, …) stay before A–Z, like FMD2 / `StrCmpLogicalW`.
+fn register_natcmp(conn: &Connection) -> Result<(), String> {
+    conn.create_collation("NATCMP", |a, b| nat_cmp(a, b))
+        .map_err(|e| format!("NATCMP collation: {e}"))
+}
+
+fn normalize_sort_char(c: char) -> char {
+    match c {
+        '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{2032}' => '\'',
+        '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{2033}' => '"',
+        '\u{2013}' | '\u{2014}' | '\u{2212}' => '-',
+        '\u{00A0}' | '\u{2007}' | '\u{202F}' => ' ',
+        _ => c,
+    }
+}
+
+/// Natural compare like FMD2 `UTF8LogicalCompareText` / Windows `StrCmpLogicalW`.
+fn nat_cmp(a: &str, b: &str) -> Ordering {
+    let a: Vec<char> = a.chars().map(normalize_sort_char).collect();
+    let b: Vec<char> = b.chars().map(normalize_sort_char).collect();
+    nat_cmp_slice(&a, &b)
+}
+
+fn nat_cmp_slice(a: &[char], b: &[char]) -> Ordering {
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < a.len() || j < b.len() {
+        if i >= a.len() {
+            return Ordering::Less;
+        }
+        if j >= b.len() {
+            return Ordering::Greater;
+        }
+        let ca = a[i];
+        let cb = b[j];
+        let dig_a = ca.is_ascii_digit();
+        let dig_b = cb.is_ascii_digit();
+        if dig_a && dig_b {
+            let (num_a, len_a, next_i) = read_u128_digits(a, i);
+            let (num_b, len_b, next_j) = read_u128_digits(b, j);
+            i = next_i;
+            j = next_j;
+            match num_a.cmp(&num_b) {
+                Ordering::Equal => match len_a.cmp(&len_b) {
+                    Ordering::Equal => continue,
+                    other => return other,
+                },
+                other => return other,
+            }
+        }
+
+        // Category first: punctuation/symbols before digits before letters.
+        // Fixes ¿ ¡ « » etc. which would otherwise sort after Z by Unicode codepoint.
+        match char_sort_class(ca).cmp(&char_sort_class(cb)) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+
+        // Case-insensitive char compare (handles multi-char lowercase expansions).
+        let mut la = ca.to_lowercase();
+        let mut lb = cb.to_lowercase();
+        loop {
+            match (la.next(), lb.next()) {
+                (None, None) => break,
+                (None, Some(_)) => return Ordering::Less,
+                (Some(_), None) => return Ordering::Greater,
+                (Some(x), Some(y)) => match x.cmp(&y) {
+                    Ordering::Equal => {}
+                    other => return other,
+                },
+            }
+        }
+        i += 1;
+        j += 1;
+    }
+    Ordering::Equal
+}
+
+/// 0 = special (punct/symbol/space/…), 1 = digit, 2 = letter — like FMD2 specials-first.
+fn char_sort_class(c: char) -> u8 {
+    if c.is_ascii_digit() {
+        1
+    } else if c.is_alphabetic() {
+        2
+    } else {
+        0
+    }
+}
+
+fn read_u128_digits(s: &[char], mut i: usize) -> (u128, u32, usize) {
+    let mut num: u128 = 0;
+    let mut len: u32 = 0;
+    while i < s.len() && s[i].is_ascii_digit() {
+        num = num
+            .saturating_mul(10)
+            .saturating_add((s[i] as u8 - b'0') as u128);
+        len += 1;
+        i += 1;
+    }
+    (num, len, i)
 }
 
 pub fn stats(module_id: &str) -> Result<CatalogStats, String> {
@@ -200,7 +305,7 @@ pub fn search(
     let q = query.trim();
     let mut out = Vec::new();
     if q.is_empty() {
-        let sql = format!("{SEARCH_SELECT} ORDER BY m.title COLLATE NOCASE LIMIT ?2 OFFSET ?3");
+        let sql = format!("{SEARCH_SELECT} ORDER BY m.title COLLATE NATCMP LIMIT ?2 OFFSET ?3");
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![module_id, limit, offset], map_entry)
@@ -219,7 +324,7 @@ pub fn search(
             "{SEARCH_SELECT}
              WHERE lower(m.title) LIKE lower(?2) ESCAPE '\\'
                 OR lower(m.alttitles) LIKE lower(?2) ESCAPE '\\'
-             ORDER BY m.title COLLATE NOCASE
+             ORDER BY m.title COLLATE NATCMP
              LIMIT ?3 OFFSET ?4"
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -482,5 +587,56 @@ mod tests {
                 params![mid],
             );
         }
+    }
+
+    #[test]
+    fn nat_cmp_orders_like_fm2() {
+        assert_eq!(nat_cmp("vol 2", "vol 10"), Ordering::Less);
+        assert_eq!(nat_cmp("Vol 10", "vol 2"), Ordering::Greater);
+        assert_eq!(nat_cmp("banana", "Apple"), Ordering::Greater);
+        assert_eq!(nat_cmp("Apple", "banana"), Ordering::Less);
+        // Specials before letters (FMD2), including Unicode ¿ ¡ that sit after Z by codepoint.
+        assert_eq!(nat_cmp("!Zeta", "Alpha"), Ordering::Less);
+        assert_eq!(nat_cmp("\u{201C}Quoted\u{201D}", "Alpha"), Ordering::Less);
+        assert_eq!(nat_cmp("¿Que?", "Alpha"), Ordering::Less);
+        assert_eq!(nat_cmp("¡Hola!", "Alpha"), Ordering::Less);
+        assert_eq!(nat_cmp("!Zeta", "\u{201C}Quoted\u{201D}"), Ordering::Less);
+        assert_eq!(nat_cmp("!Alpha", "Alpha"), Ordering::Less);
+        assert_eq!(nat_cmp("¿Que?", "banana"), Ordering::Less);
+    }
+
+    #[test]
+    fn catalog_search_uses_natcmp_order() {
+        let mid = "__test_natcmp_order__";
+        let path = catalog_db_path(mid);
+        let _ = std::fs::remove_file(&path);
+        upsert_links(
+            mid,
+            &[
+                ("/z/".into(), "!Zeta".into()),
+                ("/q/".into(), "\u{201C}Quoted\u{201D}".into()),
+                ("/inv/".into(), "¿Que?".into()),
+                ("/a/".into(), "Alpha".into()),
+                ("/v2/".into(), "Vol 2".into()),
+                ("/v10/".into(), "Vol 10".into()),
+                ("/b/".into(), "banana".into()),
+            ],
+        )
+        .expect("upsert");
+        let hits = search(mid, "", 20, 0).expect("search");
+        let titles: Vec<_> = hits.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "!Zeta",
+                "\u{201C}Quoted\u{201D}",
+                "¿Que?",
+                "Alpha",
+                "banana",
+                "Vol 2",
+                "Vol 10",
+            ]
+        );
+        let _ = std::fs::remove_file(path);
     }
 }

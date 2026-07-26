@@ -1533,6 +1533,9 @@
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.cover-frame img.is-enhanced {
   filter: contrast(1.08) saturate(1.04) brightness(1.01) url(#cover-sharpen);
 }
 
