@@ -112,7 +112,8 @@
   color: var(--on-accent);
   width: 100%;
   text-align: left;
-  line-height: 1;
+  line-height: 1.3;
+  overflow: visible;
   transition: background-color 0.12s ease;
 }
 
@@ -126,6 +127,8 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.3;
+  padding-block: 1px;
 }
 
 .source-trigger .ico {
