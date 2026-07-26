@@ -1,12 +1,17 @@
 //! Minimal HTML XPath engine aligned with FMD2 TXQuery usage in Lua modules.
 //!
-//! Supported (HTML subset): `//` `/` `.//` `./` `*` `@attr` `/@attr` `/text()`,
-//! predicates `@a='…'` `contains(@a,'…')` `contains(.,'…')` `contains(tag,'…')`
-//! `contains(./tag,'…')` `starts-with(.,'…')` `ends-with(.,'…')` `text()='…'` `.='…'`
+//! Supported (HTML subset): `//` `/` `.//` `./` `*` `@attr` `/@attr`
+//! `/@*[name()=…]` `/@*[contains(name(),…)]` `/text()` `/text()[n|last()]`,
+//! predicates `@a='…'` `contains(@a,'…')` `contains(@*[name()=…],'…')`
+//! `contains(.,'…')` `contains(tag,'…')` `contains(./tag,'…')`
+//! `starts-with(.,'…')` `ends-with(.,'…')` `text()='…'` `.='…'`
 //! `tag='…'` `./tag='…'` `tag[pred]` nested, `not(…)`, `self::tag` `and`/`or`,
 //! positional `[n]` `[last()]` `[last()-n]`, `(path)[n|last()|last()-n]/rest`,
-//! `following-sibling::text()[n]`, union `|` and `,`, mid-path `/substring-after(.,…)`
-//! `/substring-before(.,…)` `/normalize-space(.)`.
+//! `following-sibling::text()[n]`, union `|` and `,`, map `!` (path or string fn RHS),
+//! mid-path `/substring-after|before(.,|@attr|text(),…)` (incl. nested),
+//! `/normalize-space(.)` `/replace` `/concat` `/resolve-uri` `/upper-case` `/lower-case`,
+//! top-level `upper-case`/`lower-case`/`substring`/`||` in sequences,
+//! `tokenize(arg, sep)[n|last()]`.
 //!
 //! JSON (`json(*)`, `parse-json`, `?*`) lives in `lua_host::json_xpath`, not here.
 
@@ -121,21 +126,7 @@ impl TxQuery {
     }
 
     pub fn xpath_string(&self, expr: &str) -> String {
-        let expr = expr.trim();
-        if let Some(s) = eval_string_join_html(&self.roots, expr) {
-            return s;
-        }
-        if let Some(s) = eval_mid_path_string(&self.roots, expr) {
-            return s;
-        }
-        if let Some(s) = eval_bang_string(&self.roots, expr) {
-            return s;
-        }
-        if let Some(s) = eval_following_sibling_text(&self.roots, expr) {
-            return s;
-        }
-        let (nodes, terminal) = eval_expr_term(&self.roots, expr);
-        string_of_nodes(&nodes, terminal)
+        eval_html_string(&self.roots, expr.trim())
     }
 
     pub fn xpath_string_all(&self, expr: &str) -> String {
@@ -147,22 +138,7 @@ impl TxQuery {
     }
 
     pub fn xpath_string_ctx(&self, expr: &str, ctx: &DomNode) -> String {
-        let roots = [ctx.clone()];
-        let expr = expr.trim();
-        if let Some(s) = eval_string_join_html(&roots, expr) {
-            return s;
-        }
-        if let Some(s) = eval_mid_path_string(&roots, expr) {
-            return s;
-        }
-        if let Some(s) = eval_bang_string(&roots, expr) {
-            return s;
-        }
-        if let Some(s) = eval_following_sibling_text(&roots, expr) {
-            return s;
-        }
-        let (nodes, terminal) = eval_expr_term(&roots, expr);
-        string_of_nodes(&nodes, terminal)
+        eval_html_string(&[ctx.clone()], expr.trim())
     }
 
     pub fn xpath_nodes_ctx(&self, expr: &str, ctx: &DomNode) -> Vec<DomNode> {
@@ -170,18 +146,7 @@ impl TxQuery {
     }
 
     pub fn xpath_string_all_values_on(&self, roots: &[DomNode], expr: &str) -> Vec<String> {
-        let expr = expr.trim();
-        if let Some(s) = eval_string_join_html(roots, expr) {
-            return if s.is_empty() { vec![] } else { vec![s] };
-        }
-        if let Some(s) = eval_mid_path_string(roots, expr) {
-            return if s.is_empty() { vec![] } else { vec![s] };
-        }
-        if let Some(s) = eval_bang_string(roots, expr) {
-            return if s.is_empty() { vec![] } else { vec![s] };
-        }
-        let (nodes, terminal) = eval_expr_term(roots, expr);
-        strings_of_nodes(&nodes, terminal)
+        eval_html_string_values(roots, expr.trim())
     }
 
     /// Collect (href, text) for each node matching `expr` (typically `//…/a`).
@@ -214,26 +179,7 @@ impl TxQuery {
 }
 
 fn string_of_nodes(nodes: &[DomNode], terminal: Terminal) -> String {
-    match terminal {
-        Terminal::Attr(name) => nodes
-            .first()
-            .and_then(|n| n.attr(&name).map(|s| s.to_string()))
-            .unwrap_or_default(),
-        // FMD2 XQuery `toString` on a nodeset concatenates all string-values (e.g. two
-        // `span.estado` → "#7558En desarrollo" so MangaInfoStatusIfPos still matches).
-        Terminal::Text => nodes
-            .iter()
-            .map(|n| n.direct_text())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(""),
-        Terminal::None => nodes
-            .iter()
-            .map(|n| n.all_text())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(""),
-    }
+    strings_of_nodes(nodes, terminal).join("")
 }
 
 fn strings_of_nodes(nodes: &[DomNode], terminal: Terminal) -> Vec<String> {
@@ -242,9 +188,25 @@ fn strings_of_nodes(nodes: &[DomNode], terminal: Terminal) -> Vec<String> {
             .iter()
             .filter_map(|n| n.attr(&name).map(|s| s.to_string()))
             .collect(),
+        Terminal::AttrAny(filter) => nodes
+            .iter()
+            .filter_map(|n| attr_any_value(n, &filter))
+            .collect(),
+        // FMD2 XQuery `toString` on a nodeset concatenates all string-values (e.g. two
+        // `span.estado` → "#7558En desarrollo" so MangaInfoStatusIfPos still matches).
         Terminal::Text => nodes
             .iter()
             .map(|n| n.direct_text())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Terminal::TextAt(pos) => nodes
+            .iter()
+            .filter_map(|n| {
+                let texts = direct_text_parts(n);
+                apply_position_strings(texts, Some(&pos))
+                    .into_iter()
+                    .next()
+            })
             .filter(|s| !s.is_empty())
             .collect(),
         Terminal::None => nodes
@@ -252,6 +214,70 @@ fn strings_of_nodes(nodes: &[DomNode], terminal: Terminal) -> Vec<String> {
             .map(|n| n.all_text())
             .filter(|s| !s.is_empty())
             .collect(),
+    }
+}
+
+fn direct_text_parts(node: &DomNode) -> Vec<String> {
+    match node {
+        DomNode::Text(t) => {
+            let s = collapse_ws(t);
+            if s.is_empty() {
+                Vec::new()
+            } else {
+                vec![s]
+            }
+        }
+        DomNode::Elem { children, .. } => children
+            .iter()
+            .filter_map(|c| match c {
+                DomNode::Text(t) => {
+                    let s = collapse_ws(t);
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                }
+                _ => None,
+            })
+            .collect(),
+    }
+}
+
+fn apply_position_strings(vals: Vec<String>, pos: Option<&PositionPred>) -> Vec<String> {
+    match pos {
+        None => vals,
+        Some(PositionPred::Index(n)) => vals.into_iter().nth(n - 1).into_iter().collect(),
+        Some(PositionPred::Last) => vals.into_iter().last().into_iter().collect(),
+        Some(PositionPred::LastMinus(k)) => {
+            if vals.len() > *k {
+                let idx = vals.len() - 1 - k;
+                vals.into_iter().nth(idx).into_iter().collect()
+            } else {
+                Vec::new()
+            }
+        }
+    }
+}
+
+fn attr_any_value(node: &DomNode, filter: &AttrNameFilter) -> Option<String> {
+    match node {
+        DomNode::Elem { attrs, .. } => attrs
+            .iter()
+            .find(|(k, _)| filter.matches(k))
+            .map(|(_, v)| v.clone()),
+        _ => None,
+    }
+}
+
+fn attr_any_values_matching(node: &DomNode, filter: &AttrNameFilter) -> Vec<String> {
+    match node {
+        DomNode::Elem { attrs, .. } => attrs
+            .iter()
+            .filter(|(k, _)| filter.matches(k))
+            .map(|(_, v)| v.clone())
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -320,82 +346,412 @@ fn eval_paren_positional_term(
     Some(eval_expr_term(&selected, rest))
 }
 
+/// Single string value (FMD2 `XPathString` / toString concat semantics).
+fn eval_html_string(roots: &[DomNode], expr: &str) -> String {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return String::new();
+    }
+    if let Some(vals) = eval_tokenize(roots, expr) {
+        return vals.into_iter().next().unwrap_or_default();
+    }
+    if let Some(s) = eval_string_join_html(roots, expr) {
+        return s;
+    }
+    if let Some(vals) = eval_paren_sequence_strings(roots, expr) {
+        return vals.join("");
+    }
+    // Bang map: XPathString takes the first non-empty mapping.
+    if let Some(vals) = eval_bang_all(roots, expr) {
+        return vals.into_iter().next().unwrap_or_default();
+    }
+    if let Some(s) = eval_mid_path_string(roots, expr) {
+        return s;
+    }
+    if let Some(s) = eval_top_level_string_fn(roots, expr) {
+        return s;
+    }
+    if let Some(s) = eval_following_sibling_text(roots, expr) {
+        return s;
+    }
+    let (nodes, terminal) = eval_expr_term(roots, expr);
+    string_of_nodes(&nodes, terminal)
+}
+
+/// All string values (FMD2 `XPathStringAll` sequence).
+fn eval_html_string_values(roots: &[DomNode], expr: &str) -> Vec<String> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return Vec::new();
+    }
+    if let Some(vals) = eval_tokenize(roots, expr) {
+        return vals.into_iter().filter(|s| !s.is_empty()).collect();
+    }
+    if let Some(s) = eval_string_join_html(roots, expr) {
+        return if s.is_empty() { vec![] } else { vec![s] };
+    }
+    if let Some(vals) = eval_paren_sequence_strings(roots, expr) {
+        return vals.into_iter().filter(|s| !s.is_empty()).collect();
+    }
+    if let Some(vals) = eval_bang_all(roots, expr) {
+        return vals.into_iter().filter(|s| !s.is_empty()).collect();
+    }
+    if let Some(s) = eval_mid_path_string(roots, expr) {
+        return if s.is_empty() { vec![] } else { vec![s] };
+    }
+    if let Some(s) = eval_top_level_string_fn(roots, expr) {
+        return if s.is_empty() { vec![] } else { vec![s] };
+    }
+    if let Some(s) = eval_following_sibling_text(roots, expr) {
+        return if s.is_empty() { vec![] } else { vec![s] };
+    }
+    // Top-level `|` / `,` path unions → per-node strings.
+    let (nodes, terminal) = eval_expr_term(roots, expr);
+    strings_of_nodes(&nodes, terminal)
+}
+
+/// `(a, b, c)` sequence where parts may be paths or string fns (OniSaga genres, MangaCrab).
+fn eval_paren_sequence_strings(roots: &[DomNode], expr: &str) -> Option<Vec<String>> {
+    let expr = expr.trim();
+    if !expr.starts_with('(') {
+        return None;
+    }
+    let rest = &expr[1..];
+    let end = find_closing_paren_str(rest)?;
+    if !rest[end + 1..].trim().is_empty() {
+        // `(path)[n]` or `(path)/rest` — not a bare sequence.
+        return None;
+    }
+    let inside = &rest[..end];
+    let parts = split_top_level_str(inside, ",");
+    if parts.len() < 2 {
+        return None;
+    }
+    let mut out = Vec::new();
+    for p in parts {
+        out.extend(eval_html_string_values(roots, p.trim()));
+    }
+    Some(out)
+}
+
 fn eval_mid_path_string(roots: &[DomNode], expr: &str) -> Option<String> {
-    static AFTER: OnceLock<Regex> = OnceLock::new();
-    static BEFORE: OnceLock<Regex> = OnceLock::new();
-    static NORM: OnceLock<Regex> = OnceLock::new();
-    static REPL: OnceLock<Regex> = OnceLock::new();
-    static RESURI: OnceLock<Regex> = OnceLock::new();
-    static CONCAT: OnceLock<Regex> = OnceLock::new();
+    let expr = expr.trim();
+    // path/fn(...) — find last top-level `/` before a known string function call.
+    let (path, call) = split_mid_path_call(expr)?;
+    let base_nodes = if path.is_empty() {
+        roots.to_vec()
+    } else {
+        eval_expr(roots, path)
+    };
+    // Apply fn relative to first matched node (FMD2 mid-path string).
+    let ctx = base_nodes.first()?;
+    eval_string_call_on_doc(std::slice::from_ref(ctx), roots, call)
+}
 
-    let after = AFTER.get_or_init(|| {
-        Regex::new(r#"^(.*)/substring-after\(\s*\.\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
-    });
-    let before = BEFORE.get_or_init(|| {
-        Regex::new(r#"^(.*)/substring-before\(\s*\.\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
-    });
-    let norm =
-        NORM.get_or_init(|| Regex::new(r#"^(.*)/normalize-space\(\s*\.\s*\)$"#).unwrap());
-    let repl = REPL.get_or_init(|| {
-        Regex::new(
-            r#"^(.*)/replace\(\s*\.\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*\)$"#,
-        )
-        .unwrap()
-    });
-    let resuri = RESURI.get_or_init(|| {
-        Regex::new(r#"^(.*)/resolve-uri\(\s*@([a-zA-Z0-9_\-:]+)\s*\)$"#).unwrap()
-    });
-    let concat_re = CONCAT.get_or_init(|| {
-        Regex::new(r#"^(.*)/concat\(\s*\.\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
-    });
+/// Split `path/substring-after(...)` → (`path`, `substring-after(...)`).
+fn split_mid_path_call(expr: &str) -> Option<(&str, &str)> {
+    const FNS: &[&str] = &[
+        "/substring-after(",
+        "/substring-before(",
+        "/normalize-space(",
+        "/replace(",
+        "/concat(",
+        "/resolve-uri(",
+        "/upper-case(",
+        "/lower-case(",
+        "/substring(",
+    ];
+    let bytes = expr.as_bytes();
+    let mut depth_br = 0i32;
+    let mut depth_par = 0i32;
+    let mut in_quote: Option<char> = None;
+    let mut i = 0usize;
+    let mut last: Option<usize> = None;
+    while i < bytes.len() {
+        let c = expr[i..].chars().next().unwrap();
+        let clen = c.len_utf8();
+        if let Some(q) = in_quote {
+            if c == q {
+                in_quote = None;
+            }
+            i += clen;
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                in_quote = Some(c);
+                i += clen;
+            }
+            '[' => {
+                depth_br += 1;
+                i += clen;
+            }
+            ']' => {
+                depth_br -= 1;
+                i += clen;
+            }
+            '(' => {
+                depth_par += 1;
+                i += clen;
+            }
+            ')' => {
+                depth_par -= 1;
+                i += clen;
+            }
+            '/' if depth_br == 0 && depth_par == 0 => {
+                let rest = &expr[i..];
+                if FNS.iter().any(|f| rest.starts_with(f)) {
+                    last = Some(i);
+                }
+                i += clen;
+            }
+            _ => i += clen,
+        }
+    }
+    let idx = last?;
+    let path = expr[..idx].trim();
+    let call = expr[idx + 1..].trim(); // drop leading '/'
+    if call.is_empty() {
+        return None;
+    }
+    Some((path, call))
+}
 
-    if let Some(c) = after.captures(expr) {
-        let path = c.get(1)?.as_str();
-        let (nodes, terminal) = eval_expr_term(roots, path);
-        let base = string_of_nodes(&nodes, terminal);
-        let needle = c.get(2)?.as_str();
-        return Some(substring_after(&base, needle));
+fn eval_top_level_string_fn(roots: &[DomNode], expr: &str) -> Option<String> {
+    let expr = expr.trim();
+    // `a || b` concat
+    let pipe_parts = split_top_level_str(expr, "||");
+    if pipe_parts.len() > 1 {
+        let mut out = String::new();
+        for p in pipe_parts {
+            out.push_str(&eval_html_string(roots, p.trim()));
+        }
+        return Some(out);
     }
-    if let Some(c) = before.captures(expr) {
-        let path = c.get(1)?.as_str();
-        let (nodes, terminal) = eval_expr_term(roots, path);
-        let base = string_of_nodes(&nodes, terminal);
-        let needle = c.get(2)?.as_str();
-        return Some(substring_before(&base, needle));
+    eval_string_call_on(roots, expr)
+}
+
+/// `tokenize(arg, sep)` or `tokenize(arg, sep)[last()|n|last()-n]`.
+fn eval_tokenize(roots: &[DomNode], expr: &str) -> Option<Vec<String>> {
+    let expr = expr.trim();
+    let rest = expr.strip_prefix("tokenize(")?;
+    let end = find_closing_paren_str(rest)?;
+    let args = &rest[..end];
+    let after = rest[end + 1..].trim();
+    let parts = split_top_level_str(args, ",");
+    if parts.len() < 2 {
+        return None;
     }
-    if let Some(c) = norm.captures(expr) {
-        let path = c.get(1)?.as_str();
-        let (nodes, terminal) = eval_expr_term(roots, path);
-        let base = string_of_nodes(&nodes, terminal);
+    let base = eval_string_arg(roots, parts[0].trim())?;
+    let sep = unquote_str(parts[1].trim()).unwrap_or_else(|| parts[1].trim().to_string());
+    let tokens: Vec<String> = if sep.is_empty() {
+        base.chars().map(|c| c.to_string()).collect()
+    } else {
+        base.split(&sep)
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_string())
+            .collect()
+    };
+    if after.is_empty() {
+        return Some(tokens);
+    }
+    // Optional positional predicate on the token sequence.
+    let inner = after.strip_prefix('[')?.strip_suffix(']')?;
+    let pos = parse_position(inner)?;
+    Some(apply_position_strings(tokens, Some(&pos)))
+}
+
+fn eval_string_call_on(roots: &[DomNode], expr: &str) -> Option<String> {
+    eval_string_call_on_doc(roots, roots, expr)
+}
+
+fn eval_string_call_on_doc(ctx: &[DomNode], doc: &[DomNode], expr: &str) -> Option<String> {
+    let expr = expr.trim();
+    if let Some(args) = strip_fn_call(expr, "substring-after") {
+        let parts = split_top_level_str(args, ",");
+        if parts.len() < 2 {
+            return None;
+        }
+        let base = eval_string_arg(ctx, parts[0].trim())?;
+        let needle = unquote_str(parts[1].trim()).unwrap_or_else(|| parts[1].trim().to_string());
+        return Some(substring_after(&base, &needle));
+    }
+    if let Some(args) = strip_fn_call(expr, "substring-before") {
+        let parts = split_top_level_str(args, ",");
+        if parts.len() < 2 {
+            return None;
+        }
+        let base = eval_string_arg(ctx, parts[0].trim())?;
+        let needle = unquote_str(parts[1].trim()).unwrap_or_else(|| parts[1].trim().to_string());
+        return Some(substring_before(&base, &needle));
+    }
+    if let Some(args) = strip_fn_call(expr, "normalize-space") {
+        let base = eval_string_arg(ctx, args.trim())?;
         return Some(collapse_ws(&base));
     }
-    if let Some(c) = repl.captures(expr) {
-        let path = c.get(1)?.as_str();
-        let (nodes, terminal) = eval_expr_term(roots, path);
-        let base = string_of_nodes(&nodes, terminal);
-        let pat = c.get(2)?.as_str();
-        let repl_s = c.get(3)?.as_str();
-        return Some(base.replace(pat, repl_s));
+    if let Some(args) = strip_fn_call(expr, "replace") {
+        let parts = split_top_level_str(args, ",");
+        if parts.len() < 3 {
+            return None;
+        }
+        let base = eval_string_arg(ctx, parts[0].trim())?;
+        let pat = unquote_str(parts[1].trim()).unwrap_or_else(|| parts[1].trim().to_string());
+        let repl = unquote_str(parts[2].trim()).unwrap_or_else(|| parts[2].trim().to_string());
+        return Some(apply_replace(&base, &pat, &repl));
     }
-    if let Some(c) = concat_re.captures(expr) {
-        let path = c.get(1)?.as_str();
-        let (nodes, terminal) = eval_expr_term(roots, path);
-        let base = string_of_nodes(&nodes, terminal);
-        let suffix = c.get(2)?.as_str();
-        return Some(format!("{base}{suffix}"));
+    if let Some(args) = strip_fn_call(expr, "concat") {
+        let parts = split_top_level_str(args, ",");
+        let mut out = String::new();
+        for p in parts {
+            if let Some(lit) = unquote_str(p.trim()) {
+                out.push_str(&lit);
+            } else {
+                out.push_str(&eval_html_string(ctx, p.trim()));
+            }
+        }
+        return Some(out);
     }
-    if let Some(c) = resuri.captures(expr) {
-        let path = c.get(1)?.as_str();
-        let attr = c.get(2)?.as_str();
-        let nodes = eval_expr(roots, path);
-        let href = nodes
-            .first()
-            .and_then(|n| n.attr(attr).map(|s| s.to_string()))
-            .unwrap_or_default();
-        let base = document_base_href(roots);
+    if let Some(args) = strip_fn_call(expr, "upper-case") {
+        let base = eval_string_arg(ctx, args.trim())?;
+        return Some(base.to_uppercase());
+    }
+    if let Some(args) = strip_fn_call(expr, "lower-case") {
+        let base = eval_string_arg(ctx, args.trim())?;
+        return Some(base.to_lowercase());
+    }
+    if let Some(args) = strip_fn_call(expr, "substring") {
+        return Some(eval_substring_html(ctx, args));
+    }
+    if let Some(args) = strip_fn_call(expr, "resolve-uri") {
+        let arg = args.trim();
+        let href = if let Some(name) = arg.strip_prefix('@') {
+            ctx.first()
+                .and_then(|n| n.attr(name).map(|s| s.to_string()))
+                .unwrap_or_default()
+        } else {
+            eval_string_arg(ctx, arg).unwrap_or_default()
+        };
+        let base = document_base_href(doc);
         return Some(resolve_uri(&href, &base));
     }
     None
+}
+
+/// First arg of string fn: `.` | `@attr` | `text()` | nested call | path.
+fn eval_string_arg(roots: &[DomNode], arg: &str) -> Option<String> {
+    let arg = arg.trim();
+    if arg == "." {
+        let (nodes, term) = (roots.to_vec(), Terminal::None);
+        return Some(string_of_nodes(&nodes, term));
+    }
+    if arg == "text()" {
+        return Some(
+            roots
+                .first()
+                .map(|n| n.direct_text())
+                .unwrap_or_default(),
+        );
+    }
+    if let Some(name) = arg.strip_prefix('@') {
+        if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':') {
+            return Some(
+                roots
+                    .first()
+                    .and_then(|n| n.attr(name).map(|s| s.to_string()))
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    // Nested string call: substring-after(., "x")
+    if let Some(s) = eval_string_call_on(roots, arg) {
+        return Some(s);
+    }
+    if let Some(s) = eval_mid_path_string(roots, arg) {
+        return Some(s);
+    }
+    Some(eval_html_string(roots, arg))
+}
+
+fn eval_substring_html(roots: &[DomNode], args: &str) -> String {
+    let parts = split_top_level_str(args, ",");
+    if parts.is_empty() {
+        return String::new();
+    }
+    let base = eval_string_arg(roots, parts[0].trim()).unwrap_or_default();
+    let start: usize = parts
+        .get(1)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(1);
+    let len: Option<usize> = parts.get(2).and_then(|s| s.trim().parse().ok());
+    let start_idx = start.saturating_sub(1);
+    let chars: Vec<char> = base.chars().collect();
+    if start_idx >= chars.len() {
+        return String::new();
+    }
+    match len {
+        Some(n) => chars[start_idx..].iter().take(n).collect(),
+        None => chars[start_idx..].iter().collect(),
+    }
+}
+
+fn strip_fn_call<'a>(expr: &'a str, name: &str) -> Option<&'a str> {
+    let expr = expr.trim();
+    let prefix = format!("{name}(");
+    let rest = expr.strip_prefix(&prefix)?;
+    let end = find_closing_paren_str(rest)?;
+    if !rest[end + 1..].trim().is_empty() {
+        return None;
+    }
+    Some(&rest[..end])
+}
+
+fn apply_replace(base: &str, pat: &str, repl: &str) -> String {
+    // XPath 2.0 replace is regex; keep literal for simple file-extension style patterns.
+    let looks_regex =
+        pat.contains('|') || pat.contains('[') || pat.contains('(') || pat.contains('\\');
+    if looks_regex {
+        if let Ok(re) = Regex::new(pat) {
+            return re.replace_all(base, repl).into_owned();
+        }
+    }
+    base.replace(pat, repl)
+}
+
+fn eval_bang_all(roots: &[DomNode], expr: &str) -> Option<Vec<String>> {
+    if !expr.contains('!') || expr.contains("!=") {
+        return None;
+    }
+    let parts = split_top_level_str(expr, "!");
+    if parts.len() != 2 {
+        return None;
+    }
+    let lhs = parts[0].trim();
+    let rhs = parts[1].trim();
+    if lhs.is_empty() || rhs.is_empty() {
+        return None;
+    }
+    let nodes = eval_expr(roots, lhs);
+    let mut out = Vec::new();
+    for n in &nodes {
+        let s = eval_bang_rhs(std::slice::from_ref(n), rhs);
+        if !s.is_empty() {
+            out.push(s);
+        }
+    }
+    Some(out)
+}
+
+fn eval_bang_rhs(ctx: &[DomNode], rhs: &str) -> String {
+    let rhs = rhs.trim();
+    if let Some(s) = eval_top_level_string_fn(ctx, rhs) {
+        return s;
+    }
+    if let Some(s) = eval_mid_path_string(ctx, rhs) {
+        return s;
+    }
+    let (ns, term) = eval_expr_term(ctx, rhs);
+    string_of_nodes(&ns, term)
 }
 
 fn eval_string_join_html(roots: &[DomNode], expr: &str) -> Option<String> {
@@ -421,37 +777,8 @@ fn eval_string_join_html(roots: &[DomNode], expr: &str) -> Option<String> {
         parts[0].to_string()
     };
     let seq = seq.trim();
-    // Evaluate union / paths → all string values (keep outer parens for `(…)[n]|…`).
-    let (nodes, terminal) = eval_expr_term(roots, seq);
-    let vals = strings_of_nodes(&nodes, terminal);
+    let vals = eval_html_string_values(roots, seq);
     Some(vals.join(&sep))
-}
-
-fn eval_bang_string(roots: &[DomNode], expr: &str) -> Option<String> {
-    if !expr.contains('!') || expr.contains("!=") {
-        return None;
-    }
-    // LHS!RHS — map operator (subset): for each LHS node, eval RHS relative, take first string.
-    let parts = split_top_level_str(expr, "!");
-    if parts.len() != 2 {
-        return None;
-    }
-    let lhs = parts[0].trim();
-    let rhs = parts[1].trim();
-    if lhs.is_empty() || rhs.is_empty() {
-        return None;
-    }
-    let nodes = eval_expr(roots, lhs);
-    for n in &nodes {
-        let s = {
-            let (ns, term) = eval_expr_term(std::slice::from_ref(n), rhs);
-            string_of_nodes(&ns, term)
-        };
-        if !s.is_empty() {
-            return Some(s);
-        }
-    }
-    Some(String::new())
 }
 
 fn document_base_href(roots: &[DomNode]) -> String {
@@ -494,23 +821,40 @@ fn resolve_uri(href: &str, base: &str) -> String {
 fn find_closing_paren_str(s: &str) -> Option<usize> {
     let mut depth = 0i32;
     let mut in_quote: Option<char> = None;
-    for (i, c) in s.char_indices() {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = s[i..].chars().next().unwrap();
+        let clen = c.len_utf8();
         if let Some(q) = in_quote {
             if c == q {
+                // XPath escaped quote: "" inside "…" or '' inside '…'
+                if i + clen < bytes.len() && s[i + clen..].starts_with(q) {
+                    i += clen * 2;
+                    continue;
+                }
                 in_quote = None;
             }
+            i += clen;
             continue;
         }
         match c {
-            '\'' | '"' => in_quote = Some(c),
-            '(' => depth += 1,
+            '\'' | '"' => {
+                in_quote = Some(c);
+                i += clen;
+            }
+            '(' => {
+                depth += 1;
+                i += clen;
+            }
             ')' => {
                 if depth == 0 {
                     return Some(i);
                 }
                 depth -= 1;
+                i += clen;
             }
-            _ => {}
+            _ => i += clen,
         }
     }
     None
@@ -520,8 +864,11 @@ fn unquote_str(s: &str) -> Option<String> {
     let s = s.trim();
     if s.len() >= 2 {
         let b = s.as_bytes();
-        if (b[0] == b'"' && b[s.len() - 1] == b'"') || (b[0] == b'\'' && b[s.len() - 1] == b'\'') {
-            return Some(s[1..s.len() - 1].to_string());
+        if b[0] == b'"' && b[s.len() - 1] == b'"' {
+            return Some(s[1..s.len() - 1].replace("\"\"", "\""));
+        }
+        if b[0] == b'\'' && b[s.len() - 1] == b'\'' {
+            return Some(s[1..s.len() - 1].replace("''", "'"));
         }
     }
     None
@@ -853,6 +1200,111 @@ mod tests {
         let s = q.xpath_string(r#"//div[@class="item"]!span[@class="t"]"#);
         assert_eq!(s, "Title");
     }
+
+    #[test]
+    fn bang_substring_after() {
+        let html = r#"<span>Capitulos: 12</span><span>Capitulos: 3</span>"#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(r#"//span[contains(., "Capitulos")] ! substring-after(., ":")"#);
+        assert_eq!(s.trim(), "12");
+        let all = q.xpath_string_all_values(
+            r#"//span[contains(., "Capitulos")] ! substring-after(., ":")"#,
+        );
+        assert_eq!(
+            all.iter().map(|s| s.trim()).collect::<Vec<_>>(),
+            vec!["12", "3"]
+        );
+    }
+
+    #[test]
+    fn bang_nested_substring() {
+        let html = r#"<script>var x={"nonce":"abc123","y":1}</script>"#;
+        let q = TxQuery::parse(html);
+        // MangaCrab-style nested extract (simplified quotes).
+        let s = q.xpath_string(
+            r#"//script ! substring-before(substring-after(., "nonce"":"""), """,")"#,
+        );
+        assert_eq!(s, "abc123");
+    }
+
+    #[test]
+    fn bang_replace_onisaga_style() {
+        let html = r#"<p class="alts">One | Two · Three</p>"#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(r#"//p ! replace(., " [|]| ·", ",")"#);
+        assert!(s.contains("One"), "got {s:?}");
+        assert!(s.contains("Two"), "got {s:?}");
+        assert!(s.contains("Three"), "got {s:?}");
+        assert!(!s.contains('|'), "got {s:?}");
+    }
+
+    #[test]
+    fn attr_star_name_filter() {
+        let html = r#"<div class="post-filter-wrap" snapshot='{"memo":{"name":"post-filter"}}'>x</div>"#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(
+            r#"//div[contains(@*[name()="snapshot"], "post-filter")]/@*[name()="snapshot"]"#,
+        );
+        assert!(s.contains("post-filter"), "got {s:?}");
+    }
+
+    #[test]
+    fn attr_star_name_contains() {
+        let html = r#"<img src="/img/loading-image.gif" data-src="https://cdn/a.jpg"/>"#;
+        let q = TxQuery::parse(html);
+        let vals = q.xpath_string_all_values(
+            r#"//img[@src="/img/loading-image.gif"]/@*[contains(name(), "data-")]"#,
+        );
+        assert_eq!(vals, vec!["https://cdn/a.jpg".to_string()]);
+    }
+
+    #[test]
+    fn text_positional() {
+        let html = r#"<a href="/x">first<!--c-->second</a>"#;
+        let q = TxQuery::parse(html);
+        assert_eq!(q.xpath_string(r#"//a/text()[1]"#), "first");
+        assert_eq!(q.xpath_string(r#"//a/text()[last()]"#), "second");
+    }
+
+    #[test]
+    fn title_case_union_sequence() {
+        let html = r#"
+        <a href="/genre/action">Action</a>
+        <div class="bg-violet-400/20">Hot</div>
+        <div class="uppercase tracking-widest">MANHWA</div>
+        "#;
+        let q = TxQuery::parse(html);
+        let vals = q.xpath_string_all_values(
+            r#"(//a[contains(@href, "/genre/")], //div[contains(@class, "bg-violet-400/20")], upper-case(substring(//div[contains(@class, "uppercase tracking-widest")], 1, 1)) || lower-case(substring(//div[contains(@class, "uppercase tracking-widest")], 2)))"#,
+        );
+        assert!(vals.iter().any(|v| v == "Action"), "got {vals:?}");
+        assert!(vals.iter().any(|v| v == "Hot"), "got {vals:?}");
+        assert!(vals.iter().any(|v| v == "Manhwa"), "got {vals:?}");
+    }
+
+    #[test]
+    fn substring_after_attr_mid_path() {
+        let html = r#"<a href="/manga/read-123.html">x</a>"#;
+        let q = TxQuery::parse(html);
+        let s = q.xpath_string(r#"//a/substring-after(@href, "read-")"#);
+        assert_eq!(s, "123.html");
+    }
+
+    #[test]
+    fn tokenize_last_onisaga_style() {
+        let html = r#"<div><p data-flux-text="">EN · ES · JP</p></div>"#;
+        let q = TxQuery::parse(html);
+        let nodes = q.xpath_nodes("//div");
+        let lang = q.xpath_string_ctx(
+            r#"tokenize(normalize-space(.//p[@data-flux-text]), " · ")[last()]"#,
+            &nodes[0],
+        );
+        assert_eq!(lang, "JP");
+        let all = q.xpath_string_all_values(
+            r#"tokenize(normalize-space(//p[@data-flux-text]), " · ")"#,
+        );
+        assert_eq!(all, vec!["EN".to_string(), "ES".to_string(), "JP".to_string()]);
+    }
 }
 
 fn to_dom(node: ego_tree::NodeRef<'_, Node>) -> Option<DomNode> {
@@ -888,16 +1340,88 @@ fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+#[derive(Clone, Debug)]
+enum AttrNameFilter {
+    /// `name()="snapshot"`
+    Eq(String),
+    /// `contains(name(),"data-")`
+    NameContains(String),
+}
+
+impl AttrNameFilter {
+    fn matches(&self, name: &str) -> bool {
+        match self {
+            AttrNameFilter::Eq(n) => name.eq_ignore_ascii_case(n),
+            AttrNameFilter::NameContains(sub) => name.to_ascii_lowercase().contains(&sub.to_ascii_lowercase()),
+        }
+    }
+}
+
 enum Terminal {
     None,
     Attr(String),
+    AttrAny(AttrNameFilter),
     Text,
+    TextAt(PositionPred),
+}
+
+fn parse_attr_name_filter(inner: &str) -> Option<AttrNameFilter> {
+    let inner = inner.trim();
+    static EQ: OnceLock<Regex> = OnceLock::new();
+    static CONT: OnceLock<Regex> = OnceLock::new();
+    let eq = EQ.get_or_init(|| {
+        Regex::new(r#"^name\(\)\s*=\s*['"]([^'"]*)['"]$"#).unwrap()
+    });
+    if let Some(c) = eq.captures(inner) {
+        return Some(AttrNameFilter::Eq(c[1].to_string()));
+    }
+    let cont = CONT.get_or_init(|| {
+        Regex::new(r#"^contains\(\s*name\(\)\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
+    });
+    if let Some(c) = cont.captures(inner) {
+        return Some(AttrNameFilter::NameContains(c[1].to_string()));
+    }
+    None
 }
 
 fn split_terminal(expr: &str) -> (String, Terminal) {
     let expr = expr.trim();
+    // bare `text()[n|last()]` (relative)
+    static TEXT_POS_BARE: OnceLock<Regex> = OnceLock::new();
+    let text_pos_bare = TEXT_POS_BARE.get_or_init(|| {
+        Regex::new(r#"^text\(\)\[(last\(\)-\d+|last\(\)|\d+)\]$"#).unwrap()
+    });
+    if let Some(c) = text_pos_bare.captures(expr) {
+        if let Some(pos) = parse_position(c.get(1).unwrap().as_str()) {
+            return (String::new(), Terminal::TextAt(pos));
+        }
+    }
+    if expr == "text()" {
+        return (String::new(), Terminal::Text);
+    }
+    // `/text()[n|last()|last()-n]`
+    static TEXT_POS: OnceLock<Regex> = OnceLock::new();
+    let text_pos = TEXT_POS.get_or_init(|| {
+        Regex::new(r#"^(.*)/text\(\)\[(last\(\)-\d+|last\(\)|\d+)\]$"#).unwrap()
+    });
+    if let Some(c) = text_pos.captures(expr) {
+        if let Some(pos) = parse_position(c.get(2).unwrap().as_str()) {
+            return (c.get(1).unwrap().as_str().to_string(), Terminal::TextAt(pos));
+        }
+    }
     if let Some(rest) = expr.strip_suffix("/text()") {
         return (rest.to_string(), Terminal::Text);
+    }
+    // `/@*[name()="…"]` / `/@*[contains(name(),"…")]`
+    static ATTR_ANY: OnceLock<Regex> = OnceLock::new();
+    let attr_any = ATTR_ANY.get_or_init(|| Regex::new(r#"^(.*)/@\*\[(.+)\]$"#).unwrap());
+    if let Some(c) = attr_any.captures(expr) {
+        if let Some(filter) = parse_attr_name_filter(c.get(2).unwrap().as_str()) {
+            return (
+                c.get(1).unwrap().as_str().to_string(),
+                Terminal::AttrAny(filter),
+            );
+        }
     }
     if let Some(idx) = expr.rfind("/@") {
         let after = &expr[idx + 2..];
@@ -919,6 +1443,8 @@ fn split_terminal(expr: &str) -> (String, Terminal) {
 enum Pred {
     AttrEq(String, String),
     AttrContains(String, String),
+    /// `contains(@*[name()="snapshot"], "post-filter")`
+    AttrAnyContains(AttrNameFilter, String),
     TextContains(String),
     TextStartsWith(String),
     TextEndsWith(String),
@@ -1118,24 +1644,49 @@ fn split_top_level<'a>(s: &'a str, sep: char) -> Vec<&'a str> {
     let mut depth_br = 0i32;
     let mut depth_par = 0i32;
     let mut in_quote: Option<char> = None;
-    for (i, c) in s.char_indices() {
+    let mut i = 0usize;
+    let bytes = s.as_bytes();
+    while i < bytes.len() {
+        let c = s[i..].chars().next().unwrap();
+        let clen = c.len_utf8();
         if let Some(q) = in_quote {
             if c == q {
+                if i + clen < bytes.len() && s[i + clen..].starts_with(q) {
+                    i += clen * 2;
+                    continue;
+                }
                 in_quote = None;
             }
+            i += clen;
             continue;
         }
         match c {
-            '\'' | '"' => in_quote = Some(c),
-            '[' => depth_br += 1,
-            ']' => depth_br -= 1,
-            '(' => depth_par += 1,
-            ')' => depth_par -= 1,
+            '\'' | '"' => {
+                in_quote = Some(c);
+                i += clen;
+            }
+            '[' => {
+                depth_br += 1;
+                i += clen;
+            }
+            ']' => {
+                depth_br -= 1;
+                i += clen;
+            }
+            '(' => {
+                depth_par += 1;
+                i += clen;
+            }
+            ')' => {
+                depth_par -= 1;
+                i += clen;
+            }
             ch if ch == sep && depth_br == 0 && depth_par == 0 => {
                 out.push(&s[start..i]);
-                start = i + c.len_utf8();
+                i += clen;
+                start = i;
             }
-            _ => {}
+            _ => i += clen,
         }
     }
     out.push(&s[start..]);
@@ -1189,6 +1740,10 @@ fn split_top_level_str<'a>(s: &'a str, sep: &str) -> Vec<&'a str> {
         let clen = c.len_utf8();
         if let Some(q) = in_quote {
             if c == q {
+                if i + clen < bytes.len() && s[i + clen..].starts_with(q) {
+                    i += clen * 2;
+                    continue;
+                }
                 in_quote = None;
             }
             i += clen;
@@ -1261,6 +1816,16 @@ fn parse_pred_atom(inner: &str) -> Option<Pred> {
     });
     if let Some(c) = ac.captures(inner) {
         return Some(Pred::AttrContains(c[1].to_string(), c[2].to_string()));
+    }
+    // contains(@*[name()="snapshot"], "…") / contains(@*[contains(name(),"data-")], "…")
+    static AC_ANY: OnceLock<Regex> = OnceLock::new();
+    let ac_any = AC_ANY.get_or_init(|| {
+        Regex::new(r#"^contains\(\s*@\*\[(.+)\]\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
+    });
+    if let Some(c) = ac_any.captures(inner) {
+        if let Some(filter) = parse_attr_name_filter(&c[1]) {
+            return Some(Pred::AttrAnyContains(filter, c[2].to_string()));
+        }
     }
     let te = TE.get_or_init(|| Regex::new(r#"^text\(\)\s*=\s*['"]([^'"]*)['"]$"#).unwrap());
     if let Some(c) = te.captures(inner) {
@@ -1350,6 +1915,9 @@ fn match_pred(node: &DomNode, pred: &Pred) -> bool {
     match pred {
         Pred::AttrEq(k, v) => node.attr(k) == Some(v.as_str()),
         Pred::AttrContains(k, v) => node.attr(k).is_some_and(|a| a.contains(v)),
+        Pred::AttrAnyContains(filter, v) => attr_any_values_matching(node, filter)
+            .iter()
+            .any(|a| a.contains(v.as_str())),
         Pred::TextContains(v) => node.all_text().contains(v.as_str()),
         Pred::TextStartsWith(v) => node.all_text().starts_with(v.as_str()),
         Pred::TextEndsWith(v) => node.all_text().ends_with(v.as_str()),

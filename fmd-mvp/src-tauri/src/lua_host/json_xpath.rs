@@ -350,6 +350,14 @@ pub fn json_navigate(root: &Json, path: &str) -> Json {
     }
 }
 
+#[derive(Debug, Clone)]
+enum JsonPred {
+    /// `namespace="1"` / `name="translated"`
+    FieldEq(String, String),
+    Not(Box<JsonPred>),
+    And(Vec<JsonPred>),
+}
+
 #[derive(Debug)]
 enum Seg {
     Key(String),
@@ -357,45 +365,61 @@ enum Seg {
     ArrayKey(String),
     /// Leading `()` / `?*` — iterate current value if array
     IterateSelf,
+    /// `[namespace="1"]` — filter current sequence (usually after `tags()`)
+    Filter(JsonPred),
 }
 
 fn split_json_segments(path: &str) -> Vec<Seg> {
     let mut out = Vec::new();
     let mut rest = path.trim();
     while !rest.is_empty() {
-        rest = rest.trim_start_matches('.').trim_start_matches('/').trim_start_matches('?');
+        rest = rest
+            .trim_start_matches('.')
+            .trim_start_matches('/')
+            .trim_start_matches('?');
         if rest.is_empty() {
             break;
         }
-        // Leading iterate-self
+        // Leading iterate-self, optional filter
         if rest.starts_with("()") {
             out.push(Seg::IterateSelf);
             rest = &rest[2..];
+            rest = push_filters(&mut out, rest);
             continue;
         }
         if rest.starts_with("*") && (rest.len() == 1 || rest.as_bytes()[1] != b'*') {
-            // bare * after ? already stripped — treat as iterate self when alone
             out.push(Seg::IterateSelf);
             rest = &rest[1..];
+            rest = push_filters(&mut out, rest);
             continue;
         }
 
-        // name()* or name?*
+        // Standalone `[pred]` (if somehow left after a key)
+        if rest.starts_with('[') {
+            rest = push_filters(&mut out, rest);
+            if rest.starts_with('[') {
+                // unparsed bracket — skip one char to avoid infinite loop
+                rest = &rest[1..];
+            }
+            continue;
+        }
+
+        // name()* or name?* or name()[pred]
         if let Some((name, after)) = take_ident(rest) {
             let after = after.trim_start();
             if after.starts_with("()*") {
                 out.push(Seg::ArrayKey(name.to_string()));
-                rest = &after[3..];
+                rest = push_filters(&mut out, &after[3..]);
                 continue;
             }
             if after.starts_with("()") {
                 out.push(Seg::ArrayKey(name.to_string()));
-                rest = &after[2..];
+                rest = push_filters(&mut out, &after[2..]);
                 continue;
             }
             if after.starts_with("?*") {
                 out.push(Seg::ArrayKey(name.to_string()));
-                rest = &after[2..];
+                rest = push_filters(&mut out, &after[2..]);
                 continue;
             }
             out.push(Seg::Key(name.to_string()));
@@ -403,8 +427,10 @@ fn split_json_segments(path: &str) -> Vec<Seg> {
             continue;
         }
 
-        // Fallback: take until . or ?
-        let end = rest.find(['.', '?']).unwrap_or(rest.len());
+        // Fallback: take until . or ? or [
+        let end = rest
+            .find(['.', '?', '['])
+            .unwrap_or(rest.len());
         let piece = &rest[..end];
         rest = &rest[end..];
         if piece.is_empty() {
@@ -412,15 +438,176 @@ fn split_json_segments(path: &str) -> Vec<Seg> {
         }
         if let Some(n) = piece.strip_suffix("()*") {
             out.push(Seg::ArrayKey(n.to_string()));
+            rest = push_filters(&mut out, rest);
         } else if let Some(n) = piece.strip_suffix("()") {
             out.push(Seg::ArrayKey(n.to_string()));
+            rest = push_filters(&mut out, rest);
         } else if let Some(n) = piece.strip_suffix("?*") {
             out.push(Seg::ArrayKey(n.to_string()));
+            rest = push_filters(&mut out, rest);
         } else {
             out.push(Seg::Key(piece.to_string()));
         }
     }
     out
+}
+
+/// Consume zero or more `[pred]` suffixes; push Filter segs; return remaining.
+fn push_filters<'a>(out: &mut Vec<Seg>, rest: &'a str) -> &'a str {
+    let mut rest = rest;
+    while let Some((pred, after)) = take_bracket_pred(rest) {
+        out.push(Seg::Filter(pred));
+        rest = after;
+    }
+    rest
+}
+
+fn take_bracket_pred(s: &str) -> Option<(JsonPred, &str)> {
+    let s = s.trim_start();
+    if !s.starts_with('[') {
+        return None;
+    }
+    let end = find_closing_bracket_json(s)?;
+    let inner = &s[1..end];
+    let pred = parse_json_pred(inner)?;
+    Some((pred, s[end + 1..].trim_start()))
+}
+
+fn find_closing_bracket_json(s: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_quote: Option<u8> = None;
+    for (i, b) in s.bytes().enumerate() {
+        if let Some(q) = in_quote {
+            if b == q {
+                in_quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => in_quote = Some(b),
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_json_pred(inner: &str) -> Option<JsonPred> {
+    let inner = inner.trim();
+    if inner.is_empty() {
+        return None;
+    }
+    // Split top-level ` and `
+    let and_parts = split_json_bool(inner, " and ");
+    if and_parts.len() > 1 {
+        let preds: Vec<JsonPred> = and_parts.into_iter().filter_map(parse_json_pred).collect();
+        return match preds.len() {
+            0 => None,
+            1 => preds.into_iter().next(),
+            _ => Some(JsonPred::And(preds)),
+        };
+    }
+    if let Some(rest) = inner.strip_prefix("not(") {
+        if rest.ends_with(')') {
+            let nested = &rest[..rest.len() - 1];
+            let p = parse_json_pred(nested)?;
+            return Some(JsonPred::Not(Box::new(p)));
+        }
+    }
+    // field="value" / field='value'
+    let eq = inner.find('=')?;
+    let key = inner[..eq].trim();
+    let val_raw = inner[eq + 1..].trim();
+    if key.is_empty() {
+        return None;
+    }
+    let val = unquote_json_lit(val_raw).unwrap_or_else(|| val_raw.to_string());
+    Some(JsonPred::FieldEq(key.to_string(), val))
+}
+
+fn split_json_bool<'a>(s: &'a str, op: &str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut depth_par = 0i32;
+    let mut in_quote: Option<char> = None;
+    let bytes = s.as_bytes();
+    let op_b = op.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = s[i..].chars().next().unwrap();
+        let clen = c.len_utf8();
+        if let Some(q) = in_quote {
+            if c == q {
+                in_quote = None;
+            }
+            i += clen;
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                in_quote = Some(c);
+                i += clen;
+            }
+            '(' => {
+                depth_par += 1;
+                i += clen;
+            }
+            ')' => {
+                depth_par -= 1;
+                i += clen;
+            }
+            _ if depth_par == 0
+                && i + op_b.len() <= bytes.len()
+                && &bytes[i..i + op_b.len()] == op_b =>
+            {
+                out.push(&s[start..i]);
+                i += op_b.len();
+                start = i;
+            }
+            _ => i += clen,
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
+fn unquote_json_lit(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.len() >= 2 {
+        let b = s.as_bytes();
+        if (b[0] == b'"' && b[s.len() - 1] == b'"') || (b[0] == b'\'' && b[s.len() - 1] == b'\'')
+        {
+            return Some(s[1..s.len() - 1].to_string());
+        }
+    }
+    None
+}
+
+fn match_json_pred(v: &Json, pred: &JsonPred) -> bool {
+    match pred {
+        JsonPred::FieldEq(k, expect) => field_eq_str(v, k, expect),
+        JsonPred::Not(inner) => !match_json_pred(v, inner),
+        JsonPred::And(parts) => parts.iter().all(|p| match_json_pred(v, p)),
+    }
+}
+
+fn field_eq_str(v: &Json, key: &str, expect: &str) -> bool {
+    let Some(val) = v.get(key) else {
+        return false;
+    };
+    match val {
+        Json::String(s) => s == expect,
+        Json::Number(n) => n.to_string() == expect,
+        Json::Bool(b) => b.to_string() == expect,
+        Json::Null => expect.is_empty() || expect == "null",
+        _ => false,
+    }
 }
 
 fn take_ident(s: &str) -> Option<(&str, &str)> {
@@ -441,6 +628,13 @@ fn step_json(cur: &Json, seg: &Seg) -> Vec<Json> {
             Json::Array(arr) => arr.clone(),
             other => vec![other.clone()],
         },
+        Seg::Filter(pred) => {
+            if match_json_pred(cur, pred) {
+                vec![cur.clone()]
+            } else {
+                Vec::new()
+            }
+        }
         Seg::Key(k) => match cur {
             Json::Object(map) => map.get(k).cloned().into_iter().collect(),
             Json::Array(arr) => {
@@ -461,7 +655,6 @@ fn step_json(cur: &Json, seg: &Seg) -> Vec<Json> {
             let node = match cur {
                 Json::Object(map) => map.get(k),
                 Json::Array(arr) => {
-                    // Flatten: each object's key
                     return arr
                         .iter()
                         .flat_map(|v| step_json(v, &Seg::ArrayKey(k.clone())))
@@ -604,5 +797,53 @@ mod tests {
         let root = json!({"post": {"title": "Hi", "seriesType": "manga"}});
         let post = json_navigate(&root, "post");
         assert_eq!(json_string_at(&post, "title"), "Hi");
+    }
+
+    #[test]
+    fn schale_tags_namespace_predicates() {
+        let root = json!({
+            "tags": [
+                {"namespace": 1, "name": "Alice"},
+                {"namespace": 2, "name": "CircleX"},
+                {"namespace": 3, "name": "ParodyY"},
+                {"namespace": 7, "name": "Action"},
+                {"namespace": 11, "name": "translated"},
+                {"namespace": 11, "name": "english"}
+            ]
+        });
+        assert_eq!(
+            json_collect_strings(&root, r#"tags()[namespace="1"].name"#),
+            vec!["Alice".to_string()]
+        );
+        assert_eq!(
+            json_collect_strings(&root, r#"tags()[namespace="2"].name"#),
+            vec!["CircleX".to_string()]
+        );
+        let genres = json_collect_strings(
+            &root,
+            r#"tags()[not(namespace="1") and not(namespace="2") and not(namespace="3") and not(namespace="4") and not(namespace="5") and not(namespace="7") and not(namespace="11")].name"#,
+        );
+        // namespace 7 is excluded in Schale Genres filter — empty here; add a free tag:
+        assert!(genres.is_empty());
+        let root2 = json!({
+            "tags": [
+                {"namespace": 1, "name": "Alice"},
+                {"namespace": 8, "name": "Fantasy"}
+            ]
+        });
+        assert_eq!(
+            json_collect_strings(
+                &root2,
+                r#"tags()[not(namespace="1") and not(namespace="2") and not(namespace="3") and not(namespace="4") and not(namespace="5") and not(namespace="7") and not(namespace="11")].name"#
+            ),
+            vec!["Fantasy".to_string()]
+        );
+        assert_eq!(
+            json_collect_strings(
+                &root,
+                r#"tags()[namespace="11" and not(name="translated")].name"#
+            ),
+            vec!["english".to_string()]
+        );
     }
 }
