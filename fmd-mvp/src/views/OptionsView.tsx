@@ -8,6 +8,7 @@ import {
   type RefObject,
 } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { appConfirm } from "../components/AppConfirm";
 import { Icon } from "../components/Icon";
 import { ICO } from "../icons";
 import { DEFAULT_USER_AGENT, RENAME_SAMPLE, PACK_EXT, SK } from "../constants";
@@ -784,34 +785,37 @@ export function OptionsView() {
 
   function runCacheClear() {
     if (cacheClearFlash === "working") return;
-    if (
-      !window.confirm(
-        "¿Limpiar caché de info y portadas?\n\nSe borrarán también las infos fallidas en caché (“desaparecidos”). El catálogo del sitio, favoritos y la cola no se tocan.",
-      )
-    ) {
-      return;
-    }
-    setCacheClearFlash("working");
-    void api
-      .cacheClear()
-      .then((msg) => {
-        setCacheClearFlash("done");
-        log(msg, "ok");
-        if (cacheClearTimerRef.current != null) window.clearTimeout(cacheClearTimerRef.current);
-        cacheClearTimerRef.current = window.setTimeout(() => {
-          setCacheClearFlash("idle");
-          cacheClearTimerRef.current = undefined;
-        }, 2500);
-      })
-      .catch((e) => {
-        setCacheClearFlash("error");
-        log(String(e), "err");
-        if (cacheClearTimerRef.current != null) window.clearTimeout(cacheClearTimerRef.current);
-        cacheClearTimerRef.current = window.setTimeout(() => {
-          setCacheClearFlash("idle");
-          cacheClearTimerRef.current = undefined;
-        }, 3000);
+    void (async () => {
+      const ok = await appConfirm({
+        title: "Limpiar caché",
+        message:
+          "¿Limpiar caché de info y portadas?\n\nSe borrarán también las infos fallidas en caché (“desaparecidos”). El catálogo del sitio, favoritos y la cola no se tocan.",
+        okLabel: "Limpiar",
+        cancelLabel: "Cancelar",
       });
+      if (!ok) return;
+      setCacheClearFlash("working");
+      void api
+        .cacheClear()
+        .then((msg) => {
+          setCacheClearFlash("done");
+          log(msg, "ok");
+          if (cacheClearTimerRef.current != null) window.clearTimeout(cacheClearTimerRef.current);
+          cacheClearTimerRef.current = window.setTimeout(() => {
+            setCacheClearFlash("idle");
+            cacheClearTimerRef.current = undefined;
+          }, 2500);
+        })
+        .catch((e) => {
+          setCacheClearFlash("error");
+          log(String(e), "err");
+          if (cacheClearTimerRef.current != null) window.clearTimeout(cacheClearTimerRef.current);
+          cacheClearTimerRef.current = window.setTimeout(() => {
+            setCacheClearFlash("idle");
+            cacheClearTimerRef.current = undefined;
+          }, 3000);
+        });
+    })();
   }
 
   const [siteOn, setSiteOn] = useState<Record<string, true>>({});

@@ -77,6 +77,8 @@ pub struct ModuleState {
     pub max_task_limit: i64,
     pub max_thread_per_task_limit: i64,
     pub max_connection_limit: i64,
+    /// FMD2 SortedList — directory ordered by newest; stop scrape at first known title.
+    pub sorted_list: bool,
     /// Module options from AddOption* / GetOption (FMD2).
     pub options: HashMap<String, ModuleOptionValue>,
     /// FMD2 TStringsStorage — string key/value bag (session-scoped).
@@ -258,6 +260,7 @@ impl UserData for ModuleHandle {
                         "MaxTaskLimit" => Value::Integer(s.max_task_limit),
                         "MaxThreadPerTaskLimit" => Value::Integer(s.max_thread_per_task_limit),
                         "MaxConnectionLimit" => Value::Integer(s.max_connection_limit),
+                        "SortedList" => Value::Boolean(s.sorted_list),
                         _ => Value::Nil,
                     };
                     Ok(val)
@@ -309,6 +312,13 @@ impl UserData for ModuleHandle {
                     "MaxTaskLimit" => s.max_task_limit = value_to_i64(value),
                     "MaxThreadPerTaskLimit" => s.max_thread_per_task_limit = value_to_i64(value),
                     "MaxConnectionLimit" => s.max_connection_limit = value_to_i64(value),
+                    "SortedList" => {
+                        s.sorted_list = match value {
+                            Value::Boolean(b) => b,
+                            Value::Integer(i) => i != 0,
+                            _ => false,
+                        }
+                    }
                     _ => {}
                 }
                 Ok(())
@@ -2085,11 +2095,26 @@ pub fn download_chapter(
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateListProgress {
     pub module_id: String,
+    /// scrape | getinfo | done
+    #[serde(default)]
+    pub phase: String,
     pub directory_index: i64,
     pub page: i64,
     pub page_total: i64,
     pub batch_rows: usize,
     pub inserted_total: usize,
+    #[serde(default)]
+    pub pending_total: usize,
+    #[serde(default)]
+    pub getinfo_index: usize,
+    #[serde(default)]
+    pub getinfo_total: usize,
+    /// Short status for the progress bar.
+    #[serde(default)]
+    pub message: String,
+    /// If non-empty, frontend appends to the app log.
+    #[serde(default)]
+    pub log: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2098,6 +2123,10 @@ pub struct UpdateListStats {
     pub inserted: usize,
     pub total_in_db: i64,
     pub pages_fetched: usize,
+    #[serde(default)]
+    pub skipped: usize,
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 fn read_pagenumber(globals: &mlua::Table) -> i64 {
@@ -2108,7 +2137,15 @@ fn read_pagenumber(globals: &mlua::Table) -> i64 {
     }
 }
 
-/// Scrape directory via GetNameAndLink and write `data/<module_id>.db`.
+fn update_no_info_setting() -> bool {
+    crate::settings_keys::parse_bool(
+        crate::settings_keys::get_string_opt(crate::settings_keys::CATALOG_UPDATE_NO_INFO)
+            .as_deref(),
+        false,
+    )
+}
+
+/// Scrape directory via GetNameAndLink; GetInfo new titles then insert (FMD2 staging).
 pub fn update_list(
     module_id: &str,
     mut on_progress: Option<&mut dyn FnMut(UpdateListProgress)>,
@@ -2135,6 +2172,7 @@ pub fn update_list(
         ..
     } = prepare_lua_for_meta(&path, Some(&meta.id))?;
 
+    let root_url = module.inner.lock().root_url.clone();
     let globals = lua.globals();
     let links_ud: mlua::AnyUserData = globals.get("LINKS").map_err(|e| e.to_string())?;
     let names_ud: mlua::AnyUserData = globals.get("NAMES").map_err(|e| e.to_string())?;
@@ -2158,10 +2196,63 @@ pub fn update_list(
         total_dirs = 1;
     }
 
-    let mut inserted_total = 0usize;
+    let no_info = update_no_info_setting();
+    let sorted_list = module.inner.lock().sorted_list;
+    let threads = 1usize; // GetInfo sequential for now (FMD2 may use N)
+    let mut emit = |p: UpdateListProgress| {
+        if let Some(cb) = on_progress.as_mut() {
+            cb(p);
+        }
+    };
+
+    // Message body matches FMD2 loader suffix: `[T:N] [a/b] | …`
+    // UI prefixes `Actualizando lista [i/n] Name | `.
+    let status = |cur: i64, lim: i64, phase_note: &str| -> String {
+        format!(
+            "[T:{threads}] [{cur}/{lim}]{}",
+            if phase_note.is_empty() {
+                String::new()
+            } else {
+                format!(" | {phase_note}")
+            }
+        )
+    };
+
+    {
+        let msg = status(
+            0,
+            0,
+            &format!(
+                "Preparando · SortedList={} · no_info={}",
+                sorted_list, no_info
+            ),
+        );
+        emit(UpdateListProgress {
+            module_id: meta.id.clone(),
+            phase: "scrape".into(),
+            directory_index: 0,
+            page: 0,
+            page_total: 0,
+            batch_rows: 0,
+            inserted_total: 0,
+            pending_total: 0,
+            getinfo_index: 0,
+            getinfo_total: 0,
+            message: msg.clone(),
+            log: msg,
+        });
+    }
+
+    let mut existing = crate::catalog::masterlist_link_set(&meta.id)?;
+    let mut pending: Vec<(String, String)> = Vec::new();
+    let mut pending_seen = std::collections::HashSet::new();
     let mut pages_fetched = 0usize;
+    let mut finish_search = false;
 
     for dir_idx in 0..total_dirs {
+        if finish_search {
+            break;
+        }
         crate::catalog_job::check_cancel()?;
         {
             let mut s = module.inner.lock();
@@ -2180,14 +2271,35 @@ pub fn update_list(
                 ));
             }
             page_total = read_pagenumber(&globals).max(1);
+            let msg = status(
+                1,
+                1,
+                &format!("Obteniendo directorio · {} páginas", page_total),
+            );
+            emit(UpdateListProgress {
+                module_id: meta.id.clone(),
+                phase: "scrape".into(),
+                directory_index: dir_idx,
+                page: 0,
+                page_total,
+                batch_rows: 0,
+                inserted_total: 0,
+                pending_total: 0,
+                getinfo_index: 0,
+                getinfo_total: 0,
+                message: msg.clone(),
+                log: msg,
+            });
         }
 
         let name_fn: mlua::Function = globals.get(on_name.as_str()).map_err(|e| e.to_string())?;
 
         let mut page: i64 = 0;
         while page < page_total {
+            if finish_search {
+                break;
+            }
             crate::catalog_job::check_cancel()?;
-            // FMD passes 0-based page index; FoOlSlide uses (URL + 1)
             globals
                 .set("URL", page)
                 .map_err(|e| e.to_string())?;
@@ -2201,7 +2313,6 @@ pub fn update_list(
                 ));
             }
 
-            // LeerCapitulo may raise CurrentDirectoryPageNumber mid-flight
             if let Ok(ud) = globals.get::<mlua::AnyUserData>("UPDATELIST") {
                 if let Ok(ul) = ud.borrow::<UpdateListHandle>() {
                     let n = *ul.current_directory_page_number.lock();
@@ -2213,38 +2324,270 @@ pub fn update_list(
 
             let link_vals = links.values();
             let name_vals = names.values();
-            let mut pairs = Vec::new();
+            let mut batch_new = 0usize;
+            let batch = link_vals.len();
             for (i, link) in link_vals.iter().enumerate() {
+                let norm = crate::catalog::normalize_manga_link(link);
+                if norm.is_empty() {
+                    continue;
+                }
+                if crate::catalog::link_set_contains(&existing, &norm)
+                    || crate::catalog::link_set_contains(&pending_seen, &norm)
+                {
+                    // FMD2 SortedList: stop after hitting a title already in DB.
+                    if sorted_list {
+                        finish_search = true;
+                    }
+                    continue;
+                }
                 let title = name_vals
                     .get(i)
                     .cloned()
                     .unwrap_or_else(|| link.clone());
-                pairs.push((link.clone(), title));
+                crate::catalog::link_set_insert(&mut pending_seen, &norm);
+                pending.push((norm, title));
+                batch_new += 1;
             }
-            let batch = pairs.len();
-            let n = crate::catalog::upsert_links(&meta.id, &pairs)?;
-            inserted_total += n;
             pages_fetched += 1;
 
-            if let Some(cb) = on_progress.as_mut() {
-                cb(UpdateListProgress {
-                    module_id: meta.id.clone(),
-                    directory_index: dir_idx,
-                    page,
-                    page_total,
-                    batch_rows: batch,
-                    inserted_total,
-                });
-            }
+            let note = format!(
+                "Buscando títulos nuevos · dir {}/{} · +{} (acum {})",
+                dir_idx + 1,
+                total_dirs,
+                batch_new,
+                pending.len()
+            );
+            let msg = status(page + 1, page_total, &note);
+            emit(UpdateListProgress {
+                module_id: meta.id.clone(),
+                phase: "scrape".into(),
+                directory_index: dir_idx,
+                page,
+                page_total,
+                batch_rows: batch,
+                inserted_total: 0,
+                pending_total: pending.len(),
+                getinfo_index: 0,
+                getinfo_total: 0,
+                message: msg.clone(),
+                log: msg,
+            });
             page += 1;
         }
     }
 
+    let mut inserted_total = 0usize;
+    let mut skipped = 0usize;
+    let mut cancelled = false;
+
+    if no_info {
+        let msg = status(
+            pending.len() as i64,
+            pending.len() as i64,
+            &format!("Insertando {} sin GetInfo", pending.len()),
+        );
+        emit(UpdateListProgress {
+            module_id: meta.id.clone(),
+            phase: "getinfo".into(),
+            directory_index: 0,
+            page: 0,
+            page_total: 0,
+            batch_rows: 0,
+            inserted_total: 0,
+            pending_total: pending.len(),
+            getinfo_index: 0,
+            getinfo_total: pending.len(),
+            message: msg.clone(),
+            log: msg,
+        });
+        inserted_total = crate::catalog::upsert_links(&meta.id, &pending)?;
+    } else {
+        let total = pending.len();
+        {
+            let msg = status(
+                0,
+                total as i64,
+                &format!("Obteniendo info · {total} nuevos"),
+            );
+            emit(UpdateListProgress {
+                module_id: meta.id.clone(),
+                phase: "getinfo".into(),
+                directory_index: 0,
+                page: 0,
+                page_total: 0,
+                batch_rows: 0,
+                inserted_total: 0,
+                pending_total: total,
+                getinfo_index: 0,
+                getinfo_total: total,
+                message: msg.clone(),
+                log: msg,
+            });
+        }
+
+        for (i, (link, list_title)) in pending.iter().enumerate() {
+            if let Err(e) = crate::catalog_job::check_cancel() {
+                cancelled = true;
+                let _ = e;
+                break;
+            }
+            let abs = absolute_url(&root_url, link);
+            let short = if list_title.chars().count() > 40 {
+                format!(
+                    "{}…",
+                    list_title.chars().take(40).collect::<String>()
+                )
+            } else {
+                list_title.clone()
+            };
+
+            match get_info(&abs, Some(&meta.id)) {
+                Ok(info) => {
+                    let title = info.title.trim();
+                    if crate::catalog::title_is_na(title) {
+                        skipped += 1;
+                        let msg = status(
+                            (i + 1) as i64,
+                            total as i64,
+                            &format!("Obteniendo info · omitido \"{short}\""),
+                        );
+                        emit(UpdateListProgress {
+                            module_id: meta.id.clone(),
+                            phase: "getinfo".into(),
+                            directory_index: 0,
+                            page: 0,
+                            page_total: 0,
+                            batch_rows: 0,
+                            inserted_total,
+                            pending_total: total,
+                            getinfo_index: i + 1,
+                            getinfo_total: total,
+                            message: msg.clone(),
+                            log: msg,
+                        });
+                        continue;
+                    }
+                    let use_title = if title.is_empty() {
+                        list_title.as_str()
+                    } else {
+                        title
+                    };
+                    let numchapter = info.chapters.len() as i64;
+                    let inserted = crate::catalog::insert_full(
+                        &meta.id,
+                        link,
+                        use_title,
+                        &info.alt_titles,
+                        &info.authors,
+                        &info.artists,
+                        &info.genres,
+                        &info.status,
+                        &info.summary,
+                        numchapter,
+                    )?;
+                    if inserted {
+                        inserted_total += 1;
+                        crate::catalog::link_set_insert(
+                            &mut existing,
+                            &crate::catalog::normalize_manga_link(link),
+                        );
+                        let _ = crate::catalog::manga_cache_upsert(
+                            &meta.id,
+                            link,
+                            &crate::catalog::MangaCacheUpsert {
+                                title: use_title.to_string(),
+                                alt_titles: info.alt_titles.clone(),
+                                authors: info.authors.clone(),
+                                artists: info.artists.clone(),
+                                genres: info.genres.clone(),
+                                status: info.status.clone(),
+                                summary: info.summary.clone(),
+                                numchapter,
+                                cover: info.cover.clone(),
+                            },
+                        );
+                    }
+                    let msg = status(
+                        (i + 1) as i64,
+                        total as i64,
+                        &format!("Obteniendo info · \"{short}\" · caps={numchapter}"),
+                    );
+                    emit(UpdateListProgress {
+                        module_id: meta.id.clone(),
+                        phase: "getinfo".into(),
+                        directory_index: 0,
+                        page: 0,
+                        page_total: 0,
+                        batch_rows: 0,
+                        inserted_total,
+                        pending_total: total,
+                        getinfo_index: i + 1,
+                        getinfo_total: total,
+                        message: msg.clone(),
+                        log: msg,
+                    });
+                }
+                Err(err) => {
+                    skipped += 1;
+                    let msg = status(
+                        (i + 1) as i64,
+                        total as i64,
+                        &format!("Obteniendo info · falló \"{short}\": {err}"),
+                    );
+                    emit(UpdateListProgress {
+                        module_id: meta.id.clone(),
+                        phase: "getinfo".into(),
+                        directory_index: 0,
+                        page: 0,
+                        page_total: 0,
+                        batch_rows: 0,
+                        inserted_total,
+                        pending_total: total,
+                        getinfo_index: i + 1,
+                        getinfo_total: total,
+                        message: msg.clone(),
+                        log: msg,
+                    });
+                }
+            }
+        }
+    }
+
     let st = crate::catalog::stats(&meta.id)?;
+    let summary = format!(
+        "Actualizando lista {} | fin · páginas={} · nuevos={} · insertados={} · omitidos={} · cancelado={}",
+        meta.name,
+        pages_fetched,
+        pending.len(),
+        inserted_total,
+        skipped,
+        cancelled
+    );
+    emit(UpdateListProgress {
+        module_id: meta.id.clone(),
+        phase: "done".into(),
+        directory_index: 0,
+        page: 0,
+        page_total: 0,
+        batch_rows: 0,
+        inserted_total,
+        pending_total: pending.len(),
+        getinfo_index: inserted_total,
+        getinfo_total: pending.len(),
+        message: format!("[T:{threads}] · listo · +{inserted_total}"),
+        log: summary,
+    });
+
+    if cancelled {
+        return Err(crate::catalog_job::CATALOG_CANCELLED.into());
+    }
+
     Ok(UpdateListStats {
         module_id: meta.id,
         inserted: inserted_total,
         total_in_db: st.count,
         pages_fetched,
+        skipped,
+        cancelled: false,
     })
 }

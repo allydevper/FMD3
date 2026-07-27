@@ -160,6 +160,8 @@ export type UpdateListStats = {
   inserted: number;
   total_in_db: number;
   pages_fetched: number;
+  skipped?: number;
+  cancelled?: boolean;
 };
 
 export type NavId = "downloads" | "info" | "favorites" | "about" | "options";
@@ -171,6 +173,12 @@ export type CatalogProgressEvent = {
   inserted_total: number;
   batch_rows: number;
   directory_index?: number;
+  phase?: string;
+  pending_total?: number;
+  getinfo_index?: number;
+  getinfo_total?: number;
+  message?: string;
+  log?: string;
 };
 
 export type CatalogFetchProgressEvent = {
@@ -195,7 +203,11 @@ export type CatalogJobState = {
   pageTotal: number;
   bytesDone: number;
   bytesTotal: number;
+  /** Progress body e.g. `[T:1] [195/421] | Buscando…` (FMD2-style). */
   message: string;
+  getinfoIndex?: number;
+  getinfoTotal?: number;
+  phase?: string;
   cancelling: boolean;
 };
 

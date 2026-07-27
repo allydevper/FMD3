@@ -428,6 +428,22 @@
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+.catalog-row.is-new .catalog-row-title::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  vertical-align: 0.05em;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.catalog-row.is-new .catalog-row-meta {
+  color: var(--text);
+  font-weight: 700;
+}
+
 .catalog-row:hover {
   background: linear-gradient(
     90deg,
@@ -1977,6 +1993,15 @@
   background: rgba(0, 0, 0, 0.45);
 }
 
+.info-modal-backdrop-confirm {
+  z-index: 100;
+  background: rgba(4, 29, 51, 0.48);
+}
+
+.app.dark .info-modal-backdrop-confirm {
+  background: rgba(0, 0, 0, 0.62);
+}
+
 .info-modal {
   position: relative;
   width: min(480px, calc(100% - 48px));
@@ -2018,6 +2043,19 @@
 
 .info-modal-catalog {
   width: min(480px, calc(100% - 48px));
+}
+
+.info-modal-confirm {
+  width: min(420px, calc(100% - 48px));
+  background: var(--field-bg);
+}
+
+.info-modal-confirm-msg {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
 }
 
 .info-modal-foot {

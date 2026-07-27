@@ -451,7 +451,7 @@ fn map_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
     })
 }
 
-/// Insert title+link rows (FMD UpdateList style). Returns inserted count (ignored duplicates).
+/// Insert title+link rows (FMD UpdateList “no info” style). Returns inserted count.
 /// New rows get `jdn = today` (FMD2); existing rows keep their jdn via INSERT OR IGNORE.
 pub fn upsert_links(module_id: &str, pairs: &[(String, String)]) -> Result<usize, String> {
     let conn = open_catalog(module_id)?;
@@ -478,6 +478,71 @@ pub fn upsert_links(module_id: &str, pairs: &[(String, String)]) -> Result<usize
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(inserted)
+}
+
+/// All normalized links currently in masterlist (for Update List staging).
+pub fn masterlist_link_set(module_id: &str) -> Result<std::collections::HashSet<String>, String> {
+    let path = catalog_db_path(module_id);
+    let mut out = std::collections::HashSet::new();
+    if !path.exists() {
+        return Ok(out);
+    }
+    let conn = open_catalog(module_id)?;
+    let mut stmt = conn
+        .prepare("SELECT link FROM masterlist")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let link = row.map_err(|e| e.to_string())?;
+        let n = normalize_manga_link(&link);
+        if !n.is_empty() {
+            link_set_insert(&mut out, &n);
+        }
+    }
+    Ok(out)
+}
+
+/// Full masterlist row insert (GetInfo path). Returns true if a new row was inserted.
+pub fn insert_full(
+    module_id: &str,
+    link: &str,
+    title: &str,
+    alt_titles: &str,
+    authors: &str,
+    artists: &str,
+    genres: &str,
+    status: &str,
+    summary: &str,
+    numchapter: i64,
+) -> Result<bool, String> {
+    let link = normalize_manga_link(link);
+    if link.is_empty() {
+        return Ok(false);
+    }
+    let conn = open_catalog(module_id)?;
+    let jdn = today_jdn();
+    let n = conn
+        .execute(
+            r#"INSERT OR IGNORE INTO masterlist(
+                 link, title, alttitles, authors, artists, genres, status, summary, numchapter, jdn
+               ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
+            params![
+                link,
+                title,
+                alt_titles,
+                authors,
+                artists,
+                genres,
+                status,
+                summary,
+                numchapter,
+                jdn
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
 }
 
 pub fn manga_cache_get(module_id: &str, link: &str) -> Result<Option<MangaCacheRow>, String> {
@@ -516,9 +581,13 @@ pub fn manga_cache_get(module_id: &str, link: &str) -> Result<Option<MangaCacheR
     Ok(row)
 }
 
-fn is_cache_fail_title(title: &str) -> bool {
+pub fn title_is_na(title: &str) -> bool {
     let t = title.trim();
     t.is_empty() || t.eq_ignore_ascii_case("N/A")
+}
+
+fn is_cache_fail_title(title: &str) -> bool {
+    title_is_na(title)
 }
 
 pub fn manga_cache_upsert(
@@ -616,69 +685,121 @@ pub fn clear(module_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Import an existing FMD2-compatible `.db` into our catalog path for `module_id`.
+/// Import an existing FMD2-compatible `.db`, **replacing** the local catalog file (FMD2 DBUpdater).
 pub fn import_file(module_id: &str, src: &Path) -> Result<CatalogStats, String> {
     if !src.exists() {
         return Err(format!("No existe: {}", src.display()));
     }
-    let dest = catalog_db_path(module_id);
-    std::fs::create_dir_all(data_dir()).map_err(|e| e.to_string())?;
 
-    // Prefer merge via ATTACH so we don't wipe if source lacks expected table.
+    // Validate source has masterlist before wiping local.
     {
-        let _ = open_catalog(module_id)?;
-    }
-    let conn = Connection::open(&dest).map_err(|e| e.to_string())?;
-    ensure_schema(&conn)?;
-
-    let src_s = src.to_string_lossy().replace('\'', "''");
-    conn.execute(
-        &format!("ATTACH DATABASE '{src_s}' AS srcdb"),
-        [],
-    )
-    .map_err(|e| format!("ATTACH falló: {e}"))?;
-
-    let has_table: bool = conn
-        .query_row(
-            "SELECT 1 FROM srcdb.sqlite_master WHERE type='table' AND name='masterlist' LIMIT 1",
-            [],
-            |_| Ok(true),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .unwrap_or(false);
-
-    if !has_table {
-        let _ = conn.execute("DETACH DATABASE srcdb", []);
-        return Err("El archivo no tiene tabla masterlist (¿es un .db de FMD2?)".into());
+        let probe = Connection::open(src).map_err(|e| e.to_string())?;
+        let has_table: bool = probe
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='masterlist' LIMIT 1",
+                [],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(false);
+        if !has_table {
+            return Err("El archivo no tiene tabla masterlist (¿es un .db de FMD2?)".into());
+        }
     }
 
-    conn.execute(
-        r#"INSERT OR IGNORE INTO masterlist(
-             link, title, alttitles, authors, artists, genres, status, summary, numchapter, jdn
-           )
-           SELECT link, title, alttitles, authors, artists, genres, status, summary, numchapter, jdn
-           FROM srcdb.masterlist"#,
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    let _ = conn.execute("DETACH DATABASE srcdb", []);
-    drop(conn);
+    std::fs::create_dir_all(data_dir()).map_err(|e| e.to_string())?;
+    let dest = catalog_db_path(module_id);
+    let dest_s = dest.to_string_lossy().to_string();
+    let _ = std::fs::remove_file(&dest);
+    let _ = std::fs::remove_file(format!("{dest_s}-wal"));
+    let _ = std::fs::remove_file(format!("{dest_s}-shm"));
+    std::fs::copy(src, &dest).map_err(|e| format!("No se pudo reemplazar el catálogo: {e}"))?;
+    // Ensure WAL / indexes our code expects.
+    let _ = open_catalog(module_id)?;
     stats(module_id)
 }
 
-/// Normalize manga URL/path like FMD2 strip-host for catalog keys.
+/// Normalize manga URL/path like FMD2 `RemoveHostFromURL` / `SplitURL`.
+/// Result is a path starting with `/` (plus optional `?query`).
 pub fn normalize_manga_link(url: &str) -> String {
     let url = url.trim();
-    if let Ok(u) = url::Url::parse(url) {
+    if url.is_empty() {
+        return String::new();
+    }
+    let raw = if let Ok(u) = url::Url::parse(url) {
         let path = u.path().to_string();
         let query = u.query().map(|q| format!("?{q}")).unwrap_or_default();
         if path.is_empty() {
-            return "/".into();
+            format!("/{query}")
+        } else {
+            format!("{path}{query}")
         }
-        return format!("{path}{query}");
+    } else if let Some(rest) = url.strip_prefix("//") {
+        // protocol-relative
+        if let Ok(u) = url::Url::parse(&format!("https://{rest}")) {
+            let path = u.path().to_string();
+            let query = u.query().map(|q| format!("?{q}")).unwrap_or_default();
+            if path.is_empty() {
+                format!("/{query}")
+            } else {
+                format!("{path}{query}")
+            }
+        } else {
+            url.to_string()
+        }
+    } else {
+        url.to_string()
+    };
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "?" {
+        return String::new();
     }
-    url.to_string()
+    if raw.starts_with('/') {
+        raw.to_string()
+    } else {
+        format!("/{raw}")
+    }
+}
+
+/// FMD2 compares exact strings; sites sometimes differ only by a trailing `/`.
+pub fn link_lookup_keys(norm: &str) -> Vec<String> {
+    if norm.is_empty() {
+        return Vec::new();
+    }
+    let mut keys = vec![norm.to_string()];
+    if let Some((path, query)) = norm.split_once('?') {
+        let alt_path = if path.len() > 1 && path.ends_with('/') {
+            path.trim_end_matches('/').to_string()
+        } else if path.is_empty() {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        };
+        let alt = if query.is_empty() {
+            alt_path
+        } else {
+            format!("{alt_path}?{query}")
+        };
+        if alt != norm {
+            keys.push(alt);
+        }
+    } else if norm.len() > 1 && norm.ends_with('/') {
+        keys.push(norm.trim_end_matches('/').to_string());
+    } else {
+        keys.push(format!("{norm}/"));
+    }
+    keys
+}
+
+pub fn link_set_contains(set: &std::collections::HashSet<String>, norm: &str) -> bool {
+    link_lookup_keys(norm).into_iter().any(|k| set.contains(&k))
+}
+
+pub fn link_set_insert(set: &mut std::collections::HashSet<String>, norm: &str) {
+    for k in link_lookup_keys(norm) {
+        set.insert(k);
+    }
 }
 
 #[cfg(test)]
@@ -928,5 +1049,19 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn normalize_manga_link_matches_fmd2_strip_host() {
+        assert_eq!(
+            normalize_manga_link("https://manga-oni.com/manga/foo/"),
+            "/manga/foo/"
+        );
+        assert_eq!(normalize_manga_link("/manga/foo/"), "/manga/foo/");
+        assert_eq!(normalize_manga_link("manga/foo/"), "/manga/foo/");
+        let mut set = std::collections::HashSet::new();
+        link_set_insert(&mut set, "/manga/foo/");
+        assert!(link_set_contains(&set, "/manga/foo"));
+        assert!(link_set_contains(&set, "/manga/foo/"));
     }
 }

@@ -1,3 +1,4 @@
+import { appConfirm } from "../components/AppConfirm";
 import { SK } from "../constants";
 import * as api from "../api/tauri";
 
@@ -20,10 +21,11 @@ export async function confirmIfEnabled(
   key: string,
   message: string,
   defEnabled = true,
+  title = "Confirmar",
 ): Promise<boolean> {
   const on = await settingBool(key, defEnabled);
   if (!on) return true;
-  return window.confirm(message);
+  return appConfirm({ title, message, okLabel: "Continuar", cancelLabel: "Cancelar" });
 }
 
 export { SK };

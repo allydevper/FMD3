@@ -9,6 +9,7 @@ import {
 } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { appConfirm } from "../../components/AppConfirm";
 import { Icon } from "../../components/Icon";
 import { VirtualList } from "../../components/VirtualList";
 import type { IconName } from "../../icons";
@@ -1751,7 +1752,8 @@ export function InfoView() {
           const meta = e.info_failed ? "N/A" : String(e.numchapter ?? 0);
           const isNew = isCatalogEntryNew(e.jdn, filterNewDays);
           const site = e.module_name?.trim();
-          const tip = site ? `${title} · ${site} · ${meta}` : `${title} · ${meta}`;
+          const titleLabel = isNew ? `${title} (nuevo)` : title;
+          const tip = site ? `${titleLabel} · ${site} · ${meta}` : `${titleLabel} · ${meta}`;
           return (
             <button
               type="button"
@@ -1864,7 +1866,10 @@ export function InfoView() {
               id="source-tools"
               title="Herramientas de catálogo"
               disabled={!!catalogJob}
-              onClick={() => setSourceToolsOpen(true)}
+              onClick={() => {
+                setSourceToolsAction("update_one");
+                setSourceToolsOpen(true);
+              }}
             >
               <Icon name="sliders" className="ico" />
             </button>
@@ -2543,20 +2548,39 @@ export function InfoView() {
                 className="info-modal-btn info-modal-btn-primary"
                 disabled={!!catalogJob}
                 onClick={() => {
-                  const scope =
-                    sourceToolsAction === "update_all" || sourceToolsAction === "fetch_all"
-                      ? "all"
-                      : "one";
-                  const mode =
-                    sourceToolsAction === "fetch_one" || sourceToolsAction === "fetch_all"
-                      ? "fetch"
-                      : "update";
-                  setSourceToolsOpen(false);
-                  void startCatalogJob({
-                    mode,
-                    scope,
-                    moduleId: selectedModuleId,
-                  });
+                  void (async () => {
+                    const scope =
+                      sourceToolsAction === "update_all" || sourceToolsAction === "fetch_all"
+                        ? "all"
+                        : "one";
+                    const mode =
+                      sourceToolsAction === "fetch_one" || sourceToolsAction === "fetch_all"
+                        ? "fetch"
+                        : "update";
+                    if (mode === "fetch") {
+                      const name =
+                        scope === "one"
+                          ? currentModule?.name || "esta fuente"
+                          : "todos los sitios activos";
+                      const msg =
+                        scope === "one"
+                          ? `Se reemplazará por completo el catálogo local de ${name}. ¿Continuar?`
+                          : `Se reemplazarán los catálogos locales de ${name}. ¿Continuar?`;
+                      const ok = await appConfirm({
+                        title: "Descargar catálogo",
+                        message: msg,
+                        okLabel: "Continuar",
+                        cancelLabel: "Cancelar",
+                      });
+                      if (!ok) return;
+                    }
+                    setSourceToolsOpen(false);
+                    void startCatalogJob({
+                      mode,
+                      scope,
+                      moduleId: selectedModuleId,
+                    });
+                  })();
                 }}
               >
                 Aplicar

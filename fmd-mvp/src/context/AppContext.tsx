@@ -120,6 +120,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [lastCatalogJobModuleIds, setLastCatalogJobModuleIds] = useState<string[]>([]);
   const catalogJobRunningRef = useRef(false);
   const catalogCancelRequestedRef = useRef(false);
+  const catalogJobRef = useRef<CatalogJobState | null>(null);
   const [{ narrow, hideInfo }, setLayout] = useState(() =>
     layoutFromWidth(typeof window !== "undefined" ? window.innerWidth : 1280),
   );
@@ -254,10 +255,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [refreshEnabledModules]);
 
   useEffect(() => {
+    catalogJobRef.current = catalogJob;
+  }, [catalogJob]);
+
+  useEffect(() => {
+    let cancelled = false;
     let un1: (() => void) | undefined;
     let un2: (() => void) | undefined;
     void api
       .onCatalogProgress((p) => {
+        const body = (p.message && p.message.trim()) || (p.log && p.log.trim()) || "";
+        const job = catalogJobRef.current;
+        if (body && job?.mode === "update") {
+          log(
+            `Actualizando lista [${job.index}/${job.total}] ${job.moduleName} | ${body}`,
+            "",
+          );
+        } else if (p.log?.trim()) {
+          log(p.log.trim(), "");
+        }
         setCatalogJob((prev) =>
           prev
             ? {
@@ -265,15 +281,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 moduleId: p.module_id || prev.moduleId,
                 page: p.page,
                 pageTotal: p.page_total,
-                message:
-                  p.page_total > 0
-                    ? `página ${p.page + 1}/${p.page_total} · +${p.inserted_total}`
-                    : prev.message,
+                getinfoIndex: p.getinfo_index,
+                getinfoTotal: p.getinfo_total,
+                phase: p.phase,
+                message: (p.message && p.message.trim()) || prev.message,
               }
             : prev,
         );
       })
       .then((u) => {
+        if (cancelled) {
+          u();
+          return;
+        }
         un1 = u;
       });
     void api
@@ -291,13 +311,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         );
       })
       .then((u) => {
+        if (cancelled) {
+          u();
+          return;
+        }
         un2 = u;
       });
     return () => {
+      cancelled = true;
       un1?.();
       un2?.();
     };
-  }, []);
+  }, [log]);
 
   const cancelCatalogJob = useCallback(async () => {
     catalogCancelRequestedRef.current = true;
@@ -343,6 +368,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       catalogJobRunningRef.current = true;
       catalogCancelRequestedRef.current = false;
       const doneIds: string[] = [];
+      const touchedIds: string[] = [];
       try {
         await api.catalogJobBegin();
         const verb = args.mode === "fetch" ? "Descarga" : "Actualización";
@@ -353,6 +379,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         for (let i = 0; i < targets.length; i++) {
           if (catalogCancelRequestedRef.current) break;
           const m = targets[i];
+          touchedIds.push(m.id);
           setCatalogJob({
             mode: args.mode,
             scope: args.scope,
@@ -367,18 +394,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
             message: args.mode === "fetch" ? "Descargando…" : "Actualizando…",
             cancelling: false,
           });
+          catalogJobRef.current = {
+            mode: args.mode,
+            scope: args.scope,
+            moduleId: m.id,
+            moduleName: m.name,
+            index: i + 1,
+            total: targets.length,
+            page: 0,
+            pageTotal: 0,
+            bytesDone: 0,
+            bytesTotal: 0,
+            message: args.mode === "fetch" ? "Descargando…" : "Actualizando…",
+            cancelling: false,
+          };
           try {
             if (args.mode === "update") {
               const st = await api.catalogUpdate(m.id);
               doneIds.push(m.id);
               log(
-                `Catálogo OK (${m.name}): +${st.inserted} · ${st.total_in_db} total · ${st.pages_fetched} páginas`,
+                `Catálogo OK (${m.name}): +${st.inserted} · ${st.total_in_db} total · ${st.pages_fetched} páginas` +
+                  (st.skipped ? ` · ${st.skipped} omitidos` : ""),
                 "ok",
               );
             } else {
               const st = await api.catalogFetchFromServer(m.id);
               doneIds.push(m.id);
-              log(`Catálogo descargado (${m.name}): ${st.count} títulos`, "ok");
+              log(`Catálogo reemplazado (${m.name}): ${st.count} títulos`, "ok");
             }
           } catch (e) {
             const msg = String(e);
@@ -387,7 +429,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
               break;
             }
             log(`${verb} falló (${m.name}): ${msg}`, "err");
-            // Continue with next module on error (FMD2-like for multi).
             if (args.scope === "one") break;
           }
         }
@@ -400,7 +441,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         catalogJobRunningRef.current = false;
         catalogCancelRequestedRef.current = false;
         setCatalogJob(null);
-        setLastCatalogJobModuleIds(doneIds);
+        setLastCatalogJobModuleIds(touchedIds.length ? touchedIds : doneIds);
         setCatalogJobDoneSeq((n) => n + 1);
       }
     },
