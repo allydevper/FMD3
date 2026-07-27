@@ -267,8 +267,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const body = (p.message && p.message.trim()) || (p.log && p.log.trim()) || "";
         const job = catalogJobRef.current;
         if (body && job?.mode === "update") {
+          const phase =
+            p.phase === "scrape"
+              ? "Explorando el catálogo del sitio"
+              : p.phase === "getinfo"
+                ? "Importando metadatos de obras nuevas"
+                : p.phase === "done"
+                  ? "Lista actualizada"
+                  : "Actualizando lista";
           log(
-            `Actualizando lista [${job.index}/${job.total}] ${job.moduleName} | ${body}`,
+            `${phase} [${job.index}/${job.total}] ${job.moduleName} | ${body}`,
             "",
           );
         } else if (p.log?.trim()) {

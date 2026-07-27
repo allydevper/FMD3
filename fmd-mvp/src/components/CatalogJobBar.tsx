@@ -1,6 +1,75 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icon";
 import { useApp } from "../context/AppContext";
+import type { CatalogJobState } from "../types";
+
+function phaseHeadline(job: CatalogJobState): string {
+  const site = `[${job.index}/${job.total}] ${job.moduleName}`;
+  if (job.cancelling) return `Cancelando · ${job.moduleName}`;
+  if (job.mode === "fetch") return `Descargando lista ${site}`;
+  switch (job.phase) {
+    case "scrape":
+      return `Explorando el catálogo del sitio ${site}`;
+    case "getinfo":
+      return `Importando metadatos de obras nuevas ${site}`;
+    case "done":
+      return `Lista actualizada · ${job.moduleName}`;
+    default:
+      return `Actualizando lista ${site}`;
+  }
+}
+
+function phaseShort(job: CatalogJobState): string {
+  if (job.cancelling) return `Cancelando · ${job.moduleName}`;
+  if (job.mode === "fetch") return `Descarga · ${job.moduleName}`;
+  switch (job.phase) {
+    case "scrape": {
+      if (job.pageTotal > 0) {
+        return `Catálogo · pág. ${job.page + 1}/${job.pageTotal}`;
+      }
+      return `Explorando catálogo · ${job.moduleName}`;
+    }
+    case "getinfo": {
+      if (job.getinfoTotal && job.getinfoTotal > 0) {
+        return `Metadatos · ${job.getinfoIndex ?? 0}/${job.getinfoTotal}`;
+      }
+      return `Importando metadatos · ${job.moduleName}`;
+    }
+    case "done":
+      return `Listo · ${job.moduleName}`;
+    default:
+      return `Actualizando · ${job.moduleName}`;
+  }
+}
+
+/** Keep counters; drop verbs already shown in the title. */
+function phaseMeta(message: string, phase?: string): string {
+  const raw = message.trim();
+  if (!raw) return "";
+
+  const m = raw.match(/^(\[T:\d+\]\s*\[[^\]]+\])\s*(?:\|\s*)?(.*)$/s);
+  const counters = m?.[1]?.trim() ?? "";
+  let rest = (m?.[2] ?? raw).trim();
+
+  rest = rest
+    .replace(/^Obteniendo info\s*·\s*/i, "")
+    .replace(/^Buscando títulos nuevos\s*·\s*/i, "")
+    .replace(/^Obteniendo directorio\s*·\s*/i, "")
+    .replace(/^Preparando\s*·\s*/i, "")
+    .replace(/^Insertando\s+/i, "Insertando ")
+    .replace(/^listo\s*·\s*/i, "")
+    .replace(/^\·\s*/, "");
+
+  if (phase === "scrape" && rest) {
+    // e.g. "dir 1/1 · +18 (acum 36)" or "76 páginas"
+    return counters ? `${counters} · ${rest}` : rest;
+  }
+  if (phase === "getinfo" && rest) {
+    return counters ? `${counters} · ${rest}` : rest;
+  }
+  if (counters && rest) return `${counters} · ${rest}`;
+  return counters || rest;
+}
 
 export function CatalogJobBar() {
   const { catalogJob, cancelCatalogJob } = useApp();
@@ -17,7 +86,8 @@ export function CatalogJobBar() {
 
   const isFetch = catalogJob.mode === "fetch";
   const pct =
-    catalogJob.pageTotal > 0
+    catalogJob.pageTotal > 0 &&
+    (catalogJob.phase === "scrape" || !catalogJob.getinfoTotal)
       ? Math.min(100, Math.round(((catalogJob.page + 1) / catalogJob.pageTotal) * 100))
       : catalogJob.getinfoTotal && catalogJob.getinfoTotal > 0
         ? Math.min(
@@ -30,73 +100,123 @@ export function CatalogJobBar() {
             ? Math.min(100, Math.round(((catalogJob.index - 1) / catalogJob.total) * 100))
             : 0;
 
-  // FMD2-style: "Actualizando lista [1/1] MangaOni | [T:1] [195/421] | …"
   const body =
     catalogJob.message?.trim() ||
     (isFetch && catalogJob.bytesTotal > 0
       ? `${(catalogJob.bytesDone / 1_048_576).toFixed(1)}/${(catalogJob.bytesTotal / 1_048_576).toFixed(1)} MB`
       : "");
 
-  const label = isFetch
-    ? `Descargando lista [${catalogJob.index}/${catalogJob.total}] ${catalogJob.moduleName}${
-        body ? ` | ${body}` : ""
-      }${catalogJob.cancelling ? " · cancelando…" : ""}`
-    : `Actualizando lista [${catalogJob.index}/${catalogJob.total}] ${catalogJob.moduleName}${
-        body ? ` | ${body}` : ""
-      }${catalogJob.cancelling ? " · cancelando…" : ""}`;
+  const title = phaseHeadline(catalogJob);
+  const meta = isFetch ? body : phaseMeta(body, catalogJob.phase);
+  const short = phaseShort(catalogJob);
+  const pctLabel = `${pct}%`;
+  const spinning = !catalogJob.cancelling && catalogJob.phase !== "done";
 
   return (
     <div
       className={`catalog-job-bar${minimized ? " is-minimized" : ""}`}
       id="catalog-job-bar"
       role="status"
+      aria-label={title}
     >
+      <div
+        className="catalog-job-bar-wash"
+        aria-hidden="true"
+        style={{ width: pctLabel }}
+      />
+
       {!minimized ? (
-        <div className="catalog-job-bar-main">
-          <div className="catalog-job-bar-text" title={label}>
-            {label}
+        <div className="catalog-job-bar-row">
+          <Icon
+            name="refresh"
+            className={`ico ico-sm catalog-job-bar-spin${spinning ? " is-spinning" : ""}`}
+          />
+          <div className="catalog-job-bar-copy">
+            <span className="catalog-job-bar-title" title={title}>
+              {title}
+            </span>
+            {meta ? (
+              <span className="catalog-job-bar-meta" title={meta}>
+                {meta}
+              </span>
+            ) : null}
           </div>
-          <div className="catalog-job-bar-track" aria-hidden="true">
-            <div className="catalog-job-bar-fill" style={{ width: `${pct}%` }} />
-          </div>
-        </div>
-      ) : (
-        <button
-          type="button"
-          className="catalog-job-bar-notch"
-          title={`Mostrar barra · ${pct}%`}
-          aria-label="Mostrar barra de progreso"
-          aria-expanded={false}
-          onClick={() => setMinimized(false)}
-        >
-          <span className="catalog-job-bar-notch-fill" style={{ width: `${pct}%` }} />
-          <Icon name="arrowUp" className="ico ico-sm" />
-          <span className="catalog-job-bar-notch-pct">{pct}%</span>
-        </button>
-      )}
-      <div className="catalog-job-bar-actions">
-        {!minimized ? (
+          <span className="catalog-job-bar-pct">{pctLabel}</span>
           <button
             type="button"
-            className="catalog-job-bar-btn"
-            title="Minimizar"
-            aria-label="Minimizar barra"
+            className="catalog-job-bar-icon-btn"
+            title="Contraer"
+            aria-label="Contraer barra"
             aria-expanded={true}
             onClick={() => setMinimized(true)}
           >
-            <Icon name="arrowDown" className="ico ico-sm" />
+            <Icon name="chevron" className="ico ico-sm" />
           </button>
-        ) : null}
-        <button
-          type="button"
-          className="catalog-job-bar-btn catalog-job-bar-cancel"
-          disabled={catalogJob.cancelling}
-          title="Cancelar"
-          aria-label="Cancelar"
-          onClick={() => void cancelCatalogJob()}
+          <button
+            type="button"
+            className="catalog-job-bar-icon-btn catalog-job-bar-cancel"
+            disabled={catalogJob.cancelling}
+            title="Cancelar"
+            aria-label="Cancelar"
+            onClick={() => void cancelCatalogJob()}
+          >
+            <Icon name="x" className="ico ico-sm" />
+          </button>
+        </div>
+      ) : (
+        <div
+          className="catalog-job-bar-row is-compact"
+          role="button"
+          tabIndex={0}
+          title={title}
+          aria-label="Expandir barra de progreso"
+          aria-expanded={false}
+          onClick={() => setMinimized(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setMinimized(false);
+            }
+          }}
         >
-          <Icon name="x" className="ico ico-sm" />
-        </button>
+          <Icon
+            name="refresh"
+            className={`ico ico-sm catalog-job-bar-spin${spinning ? " is-spinning" : ""}`}
+          />
+          <span className="catalog-job-bar-short" title={short}>
+            {short}
+          </span>
+          <span className="catalog-job-bar-pct">{pctLabel}</span>
+          <button
+            type="button"
+            className="catalog-job-bar-icon-btn"
+            title="Expandir"
+            aria-label="Expandir barra"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMinimized(false);
+            }}
+          >
+            <Icon name="chevron" className="ico ico-sm catalog-job-bar-chevron-up" />
+          </button>
+          <button
+            type="button"
+            className="catalog-job-bar-icon-btn catalog-job-bar-cancel"
+            disabled={catalogJob.cancelling}
+            title="Cancelar"
+            aria-label="Cancelar"
+            onClick={(e) => {
+              e.stopPropagation();
+              void cancelCatalogJob();
+            }}
+          >
+            <Icon name="x" className="ico ico-sm" />
+          </button>
+        </div>
+      )}
+
+      <div className="catalog-job-bar-track" aria-hidden="true">
+        <div className="catalog-job-bar-fill" style={{ width: pctLabel }} />
       </div>
     </div>
   );
