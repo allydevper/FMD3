@@ -18,7 +18,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Returned by [`download_chapter`] when the cancel flag trips mid-download.
@@ -2156,7 +2156,7 @@ fn update_full_scan_setting() -> bool {
 /// Scrape directory via GetNameAndLink; GetInfo new titles then insert (FMD2 staging).
 pub fn update_list(
     module_id: &str,
-    mut on_progress: Option<&mut dyn FnMut(UpdateListProgress)>,
+    on_progress: Option<Box<dyn FnMut(UpdateListProgress) + Send>>,
 ) -> Result<UpdateListStats, String> {
     let meta = registry::find_by_id(module_id)
         .ok_or_else(|| format!("Módulo desconocido: {module_id}"))?;
@@ -2209,9 +2209,17 @@ pub fn update_list(
     let module_sorted = module.inner.lock().sorted_list;
     // Full scan overrides SortedList early-stop (and the reverse-GetInfo path).
     let sorted_list = module_sorted && !full_scan;
-    let threads = 1usize; // GetInfo sequential for now (FMD2 may use N)
-    let mut emit = |p: UpdateListProgress| {
-        if let Some(cb) = on_progress.as_mut() {
+    // FMD2 GetCurrentLimit: MaxThreadPerTaskLimit else OptionMaxUpdateListThreads.
+    let mod_lim = module.inner.lock().max_thread_per_task_limit;
+    let threads = if mod_lim > 0 {
+        mod_lim as usize
+    } else {
+        crate::settings_keys::update_list_threads()
+    }
+    .clamp(1, 32);
+    let progress_cb = Mutex::new(on_progress);
+    let emit = |p: UpdateListProgress| {
+        if let Some(ref mut cb) = *progress_cb.lock() {
             cb(p);
         }
     };
@@ -2450,132 +2458,178 @@ pub fn update_list(
             });
         }
 
-        for (i, (link, list_title)) in pending.iter().enumerate() {
-            if let Err(e) = crate::catalog_job::check_cancel() {
-                cancelled = true;
-                let _ = e;
-                break;
-            }
-            let abs = absolute_url(&root_url, link);
-            let short = if list_title.chars().count() > 40 {
-                format!(
-                    "{}…",
-                    list_title.chars().take(40).collect::<String>()
-                )
-            } else {
-                list_title.clone()
-            };
+        let next_i = AtomicUsize::new(0);
+        let done_i = AtomicUsize::new(0);
+        let inserted_a = AtomicUsize::new(0);
+        let skipped_a = AtomicUsize::new(0);
+        let cancelled_a = AtomicBool::new(false);
+        let db_lock = Mutex::new(());
+        let existing_m = Mutex::new(existing);
+        let module_id = meta.id.clone();
+        let root = root_url.clone();
+        let n_workers = threads.min(total.max(1));
 
-            match get_info(&abs, Some(&meta.id)) {
-                Ok(info) => {
-                    let title = info.title.trim();
-                    if crate::catalog::title_is_na(title) {
-                        skipped += 1;
-                        let msg = status(
-                            (i + 1) as i64,
-                            total as i64,
-                            &format!("Obteniendo info · omitido \"{short}\""),
-                        );
-                        emit(UpdateListProgress {
-                            module_id: meta.id.clone(),
-                            phase: "getinfo".into(),
-                            directory_index: 0,
-                            page: 0,
-                            page_total: 0,
-                            batch_rows: 0,
-                            inserted_total,
-                            pending_total: total,
-                            getinfo_index: i + 1,
-                            getinfo_total: total,
-                            message: msg.clone(),
-                            log: msg,
-                        });
-                        continue;
+        std::thread::scope(|scope| {
+            for _ in 0..n_workers {
+                let pending = &pending;
+                let next_i = &next_i;
+                let done_i = &done_i;
+                let inserted_a = &inserted_a;
+                let skipped_a = &skipped_a;
+                let cancelled_a = &cancelled_a;
+                let db_lock = &db_lock;
+                let existing_m = &existing_m;
+                let progress_cb = &progress_cb;
+                let module_id = module_id.as_str();
+                let root = root.as_str();
+                let status = &status;
+                scope.spawn(move || {
+                    loop {
+                        if cancelled_a.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if crate::catalog_job::check_cancel().is_err() {
+                            cancelled_a.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                        let i = next_i.fetch_add(1, Ordering::Relaxed);
+                        if i >= pending.len() {
+                            break;
+                        }
+                        let (link, list_title) = &pending[i];
+                        let abs = absolute_url(root, link);
+                        let short = if list_title.chars().count() > 40 {
+                            format!(
+                                "{}…",
+                                list_title.chars().take(40).collect::<String>()
+                            )
+                        } else {
+                            list_title.clone()
+                        };
+
+                        let emit_progress = |note: String, inserted_total: usize| {
+                            let done = done_i.fetch_add(1, Ordering::Relaxed) + 1;
+                            let msg = status(done as i64, total as i64, &note);
+                            if let Some(ref mut cb) = *progress_cb.lock() {
+                                cb(UpdateListProgress {
+                                    module_id: module_id.to_string(),
+                                    phase: "getinfo".into(),
+                                    directory_index: 0,
+                                    page: 0,
+                                    page_total: 0,
+                                    batch_rows: 0,
+                                    inserted_total,
+                                    pending_total: total,
+                                    getinfo_index: done,
+                                    getinfo_total: total,
+                                    message: msg.clone(),
+                                    log: msg,
+                                });
+                            }
+                        };
+
+                        match get_info(&abs, Some(module_id)) {
+                            Ok(info) => {
+                                let title = info.title.trim();
+                                if crate::catalog::title_is_na(title) {
+                                    skipped_a.fetch_add(1, Ordering::Relaxed);
+                                    emit_progress(
+                                        format!("Obteniendo info · omitido \"{short}\""),
+                                        inserted_a.load(Ordering::Relaxed),
+                                    );
+                                    continue;
+                                }
+                                let use_title = if title.is_empty() {
+                                    list_title.as_str()
+                                } else {
+                                    title
+                                };
+                                let numchapter = info.chapters.len() as i64;
+                                let write_result = {
+                                    let _g = db_lock.lock();
+                                    crate::catalog::insert_full(
+                                        module_id,
+                                        link,
+                                        use_title,
+                                        &info.alt_titles,
+                                        &info.authors,
+                                        &info.artists,
+                                        &info.genres,
+                                        &info.status,
+                                        &info.summary,
+                                        numchapter,
+                                    )
+                                    .map(|ins| {
+                                        if ins {
+                                            crate::catalog::link_set_insert(
+                                                &mut existing_m.lock(),
+                                                &crate::catalog::normalize_manga_link(link),
+                                            );
+                                            let _ = crate::catalog::manga_cache_upsert(
+                                                module_id,
+                                                link,
+                                                &crate::catalog::MangaCacheUpsert {
+                                                    title: use_title.to_string(),
+                                                    alt_titles: info.alt_titles.clone(),
+                                                    authors: info.authors.clone(),
+                                                    artists: info.artists.clone(),
+                                                    genres: info.genres.clone(),
+                                                    status: info.status.clone(),
+                                                    summary: info.summary.clone(),
+                                                    numchapter,
+                                                    cover: info.cover.clone(),
+                                                },
+                                            );
+                                        }
+                                        ins
+                                    })
+                                };
+                                match write_result {
+                                    Ok(true) => {
+                                        let n = inserted_a.fetch_add(1, Ordering::Relaxed) + 1;
+                                        emit_progress(
+                                            format!(
+                                                "Obteniendo info · \"{short}\" · caps={numchapter}"
+                                            ),
+                                            n,
+                                        );
+                                    }
+                                    Ok(false) => {
+                                        emit_progress(
+                                            format!(
+                                                "Obteniendo info · \"{short}\" · caps={numchapter}"
+                                            ),
+                                            inserted_a.load(Ordering::Relaxed),
+                                        );
+                                    }
+                                    Err(err) => {
+                                        skipped_a.fetch_add(1, Ordering::Relaxed);
+                                        emit_progress(
+                                            format!(
+                                                "Obteniendo info · falló \"{short}\": {err}"
+                                            ),
+                                            inserted_a.load(Ordering::Relaxed),
+                                        );
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                skipped_a.fetch_add(1, Ordering::Relaxed);
+                                emit_progress(
+                                    format!("Obteniendo info · falló \"{short}\": {err}"),
+                                    inserted_a.load(Ordering::Relaxed),
+                                );
+                            }
+                        }
                     }
-                    let use_title = if title.is_empty() {
-                        list_title.as_str()
-                    } else {
-                        title
-                    };
-                    let numchapter = info.chapters.len() as i64;
-                    let inserted = crate::catalog::insert_full(
-                        &meta.id,
-                        link,
-                        use_title,
-                        &info.alt_titles,
-                        &info.authors,
-                        &info.artists,
-                        &info.genres,
-                        &info.status,
-                        &info.summary,
-                        numchapter,
-                    )?;
-                    if inserted {
-                        inserted_total += 1;
-                        crate::catalog::link_set_insert(
-                            &mut existing,
-                            &crate::catalog::normalize_manga_link(link),
-                        );
-                        let _ = crate::catalog::manga_cache_upsert(
-                            &meta.id,
-                            link,
-                            &crate::catalog::MangaCacheUpsert {
-                                title: use_title.to_string(),
-                                alt_titles: info.alt_titles.clone(),
-                                authors: info.authors.clone(),
-                                artists: info.artists.clone(),
-                                genres: info.genres.clone(),
-                                status: info.status.clone(),
-                                summary: info.summary.clone(),
-                                numchapter,
-                                cover: info.cover.clone(),
-                            },
-                        );
-                    }
-                    let msg = status(
-                        (i + 1) as i64,
-                        total as i64,
-                        &format!("Obteniendo info · \"{short}\" · caps={numchapter}"),
-                    );
-                    emit(UpdateListProgress {
-                        module_id: meta.id.clone(),
-                        phase: "getinfo".into(),
-                        directory_index: 0,
-                        page: 0,
-                        page_total: 0,
-                        batch_rows: 0,
-                        inserted_total,
-                        pending_total: total,
-                        getinfo_index: i + 1,
-                        getinfo_total: total,
-                        message: msg.clone(),
-                        log: msg,
-                    });
-                }
-                Err(err) => {
-                    skipped += 1;
-                    let msg = status(
-                        (i + 1) as i64,
-                        total as i64,
-                        &format!("Obteniendo info · falló \"{short}\": {err}"),
-                    );
-                    emit(UpdateListProgress {
-                        module_id: meta.id.clone(),
-                        phase: "getinfo".into(),
-                        directory_index: 0,
-                        page: 0,
-                        page_total: 0,
-                        batch_rows: 0,
-                        inserted_total,
-                        pending_total: total,
-                        getinfo_index: i + 1,
-                        getinfo_total: total,
-                        message: msg.clone(),
-                        log: msg,
-                    });
-                }
+                });
             }
-        }
+        });
+
+        inserted_total = inserted_a.load(Ordering::Relaxed);
+        skipped = skipped_a.load(Ordering::Relaxed);
+        cancelled = cancelled_a.load(Ordering::Relaxed);
+        let _ = existing_m.into_inner();
     }
 
     let st = crate::catalog::stats(&meta.id)?;

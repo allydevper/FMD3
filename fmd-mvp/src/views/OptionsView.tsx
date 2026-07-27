@@ -122,6 +122,7 @@ type OptionsFormState = {
   checkUpdateStart: boolean;
   updateListNoInfo: boolean;
   updateListFullScan: boolean;
+  updateListThreads: number;
 };
 
 const DEFAULT_SETTINGS: OptionsFormState = {
@@ -193,6 +194,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   checkUpdateStart: true,
   updateListNoInfo: false,
   updateListFullScan: false,
+  updateListThreads: 1,
 };
 
 function boolStr(v: boolean) {
@@ -921,6 +923,10 @@ export function OptionsView() {
     const checkUpdateStart = parseB(await get(SK.CHECK_UPDATE_START), true);
     const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
     const updateListFullScan = parseB(await get(SK.UPDATE_LIST_FULL_SCAN), false);
+    const updateListThreads = Math.min(
+      32,
+      Math.max(1, Number((await get(SK.UPDATE_LIST_THREADS)) ?? "1") || 1),
+    );
 
     setS((prev) => ({
       ...prev,
@@ -992,6 +998,7 @@ export function OptionsView() {
       checkUpdateStart,
       updateListNoInfo,
       updateListFullScan,
+      updateListThreads,
     }));
     trayRef.current = { trayMinimize, trayStart };
     setDirty(false);
@@ -1014,6 +1021,7 @@ export function OptionsView() {
       s.useProxy ? composeProxyUrl(s.proxyType, s.proxyHost, s.proxyPort, s.proxyUser, s.proxyPass) : "",
     );
     await api.settingsSet(SK.MAX_THREADS, String(s.threads));
+    await api.settingsSet(SK.UPDATE_LIST_THREADS, String(s.updateListThreads));
     await api.settingsSet(SK.PARALLEL_TASKS, String(s.parallelTasks));
     await api.settingsSet(SK.TASK_RETRIES, String(s.taskRetries));
     await api.settingsSet(SK.TIMEOUT, String(s.httpTimeout));
@@ -1695,7 +1703,14 @@ export function OptionsView() {
                     </div>
                     <div className="st-card">
                       <StubStepperRow label="Hilos de favoritos" desc="Comprobaciones de favoritos a la vez" defaultValue={1} min={1} max={32} onDirty={markDirty} />
-                      <StubStepperRow label="Hilos de actualizar lista" desc="Paralelismo al actualizar el catálogo" defaultValue={1} min={1} max={32} onDirty={markDirty} />
+                      <BoundStepperRow
+                        label="Hilos de actualizar lista"
+                        desc="Paralelismo al actualizar el catálogo"
+                        value={s.updateListThreads}
+                        min={1}
+                        max={32}
+                        onChange={(v) => update("updateListThreads", v)}
+                      />
                       <StubStepperRow label="Hilos en segundo plano" desc="Cargas en background" defaultValue={1} min={1} max={32} onDirty={markDirty} />
                     </div>
                   </section>

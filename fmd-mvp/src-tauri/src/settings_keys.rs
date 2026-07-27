@@ -26,6 +26,9 @@ pub const DOWNLOAD_PARALLEL_TASKS: &str = "download.parallel_tasks";
 pub const DOWNLOAD_REMOVE_MANGA_FROM_CHAPTER: &str = "download.remove_manga_from_chapter";
 pub const DOWNLOAD_PDF_QUALITY: &str = "download.pdf_quality";
 
+/// Max concurrent GetInfo workers during Update List (FMD2 MaxUpdateListThreads).
+pub const CONNECTIONS_MAX_UPDATE_LIST_THREADS: &str = "connections.max_update_list_threads";
+
 pub const QUEUE_SORT_ON_ADD: &str = "queue.sort_on_add";
 
 pub const MODULES_ENABLED: &str = "modules.enabled";
@@ -99,6 +102,11 @@ pub fn usize_setting(key: &str, default: usize) -> usize {
 
 pub fn max_threads() -> usize {
     usize_setting(DOWNLOAD_MAX_THREADS, 1).clamp(1, 32)
+}
+
+/// Global Update List GetInfo parallelism (default 1, like FMD2 OptionMaxUpdateListThreads).
+pub fn update_list_threads() -> usize {
+    usize_setting(CONNECTIONS_MAX_UPDATE_LIST_THREADS, 1).clamp(1, 32)
 }
 
 pub fn parallel_tasks() -> usize {

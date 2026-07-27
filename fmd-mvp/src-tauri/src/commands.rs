@@ -162,10 +162,12 @@ pub async fn catalog_update(
     let id = module_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let app2 = app.clone();
-        let mut progress = |p: UpdateListProgress| {
-            let _ = app2.emit("catalog-progress", &p);
-        };
-        update_list(&id, Some(&mut progress))
+        update_list(
+            &id,
+            Some(Box::new(move |p: UpdateListProgress| {
+                let _ = app2.emit("catalog-progress", &p);
+            })),
+        )
     })
     .await
     .map_err(|e| format!("tarea cancelada: {e}"))?
