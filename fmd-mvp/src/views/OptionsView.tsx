@@ -121,6 +121,7 @@ type OptionsFormState = {
   dlLeftBar: boolean;
   checkUpdateStart: boolean;
   updateListNoInfo: boolean;
+  updateListFullScan: boolean;
 };
 
 const DEFAULT_SETTINGS: OptionsFormState = {
@@ -191,6 +192,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   dlLeftBar: true,
   checkUpdateStart: true,
   updateListNoInfo: false,
+  updateListFullScan: false,
 };
 
 function boolStr(v: boolean) {
@@ -918,6 +920,7 @@ export function OptionsView() {
     const dlLeftBar = parseB(await get(SK.UI_DL_LEFT_BAR), true);
     const checkUpdateStart = parseB(await get(SK.CHECK_UPDATE_START), true);
     const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
+    const updateListFullScan = parseB(await get(SK.UPDATE_LIST_FULL_SCAN), false);
 
     setS((prev) => ({
       ...prev,
@@ -988,6 +991,7 @@ export function OptionsView() {
       dlLeftBar,
       checkUpdateStart,
       updateListNoInfo,
+      updateListFullScan,
     }));
     trayRef.current = { trayMinimize, trayStart };
     setDirty(false);
@@ -1068,6 +1072,7 @@ export function OptionsView() {
     await api.settingsSet(SK.UI_DL_LEFT_BAR, boolStr(s.dlLeftBar));
     await api.settingsSet(SK.CHECK_UPDATE_START, boolStr(s.checkUpdateStart));
     await api.settingsSet(SK.UPDATE_LIST_NO_INFO, boolStr(s.updateListNoInfo));
+    await api.settingsSet(SK.UPDATE_LIST_FULL_SCAN, boolStr(s.updateListFullScan));
     const enabled = modules.filter((m) => siteOn[m.id]).map((m) => m.id);
     enabledIdsRef.current = new Set(enabled);
     await api.settingsSet(SK.MODULES_ENABLED, JSON.stringify(enabled));
@@ -2120,6 +2125,27 @@ export function OptionsView() {
                         desc="Más rápido; el filtro avanzado no funcionará"
                         checked={s.updateListNoInfo}
                         onChange={(v) => update("updateListNoInfo", v)}
+                      />
+                      <SwitchRow
+                        label="Escanear directorio completo"
+                        desc="Recorre todas las páginas, no solo las más recientes"
+                        checked={s.updateListFullScan}
+                        onChange={(v) => {
+                          if (!v) {
+                            update("updateListFullScan", false);
+                            return;
+                          }
+                          void (async () => {
+                            const ok = await appConfirm({
+                              title: "Escanear directorio completo",
+                              message:
+                                "Al actualizar la lista se recorrerán todas las páginas del sitio, no solo las más recientes.\n\nEso suele tardar bastante más y, en la mayoría de los casos, no hace falta: el modo normal ya encuentra los títulos nuevos.\n\nÚsalo solo si sospechas huecos en el catálogo o quieres un barrido a fondo.\n\n¿Activar el escaneo completo?",
+                              okLabel: "Activar",
+                              cancelLabel: "Cancelar",
+                            });
+                            if (ok) update("updateListFullScan", true);
+                          })();
+                        }}
                       />
                     </div>
                   </section>

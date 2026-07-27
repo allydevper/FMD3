@@ -31,6 +31,8 @@ pub const QUEUE_SORT_ON_ADD: &str = "queue.sort_on_add";
 pub const MODULES_ENABLED: &str = "modules.enabled";
 pub const CATALOG_DB_URL: &str = "catalog.db_url";
 pub const CATALOG_UPDATE_NO_INFO: &str = "catalog.update_no_info";
+/// When true, Update List ignores module SortedList and scans every directory page.
+pub const CATALOG_UPDATE_FULL_SCAN: &str = "catalog.update_full_scan";
 
 pub const FAVORITES_CHECK_INTERVAL_MIN: &str = "favorites.check_interval_min";
 pub const FAVORITES_CHECK_INTERVAL_ON: &str = "favorites.check_interval_on";

@@ -1752,7 +1752,7 @@ export function InfoView() {
           const meta = e.info_failed ? "N/A" : String(e.numchapter ?? 0);
           const isNew = isCatalogEntryNew(e.jdn, filterNewDays);
           const site = e.module_name?.trim();
-          const titleLabel = isNew ? `${title} (nuevo)` : title;
+          const titleLabel = isNew ? `(nuevo) ${title} ` : title;
           const tip = site ? `${titleLabel} · ${site} · ${meta}` : `${titleLabel} · ${meta}`;
           return (
             <button

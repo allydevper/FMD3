@@ -2145,6 +2145,14 @@ fn update_no_info_setting() -> bool {
     )
 }
 
+fn update_full_scan_setting() -> bool {
+    crate::settings_keys::parse_bool(
+        crate::settings_keys::get_string_opt(crate::settings_keys::CATALOG_UPDATE_FULL_SCAN)
+            .as_deref(),
+        false,
+    )
+}
+
 /// Scrape directory via GetNameAndLink; GetInfo new titles then insert (FMD2 staging).
 pub fn update_list(
     module_id: &str,
@@ -2197,7 +2205,10 @@ pub fn update_list(
     }
 
     let no_info = update_no_info_setting();
-    let sorted_list = module.inner.lock().sorted_list;
+    let full_scan = update_full_scan_setting();
+    let module_sorted = module.inner.lock().sorted_list;
+    // Full scan overrides SortedList early-stop (and the reverse-GetInfo path).
+    let sorted_list = module_sorted && !full_scan;
     let threads = 1usize; // GetInfo sequential for now (FMD2 may use N)
     let mut emit = |p: UpdateListProgress| {
         if let Some(cb) = on_progress.as_mut() {
@@ -2223,8 +2234,15 @@ pub fn update_list(
             0,
             0,
             &format!(
-                "Preparando · SortedList={} · no_info={}",
-                sorted_list, no_info
+                "Preparando · {} · no_info={}",
+                if full_scan {
+                    "escaneo completo"
+                } else if module_sorted {
+                    "solo lo más reciente"
+                } else {
+                    "todas las páginas"
+                },
+                no_info
             ),
         );
         emit(UpdateListProgress {
@@ -2374,6 +2392,13 @@ pub fn update_list(
             });
             page += 1;
         }
+    }
+
+    // SortedList scrape is newest-first. GetInfo/insert oldest-first so a mid-run
+    // cancel leaves the directory front unknown → next update can continue (FMD2
+    // inserts newest-first and can "plug" SortedList early-stop after cancel).
+    if sorted_list && pending.len() > 1 {
+        pending.reverse();
     }
 
     let mut inserted_total = 0usize;

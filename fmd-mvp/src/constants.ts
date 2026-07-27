@@ -254,4 +254,5 @@ export const SK = {
   LANG: "app.language",
   CHECK_UPDATE_START: "updater.check_on_start",
   UPDATE_LIST_NO_INFO: "catalog.update_no_info",
+  UPDATE_LIST_FULL_SCAN: "catalog.update_full_scan",
 } as const;
