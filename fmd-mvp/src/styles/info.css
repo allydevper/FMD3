@@ -553,25 +553,50 @@
   padding: 2px 0 2px 2px;
 }
 
-.catalog-ctx-menu {
+.catalog-ctx-layer {
   position: fixed;
-  z-index: 80;
-  min-width: 180px;
-  padding: 4px;
-  background: var(--panel);
-  border: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
-  box-shadow: 0 10px 24px var(--shadow);
+  inset: 0;
+  z-index: 90;
+}
+
+.catalog-ctx-backdrop {
+  position: absolute;
+  inset: 0;
+}
+
+.catalog-ctx-menu {
+  position: absolute;
+  z-index: 1;
+  width: 232px;
+  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  box-shadow: 0 14px 34px var(--shadow);
+}
+
+.catalog-ctx-title {
+  padding: 7px 12px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .catalog-ctx-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   margin: 0;
-  padding: 8px 10px;
+  padding: 7px 12px;
   border: 0;
   border-radius: 0;
+  border-top: none;
   background: transparent;
   color: var(--text);
   font-size: 12.5px;
@@ -581,17 +606,46 @@
   line-height: 1.3;
 }
 
+.catalog-ctx-item.is-sep {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.catalog-ctx-item.is-danger {
+  color: var(--bad);
+}
+
+.catalog-ctx-item.is-off {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.catalog-ctx-item:hover:not(.is-off):not(:disabled) {
+  background: var(--hover-tint);
+}
+
 .catalog-ctx-item .ico {
   flex: 0 0 auto;
-  color: var(--muted);
+  color: currentColor;
 }
 
-.catalog-ctx-item:hover {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
-.catalog-ctx-item:hover .ico {
+.catalog-ctx-item.is-fav .ico {
   color: var(--accent);
+}
+
+.catalog-ctx-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.catalog-ctx-hint {
+  flex: 0 0 auto;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  opacity: 0.8;
 }
 
 .catalog-empty {

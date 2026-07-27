@@ -175,6 +175,8 @@ export function InfoView() {
     x: number;
     y: number;
     entry: CatalogEntry;
+    isFav: boolean;
+    favoriteId: number | null;
   } | null>(null);
   const catalogCtxMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -1524,18 +1526,59 @@ export function InfoView() {
     // Keep select-without-open; reset double-click timer so this isn't a false open.
     lastCatalogClickRef.current = { idx: -1, at: 0 };
     const pad = 8;
-    const menuW = 200;
-    const menuH = 40;
+    const menuW = 232;
+    const menuH = 148;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
-    setCatalogCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), entry });
+    const pos = {
+      x: Math.max(pad, x),
+      y: Math.max(pad, y),
+      entry,
+      isFav: false,
+      favoriteId: null as number | null,
+    };
+    setCatalogCtxMenu(pos);
+
+    const { mod } = catalogEntryModule(entry);
+    const url = maybeFillHost(mod?.root_url || "", entry.link);
+    if (!url) return;
+    const key = catalogLinkKey(url);
+    void api
+      .favoritesList()
+      .then((favs) => {
+        const hit = favs.find(
+          (f) => f.manga_url === url || catalogLinkKey(f.manga_url) === key,
+        );
+        setCatalogCtxMenu((prev) =>
+          prev && prev.entry.link === entry.link && prev.entry.module_id === entry.module_id
+            ? { ...prev, isFav: !!hit, favoriteId: hit?.id ?? null }
+            : prev,
+        );
+      })
+      .catch(() => {
+        /* ignore */
+      });
   }
 
-  async function addFavoriteFromCatalog(entry: CatalogEntry) {
-    setCatalogCtxMenu(null);
+  function catalogEntryModule(entry: CatalogEntry) {
     const moduleId = entry.module_id || selectedModuleId || "";
     const mod =
       (moduleId ? modules.find((m) => m.id === moduleId) : undefined) || currentModule;
+    return { moduleId, mod };
+  }
+
+  function closeCatalogCtxMenu() {
+    setCatalogCtxMenu(null);
+  }
+
+  async function addFavoriteFromCatalog(entry: CatalogEntry) {
+    const menu = catalogCtxMenu;
+    setCatalogCtxMenu(null);
+    if (menu?.isFav) {
+      log("Ya está en favoritos.", "ok");
+      return;
+    }
+    const { moduleId, mod } = catalogEntryModule(entry);
     if (!mod || !moduleId) {
       log("No hay fuente para este título.", "err");
       return;
@@ -1545,6 +1588,17 @@ export function InfoView() {
     if (!url) {
       log("Enlace vacío; no se puede añadir a favoritos.", "err");
       return;
+    }
+    try {
+      const favs = await api.favoritesList();
+      const key = catalogLinkKey(url);
+      if (favs.some((f) => f.manga_url === url || catalogLinkKey(f.manga_url) === key)) {
+        log("Ya está en favoritos.", "ok");
+        if (mangaUrl && catalogLinkKey(mangaUrl) === key) setIsFavorite(true);
+        return;
+      }
+    } catch {
+      /* continue to add */
     }
     const title = entry.title || entry.link;
     try {
@@ -1570,23 +1624,43 @@ export function InfoView() {
     }
   }
 
+  async function removeFavoriteFromCatalog(entry: CatalogEntry, favoriteId: number | null) {
+    setCatalogCtxMenu(null);
+    const title = entry.title || entry.link;
+    if (favoriteId == null) {
+      log("No se encontró el favorito.", "err");
+      return;
+    }
+    const ok = await appConfirm({
+      title: "Quitar de favoritos",
+      message: `¿Quitar «${title}» de favoritos?`,
+      okLabel: "Quitar",
+      cancelLabel: "Cancelar",
+    });
+    if (!ok) return;
+    try {
+      await api.favoritesRemove(favoriteId);
+      const { mod } = catalogEntryModule(entry);
+      const url = maybeFillHost(mod?.root_url || "", entry.link);
+      if (url && mangaUrl && catalogLinkKey(mangaUrl) === catalogLinkKey(url)) {
+        setIsFavorite(false);
+      }
+      log(`Quitado de favoritos: ${title}`, "ok");
+    } catch (e) {
+      log(String(e), "err");
+    }
+  }
+
   useEffect(() => {
     if (!catalogCtxMenu) return;
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") setCatalogCtxMenu(null);
     };
-    const onPointer = (ev: MouseEvent) => {
-      const el = catalogCtxMenuRef.current;
-      if (el && ev.target instanceof Node && el.contains(ev.target)) return;
-      setCatalogCtxMenu(null);
-    };
     const onScroll = () => setCatalogCtxMenu(null);
     window.addEventListener("keydown", onKey);
-    window.addEventListener("mousedown", onPointer, true);
     window.addEventListener("scroll", onScroll, true);
     return () => {
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousedown", onPointer, true);
       window.removeEventListener("scroll", onScroll, true);
     };
   }, [catalogCtxMenu]);
@@ -2810,21 +2884,84 @@ export function InfoView() {
         </div>
       ) : null}
       {catalogCtxMenu ? (
-        <div
-          ref={catalogCtxMenuRef}
-          className="catalog-ctx-menu"
-          style={{ left: catalogCtxMenu.x, top: catalogCtxMenu.y }}
-          role="menu"
-        >
-          <button
-            type="button"
-            className="catalog-ctx-item"
-            role="menuitem"
-            onClick={() => void addFavoriteFromCatalog(catalogCtxMenu.entry)}
+        <div className="catalog-ctx-layer" ref={catalogCtxMenuRef}>
+          <div
+            className="catalog-ctx-backdrop"
+            onClick={closeCatalogCtxMenu}
+            onContextMenu={(ev) => {
+              ev.preventDefault();
+              closeCatalogCtxMenu();
+            }}
+          />
+          <div
+            className="catalog-ctx-menu"
+            style={{ left: catalogCtxMenu.x, top: catalogCtxMenu.y }}
+            role="menu"
           >
-            <Icon name="heart" className="ico ico-sm" />
-            Añadir a favoritos
-          </button>
+            <div className="catalog-ctx-title">
+              {catalogCtxMenu.entry.title || catalogCtxMenu.entry.link}
+            </div>
+            {(
+              [
+                {
+                  id: "dl-all",
+                  icon: "download" as IconName,
+                  label: "Descargar todo",
+                  hint: "Ctrl+D",
+                  off: true,
+                },
+                {
+                  id: "fav",
+                  icon: (catalogCtxMenu.isFav ? "heartSolid" : "heart") as IconName,
+                  label: catalogCtxMenu.isFav
+                    ? "Quitar de favoritos"
+                    : "Agregar a favoritos",
+                  onClick: () => {
+                    if (catalogCtxMenu.isFav) {
+                      void removeFavoriteFromCatalog(
+                        catalogCtxMenu.entry,
+                        catalogCtxMenu.favoriteId,
+                      );
+                    } else {
+                      void addFavoriteFromCatalog(catalogCtxMenu.entry);
+                    }
+                  },
+                },
+                {
+                  id: "remove",
+                  icon: "x" as IconName,
+                  label: "Quitar de la lista",
+                  hint: "Supr",
+                  sep: true,
+                  danger: true,
+                  off: true,
+                },
+              ] as const
+            ).map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                role="menuitem"
+                className={`catalog-ctx-item${"sep" in m && m.sep ? " is-sep" : ""}${
+                  "danger" in m && m.danger ? " is-danger" : ""
+                }${"off" in m && m.off ? " is-off" : ""}${
+                  m.id === "fav" && catalogCtxMenu.isFav ? " is-fav" : ""
+                }`}
+                disabled={"off" in m && m.off}
+                onClick={() => {
+                  if ("off" in m && m.off) return;
+                  if ("onClick" in m && m.onClick) m.onClick();
+                  else closeCatalogCtxMenu();
+                }}
+              >
+                <Icon name={m.icon} className="ico ico-sm" />
+                <span className="catalog-ctx-label">{m.label}</span>
+                {"hint" in m && m.hint ? (
+                  <span className="catalog-ctx-hint">{m.hint}</span>
+                ) : null}
+              </button>
+            ))}
+          </div>
         </div>
       ) : null}
     </section>
