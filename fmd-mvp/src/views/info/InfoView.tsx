@@ -177,8 +177,17 @@ export function InfoView() {
     entry: CatalogEntry;
     isFav: boolean;
     favoriteId: number | null;
+    /** Multi-select: only bulk-add is offered. */
+    isBulk: boolean;
+    bulkCount: number;
   } | null>(null);
   const catalogCtxMenuRef = useRef<HTMLDivElement | null>(null);
+  const [catalogSelectedKeys, setCatalogSelectedKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const catalogSelectedEntriesRef = useRef<Map<string, CatalogEntry>>(new Map());
+  const catalogSelectAnchorIdxRef = useRef(0);
+  const visibleCatalogRef = useRef<(CatalogEntry | undefined)[]>([]);
 
   const catalogQueryRef = useRef("");
   const catalogLoadedKeyRef = useRef("");
@@ -195,6 +204,23 @@ export function InfoView() {
 
   function bumpCatalogReset() {
     setCatalogResetSeq((s) => s + 1);
+  }
+
+  function clearCatalogSelection() {
+    setCatalogSelectedKeys(new Set());
+    catalogSelectedEntriesRef.current = new Map();
+  }
+
+  function catalogRowKey(entry: CatalogEntry): string {
+    return `${entry.module_id || selectedModuleId || ""}:${entry.link}`;
+  }
+
+  function replaceCatalogSelection(entry: CatalogEntry, idx: number) {
+    const key = catalogRowKey(entry);
+    const map = new Map<string, CatalogEntry>([[key, entry]]);
+    catalogSelectedEntriesRef.current = map;
+    setCatalogSelectedKeys(new Set([key]));
+    catalogSelectAnchorIdxRef.current = idx;
   }
 
   function setCatalogTotalBoth(n: number) {
@@ -458,6 +484,8 @@ export function InfoView() {
     });
   }, [catalogRows, appliedAdvFilter, advFilterApplied, filterNewDays, catalogText]);
 
+  visibleCatalogRef.current = visibleCatalog;
+
   function setAdvFilterAppliedBoth(on: boolean) {
     advFilterAppliedRef.current = on;
     setAdvFilterApplied(on);
@@ -479,6 +507,7 @@ export function InfoView() {
 
   function applyAdvFilter() {
     void (async () => {
+      clearCatalogSelection();
       setCatalogLoading(true);
       setCatalogLoadingText("Cargando títulos…");
       try {
@@ -734,6 +763,7 @@ export function InfoView() {
 
     const gen = ++catalogLoadGenRef.current;
     resetFillQueues();
+    clearCatalogSelection();
     window.clearTimeout(catalogLoadingDelayRef.current);
     const preserveUntilData = silent && catalogRowsRef.current.length > 0;
 
@@ -825,6 +855,7 @@ export function InfoView() {
 
     const gen = ++catalogLoadGenRef.current;
     resetFillQueues();
+    clearCatalogSelection();
     window.clearTimeout(catalogLoadingDelayRef.current);
     const preserveUntilData = silent && catalogRowsRef.current.length > 0;
 
@@ -1038,6 +1069,7 @@ export function InfoView() {
     setAppliedAdvFilter(empty);
     appliedAdvFilterRef.current = empty;
     setAdvFilterAppliedBoth(false);
+    clearCatalogSelection();
     void loadCatalog(true, true);
     log("Filtro quitado.", "ok");
   }
@@ -1500,11 +1532,70 @@ export function InfoView() {
     await loadMangaInfo(url, moduleId);
   }
 
-  function handleCatalogRowClick(idx: number, entry: CatalogEntry) {
+  function handleCatalogRowClick(
+    idx: number,
+    entry: CatalogEntry,
+    ev: ReactMouseEvent,
+  ) {
     setCatalogCtxMenu(null);
     setInfoMode("search");
+    /* Evita el anillo de foco del WebView (sobre todo con Ctrl). */
+    (ev.currentTarget as HTMLElement).blur();
+
     const title = entry.title || entry.link;
+    const multi = ev.ctrlKey || ev.metaKey;
+    const shift = ev.shiftKey;
+
+    if (shift) {
+      setActiveCatalogTitle(title);
+      const anchor = catalogSelectAnchorIdxRef.current;
+      const from = Math.min(anchor, idx);
+      const to = Math.max(anchor, idx);
+      const next = new Set<string>();
+      const map = new Map<string, CatalogEntry>();
+      const rows = visibleCatalogRef.current;
+      for (let i = from; i <= to; i++) {
+        const e = rows[i];
+        if (!e) continue;
+        const k = catalogRowKey(e);
+        next.add(k);
+        map.set(k, e);
+      }
+      catalogSelectedEntriesRef.current = map;
+      setCatalogSelectedKeys(next);
+      lastCatalogClickRef.current = { idx: -1, at: 0 };
+      return;
+    }
+
+    if (multi) {
+      const key = catalogRowKey(entry);
+      const next = new Set(catalogSelectedKeys);
+      const map = new Map(catalogSelectedEntriesRef.current);
+      if (next.has(key)) {
+        next.delete(key);
+        map.delete(key);
+        /* No dejar esta fila como "active": el fondo de foco se confunde con selección. */
+        if (map.size === 0) {
+          setActiveCatalogTitle("");
+        } else {
+          const fallback = [...map.values()].at(-1)!;
+          setActiveCatalogTitle(fallback.title || fallback.link);
+        }
+      } else {
+        next.add(key);
+        map.set(key, entry);
+        setActiveCatalogTitle(title);
+      }
+      catalogSelectedEntriesRef.current = map;
+      setCatalogSelectedKeys(next);
+      catalogSelectAnchorIdxRef.current = idx;
+      lastCatalogClickRef.current = { idx: -1, at: 0 };
+      return;
+    }
+
     setActiveCatalogTitle(title);
+    replaceCatalogSelection(entry, idx);
+
     const now = performance.now();
     const last = lastCatalogClickRef.current;
     if (last.idx === idx && now - last.at < 450) {
@@ -1517,40 +1608,56 @@ export function InfoView() {
 
   function handleCatalogRowContextMenu(
     ev: ReactMouseEvent,
+    idx: number,
     entry: CatalogEntry,
   ) {
     ev.preventDefault();
     ev.stopPropagation();
+    (ev.currentTarget as HTMLElement).blur();
     setInfoMode("search");
     setActiveCatalogTitle(entry.title || entry.link);
-    // Keep select-without-open; reset double-click timer so this isn't a false open.
     lastCatalogClickRef.current = { idx: -1, at: 0 };
+
+    const key = catalogRowKey(entry);
+    let isBulk = catalogSelectedKeys.size > 1 && catalogSelectedKeys.has(key);
+    if (!catalogSelectedKeys.has(key)) {
+      replaceCatalogSelection(entry, idx);
+      isBulk = false;
+    }
+
     const pad = 8;
     const menuW = 232;
-    const menuH = 148;
+    const menuH = isBulk ? 72 : 148;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
-    const pos = {
+    const bulkCount = isBulk ? catalogSelectedKeys.size : 1;
+    setCatalogCtxMenu({
       x: Math.max(pad, x),
       y: Math.max(pad, y),
       entry,
       isFav: false,
-      favoriteId: null as number | null,
-    };
-    setCatalogCtxMenu(pos);
+      favoriteId: null,
+      isBulk,
+      bulkCount,
+    });
+
+    if (isBulk) return;
 
     const { mod } = catalogEntryModule(entry);
     const url = maybeFillHost(mod?.root_url || "", entry.link);
     if (!url) return;
-    const key = catalogLinkKey(url);
+    const urlKey = catalogLinkKey(url);
     void api
       .favoritesList()
       .then((favs) => {
         const hit = favs.find(
-          (f) => f.manga_url === url || catalogLinkKey(f.manga_url) === key,
+          (f) => f.manga_url === url || catalogLinkKey(f.manga_url) === urlKey,
         );
         setCatalogCtxMenu((prev) =>
-          prev && prev.entry.link === entry.link && prev.entry.module_id === entry.module_id
+          prev &&
+          !prev.isBulk &&
+          prev.entry.link === entry.link &&
+          prev.entry.module_id === entry.module_id
             ? { ...prev, isFav: !!hit, favoriteId: hit?.id ?? null }
             : prev,
         );
@@ -1622,6 +1729,67 @@ export function InfoView() {
     } catch (e) {
       log(String(e), "err");
     }
+  }
+
+  async function addFavoritesFromCatalogBulk() {
+    setCatalogCtxMenu(null);
+    const entries = [...catalogSelectedEntriesRef.current.values()];
+    if (entries.length < 2) {
+      if (entries[0]) void addFavoriteFromCatalog(entries[0]);
+      return;
+    }
+    let favs: Awaited<ReturnType<typeof api.favoritesList>> = [];
+    try {
+      favs = await api.favoritesList();
+    } catch (e) {
+      log(String(e), "err");
+      return;
+    }
+    const existing = new Set(
+      favs.flatMap((f) => [f.manga_url, catalogLinkKey(f.manga_url)]),
+    );
+    let added = 0;
+    let skipped = 0;
+    let errors = 0;
+    for (const entry of entries) {
+      const { moduleId, mod } = catalogEntryModule(entry);
+      if (!mod || !moduleId) {
+        errors += 1;
+        continue;
+      }
+      const root = mod.root_url || "";
+      const url = maybeFillHost(root, entry.link);
+      if (!url) {
+        errors += 1;
+        continue;
+      }
+      const key = catalogLinkKey(url);
+      if (existing.has(url) || existing.has(key)) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        await api.favoritesAdd({
+          module_id: moduleId,
+          module_name: entry.module_name || mod.name || "",
+          root_url: root,
+          manga_url: url,
+          title: entry.title || entry.link,
+          chapters: [],
+        });
+        existing.add(url);
+        existing.add(key);
+        added += 1;
+      } catch {
+        errors += 1;
+      }
+    }
+    log(
+      `Favoritos en lote: añadidos ${added} · ya estaban ${skipped}${
+        errors ? ` · errores ${errors}` : ""
+      }`,
+      errors && !added ? "err" : "ok",
+    );
   }
 
   async function removeFavoriteFromCatalog(entry: CatalogEntry, favoriteId: number | null) {
@@ -2043,16 +2211,18 @@ export function InfoView() {
           const site = e.module_name?.trim();
           const titleLabel = isNew ? `(nuevo) ${title} ` : title;
           const tip = site ? `${titleLabel} · ${site} · ${meta}` : `${titleLabel} · ${meta}`;
+          const rowKey = catalogRowKey(e);
+          const isSel = catalogSelectedKeys.has(rowKey);
           return (
             <button
               type="button"
               className={`catalog-row${showSite ? " has-site" : ""}${
                 title === activeCatalogTitle ? " active" : ""
-              }${isNew ? " is-new" : ""}`}
+              }${isSel ? " is-selected" : ""}${isNew ? " is-new" : ""}`}
               style={style}
               title={tip}
-              onClick={() => handleCatalogRowClick(i, e)}
-              onContextMenu={(ev) => handleCatalogRowContextMenu(ev, e)}
+              onClick={(ev) => handleCatalogRowClick(i, e, ev)}
+              onContextMenu={(ev) => handleCatalogRowContextMenu(ev, i, e)}
             >
               <div className="catalog-row-body">
                 <div className="catalog-row-title">{title}</div>
@@ -2899,44 +3069,54 @@ export function InfoView() {
             role="menu"
           >
             <div className="catalog-ctx-title">
-              {catalogCtxMenu.entry.title || catalogCtxMenu.entry.link}
+              {catalogCtxMenu.isBulk
+                ? `${catalogCtxMenu.bulkCount} títulos seleccionados`
+                : catalogCtxMenu.entry.title || catalogCtxMenu.entry.link}
             </div>
-            {(
-              [
-                {
-                  id: "dl-all",
-                  icon: "download" as IconName,
-                  label: "Descargar todo",
-                  hint: "Ctrl+D",
-                  off: true,
-                },
-                {
-                  id: "fav",
-                  icon: (catalogCtxMenu.isFav ? "heartSolid" : "heart") as IconName,
-                  label: catalogCtxMenu.isFav
-                    ? "Quitar de favoritos"
-                    : "Agregar a favoritos",
-                  onClick: () => {
-                    if (catalogCtxMenu.isFav) {
-                      void removeFavoriteFromCatalog(
-                        catalogCtxMenu.entry,
-                        catalogCtxMenu.favoriteId,
-                      );
-                    } else {
-                      void addFavoriteFromCatalog(catalogCtxMenu.entry);
-                    }
+            {(catalogCtxMenu.isBulk
+              ? [
+                  {
+                    id: "fav",
+                    icon: "heart" as IconName,
+                    label: `Agregar a favoritos (${catalogCtxMenu.bulkCount})`,
+                    onClick: () => void addFavoritesFromCatalogBulk(),
                   },
-                },
-                {
-                  id: "remove",
-                  icon: "x" as IconName,
-                  label: "Quitar de la lista",
-                  hint: "Supr",
-                  sep: true,
-                  danger: true,
-                  off: true,
-                },
-              ] as const
+                ]
+              : [
+                  {
+                    id: "dl-all",
+                    icon: "download" as IconName,
+                    label: "Descargar todo",
+                    hint: "Ctrl+D",
+                    off: true,
+                  },
+                  {
+                    id: "fav",
+                    icon: (catalogCtxMenu.isFav ? "heartSolid" : "heart") as IconName,
+                    label: catalogCtxMenu.isFav
+                      ? "Quitar de favoritos"
+                      : "Agregar a favoritos",
+                    onClick: () => {
+                      if (catalogCtxMenu.isFav) {
+                        void removeFavoriteFromCatalog(
+                          catalogCtxMenu.entry,
+                          catalogCtxMenu.favoriteId,
+                        );
+                      } else {
+                        void addFavoriteFromCatalog(catalogCtxMenu.entry);
+                      }
+                    },
+                  },
+                  {
+                    id: "remove",
+                    icon: "x" as IconName,
+                    label: "Quitar de la lista",
+                    hint: "Supr",
+                    sep: true,
+                    danger: true,
+                    off: true,
+                  },
+                ]
             ).map((m) => (
               <button
                 key={m.id}
@@ -2945,9 +3125,11 @@ export function InfoView() {
                 className={`catalog-ctx-item${"sep" in m && m.sep ? " is-sep" : ""}${
                   "danger" in m && m.danger ? " is-danger" : ""
                 }${"off" in m && m.off ? " is-off" : ""}${
-                  m.id === "fav" && catalogCtxMenu.isFav ? " is-fav" : ""
+                  m.id === "fav" && catalogCtxMenu.isFav && !catalogCtxMenu.isBulk
+                    ? " is-fav"
+                    : ""
                 }`}
-                disabled={"off" in m && m.off}
+                disabled={"off" in m && !!m.off}
                 onClick={() => {
                   if ("off" in m && m.off) return;
                   if ("onClick" in m && m.onClick) m.onClick();

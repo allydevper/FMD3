@@ -410,6 +410,7 @@
   cursor: pointer;
   background: transparent;
   border: 0;
+  outline: none;
   box-shadow: inset 3px 0 0 transparent;
   text-align: left;
   font-size: 12.5px;
@@ -418,10 +419,19 @@
   line-height: 1.25;
   flex: none;
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
   transition: background-color 0.12s ease;
   position: absolute;
   left: 0;
   right: 0;
+}
+
+.catalog-row:focus,
+.catalog-row:focus-visible,
+.catalog-row:active {
+  outline: none;
+  /* No resetear box-shadow: la barra inset de .is-new vive ahí. */
 }
 
 .catalog-row.has-site {
@@ -494,20 +504,37 @@
   opacity: 0.15;
 }
 
-.catalog-row.active {
+/* Solo is-selected pinta selección. active sin selección no debe parecer "aún seleccionado". */
+.catalog-row.active:not(.is-selected) {
+  background: transparent;
+}
+
+/* Misma tinta para toda la selección (clic o Ctrl/Shift). */
+.catalog-row.is-selected,
+.catalog-row.is-selected.active {
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--text) 14%, transparent) 0%,
-    color-mix(in srgb, var(--text) 6%, transparent) 42%,
+    color-mix(in srgb, var(--accent) 18%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 8%, transparent) 42%,
     transparent 100%
   );
 }
 
-.catalog-row.active:hover {
+.catalog-row.active:not(.is-selected):hover {
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--text) 14%, transparent) 0%,
-    color-mix(in srgb, var(--text) 6%, transparent) 42%,
+    var(--hover-tint) 0%,
+    var(--hover-tint) 42%,
+    transparent 100%
+  );
+}
+
+.catalog-row.is-selected:hover,
+.catalog-row.is-selected.active:hover {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 22%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 10%, transparent) 42%,
     transparent 100%
   );
 }
