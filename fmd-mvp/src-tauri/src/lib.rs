@@ -245,6 +245,8 @@ pub fn run() {
             commands::catalog_stats,
             commands::catalog_search,
             commands::catalog_count,
+            commands::catalog_search_all,
+            commands::catalog_count_all,
             commands::catalog_import,
             commands::manga_cache_upsert,
             commands::manga_cache_get,

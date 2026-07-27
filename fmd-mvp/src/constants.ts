@@ -1,4 +1,4 @@
-import type { AdvFilterState, GenreTri } from "./types";
+import type { AdvFilterState, CatalogAdvFilterPayload, GenreTri } from "./types";
 
 /** Same as FMD2 `UserAgentDefault` (httpsendthread.pas). */
 export const DEFAULT_USER_AGENT =
@@ -78,6 +78,56 @@ export function cloneAdvFilter(f: AdvFilterState): AdvFilterState {
   return { ...f, genres: { ...f.genres } };
 }
 
+/** Build SQL-side filter payload for all-sites search (FMD2 GenerateSQLFilter). */
+export function advFilterToPayload(f: AdvFilterState, newDays: number): CatalogAdvFilterPayload {
+  const include_groups: string[][] = [];
+  const exclude_aliases: string[] = [];
+
+  for (const g of DEFAULT_GENRES) {
+    const state = f.genres[g.id] ?? "ignore";
+    const aliases = [g.id.toLowerCase(), g.label.toLowerCase()];
+    if (state === "include") include_groups.push(aliases);
+    if (state === "exclude") exclude_aliases.push(...aliases);
+  }
+
+  const custom = f.customGenres.trim();
+  if (custom) {
+    if (f.useRegex) {
+      if (custom.startsWith("!") || custom.startsWith("-")) {
+        const a = custom.slice(1).trim();
+        if (a) exclude_aliases.push(a);
+      } else {
+        include_groups.push([custom]);
+      }
+    } else {
+      for (const part of custom.split(",")) {
+        const raw = part.trim();
+        if (!raw) continue;
+        if (raw.startsWith("!") || raw.startsWith("-")) {
+          const a = raw.slice(1).trim().toLowerCase();
+          if (a) exclude_aliases.push(a);
+        } else {
+          include_groups.push([raw.toLowerCase()]);
+        }
+      }
+    }
+  }
+
+  return {
+    title: f.title,
+    authors: f.authors,
+    artists: f.artists,
+    summary: f.summary,
+    status: f.status,
+    match_mode: f.matchMode,
+    only_new: f.onlyNew,
+    use_regex: f.useRegex,
+    new_days: newDays,
+    include_groups,
+    exclude_aliases,
+  };
+}
+
 /** Civil Julian Day Number — same formula as FMD2 `DateToJDN`. */
 export function dateToJdn(d: Date = new Date()): number {
   const year = d.getFullYear();
@@ -112,6 +162,8 @@ export const CH_ROW_GAP = 8;
 export const CH_ROW_STRIDE = CH_ROW_H + CH_ROW_GAP;
 export const CH_OVERSCAN = 8;
 export const CAT_ROW_H = 44;
+/** Title (2 lines) + source line when all-sites filter is on. */
+export const CAT_ROW_H_ALL_SITES = 62;
 export const CAT_OVERSCAN = 12;
 
 export const DL_HIST = [

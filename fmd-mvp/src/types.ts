@@ -155,6 +155,21 @@ export type AdvFilterState = {
   useRegex: boolean;
 };
 
+/** Payload for `catalog_search_all` / `catalog_count_all` (SQL-side filter). */
+export type CatalogAdvFilterPayload = {
+  title: string;
+  authors: string;
+  artists: string;
+  summary: string;
+  status: number;
+  match_mode: "all" | "one";
+  only_new: boolean;
+  use_regex: boolean;
+  new_days: number;
+  include_groups: string[][];
+  exclude_aliases: string[];
+};
+
 export type UpdateListStats = {
   module_id: string;
   inserted: number;

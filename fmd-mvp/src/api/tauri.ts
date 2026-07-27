@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  CatalogAdvFilterPayload,
   CatalogEntry,
   CatalogFetchProgressEvent,
   CatalogProgressEvent,
@@ -62,6 +63,34 @@ export function catalogSearch(
 
 export function catalogCount(moduleId: string, query: string) {
   return invoke<number>("catalog_count", { moduleId, query });
+}
+
+export function catalogSearchAll(
+  moduleIds: string[],
+  query: string,
+  filter?: CatalogAdvFilterPayload,
+  limit?: number,
+  offset?: number,
+) {
+  return invoke<CatalogEntry[]>("catalog_search_all", {
+    moduleIds,
+    query,
+    filter: filter ?? null,
+    limit,
+    offset,
+  });
+}
+
+export function catalogCountAll(
+  moduleIds: string[],
+  query: string,
+  filter?: CatalogAdvFilterPayload,
+) {
+  return invoke<number>("catalog_count_all", {
+    moduleIds,
+    query,
+    filter: filter ?? null,
+  });
 }
 
 export function catalogImport(moduleId: string, path: string) {

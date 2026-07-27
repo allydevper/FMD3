@@ -1,7 +1,8 @@
 //! Per-module manga catalog (`data/<module_id>.db`), FMD2-compatible `masterlist`.
 //! MVP metadata/cover live in shared `fmd-mvp.db` table `manga_cache` (never ALTER/UPDATE masterlist).
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -68,6 +69,67 @@ pub struct CatalogStats {
     pub path: String,
     pub count: i64,
 }
+
+/// Advanced filter criteria for SQL-side filtering (FMD2 `GenerateSQLFilter` parity).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogAdvFilter {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub authors: String,
+    #[serde(default)]
+    pub artists: String,
+    #[serde(default)]
+    pub summary: String,
+    /// 0..3 = status codes; 4 = any.
+    #[serde(default = "default_status_any")]
+    pub status: i32,
+    /// `"all"` = AND include groups; `"one"` = OR.
+    #[serde(default = "default_match_all")]
+    pub match_mode: String,
+    #[serde(default)]
+    pub only_new: bool,
+    #[serde(default)]
+    pub use_regex: bool,
+    /// Days window for `only_new` (`jdn > today - new_days`).
+    #[serde(default = "default_new_days")]
+    pub new_days: i64,
+    /// Each group is OR of aliases; groups combined by `match_mode`.
+    #[serde(default)]
+    pub include_groups: Vec<Vec<String>>,
+    #[serde(default)]
+    pub exclude_aliases: Vec<String>,
+}
+
+impl Default for CatalogAdvFilter {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            authors: String::new(),
+            artists: String::new(),
+            summary: String::new(),
+            status: 4,
+            match_mode: "all".into(),
+            only_new: false,
+            use_regex: false,
+            new_days: 1,
+            include_groups: Vec::new(),
+            exclude_aliases: Vec::new(),
+        }
+    }
+}
+
+fn default_status_any() -> i32 {
+    4
+}
+fn default_match_all() -> String {
+    "all".into()
+}
+fn default_new_days() -> i64 {
+    1
+}
+
+const MAX_ATTACH_SITES: usize = 125;
 
 fn data_dir() -> PathBuf {
     crate::db::db_path().join("data")
@@ -428,6 +490,613 @@ pub fn count(module_id: &str, query: &str) -> Result<i64, String> {
         );
         conn.query_row(&sql, params![like], |r| r.get(0))
             .map_err(|e| e.to_string())
+    }
+}
+
+/// Coalesced display fields (same as SEARCH_SELECT) for SQL-side advanced filter.
+const COL_TITLE: &str =
+    "COALESCE(NULLIF(NULLIF(c.title,''),'N/A'), m.title, '')";
+const COL_ALT: &str = "COALESCE(NULLIF(c.alt_titles,''), m.alttitles, '')";
+const COL_AUTHORS: &str = "COALESCE(NULLIF(c.authors,''), m.authors, '')";
+const COL_ARTISTS: &str = "COALESCE(NULLIF(c.artists,''), m.artists, '')";
+const COL_GENRES: &str = "COALESCE(NULLIF(c.genres,''), m.genres, '')";
+const COL_STATUS: &str = "COALESCE(NULLIF(c.status,''), m.status, '')";
+const COL_SUMMARY: &str = "COALESCE(NULLIF(c.summary,''), m.summary, '')";
+
+fn sql_quote_ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+fn sql_quote_path(path: &Path) -> String {
+    let s = path.to_string_lossy().replace('\'', "''");
+    format!("'{s}'")
+}
+
+fn like_escape(raw: &str) -> String {
+    format!(
+        "%{}%",
+        raw.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    )
+}
+
+fn register_regexp(conn: &Connection) -> Result<(), String> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "regexp",
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        move |ctx| {
+            let pattern: String = ctx.get(0)?;
+            let text: String = ctx.get(1)?;
+            match regex::RegexBuilder::new(&pattern)
+                .case_insensitive(true)
+                .build()
+            {
+                Ok(re) => Ok(re.is_match(&text)),
+                Err(_) => Ok(false),
+            }
+        },
+    )
+    .map_err(|e| format!("REGEXP: {e}"))
+}
+
+struct FilterSql {
+    /// AND-clauses without leading AND (joined by caller).
+    clauses: Vec<String>,
+    params: Vec<SqlValue>,
+}
+
+impl FilterSql {
+    fn new() -> Self {
+        Self {
+            clauses: Vec::new(),
+            params: Vec::new(),
+        }
+    }
+
+    fn push_param(&mut self, v: impl Into<SqlValue>) {
+        self.params.push(v.into());
+    }
+
+    fn add_text_field(&mut self, expr: &str, value: &str, use_regex: bool) {
+        let v = value.trim();
+        if v.is_empty() {
+            return;
+        }
+        if use_regex {
+            self.push_param(v.to_string());
+            self.clauses
+                .push(format!("lower({expr}) REGEXP ?"));
+        } else {
+            self.push_param(like_escape(v));
+            self.clauses
+                .push(format!("lower({expr}) LIKE lower(?) ESCAPE '\\'"));
+        }
+    }
+
+    fn add_paired_title(&mut self, title: &str, use_regex: bool) {
+        let v = title.trim();
+        if v.is_empty() {
+            return;
+        }
+        if use_regex {
+            self.push_param(v.to_string());
+            self.push_param(v.to_string());
+            self.clauses.push(format!(
+                "(lower({COL_TITLE}) REGEXP ? OR lower({COL_ALT}) REGEXP ?)"
+            ));
+        } else {
+            let like = like_escape(v);
+            self.push_param(like.clone());
+            self.push_param(like);
+            self.clauses.push(format!(
+                "(lower({COL_TITLE}) LIKE lower(?) ESCAPE '\\' OR lower({COL_ALT}) LIKE lower(?) ESCAPE '\\')"
+            ));
+        }
+    }
+
+    fn add_genre_token(&mut self, aliases: &[String], negate: bool, use_regex: bool) -> Option<String> {
+        let aliases: Vec<&str> = aliases
+            .iter()
+            .map(|a| a.trim())
+            .filter(|a| !a.is_empty())
+            .collect();
+        if aliases.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        for a in aliases {
+            if use_regex {
+                self.push_param(a.to_string());
+                parts.push(format!("lower({COL_GENRES}) REGEXP ?"));
+            } else {
+                self.push_param(like_escape(a));
+                parts.push(format!("lower({COL_GENRES}) LIKE lower(?) ESCAPE '\\'"));
+            }
+        }
+        let inner = parts.join(" OR ");
+        if negate {
+            Some(format!("NOT ({inner})"))
+        } else {
+            Some(format!("({inner})"))
+        }
+    }
+
+    fn from_adv(filter: &CatalogAdvFilter, query: &str) -> Self {
+        let mut f = Self::new();
+        let use_re = filter.use_regex;
+
+        let q = query.trim();
+        if !q.is_empty() {
+            if use_re {
+                f.push_param(q.to_string());
+                f.push_param(q.to_string());
+                f.clauses.push(
+                    "(lower(m.title) REGEXP ? OR lower(m.alttitles) REGEXP ?)".into(),
+                );
+            } else {
+                let like = like_escape(q);
+                f.push_param(like.clone());
+                f.push_param(like);
+                f.clauses.push(
+                    "(lower(m.title) LIKE lower(?) ESCAPE '\\' OR lower(m.alttitles) LIKE lower(?) ESCAPE '\\')".into(),
+                );
+            }
+        }
+
+        f.add_paired_title(&filter.title, use_re);
+        f.add_text_field(COL_AUTHORS, &filter.authors, use_re);
+        f.add_text_field(COL_ARTISTS, &filter.artists, use_re);
+        f.add_text_field(COL_SUMMARY, &filter.summary, use_re);
+
+        if filter.only_new && filter.new_days > 0 {
+            let threshold = today_jdn() - filter.new_days;
+            f.push_param(threshold);
+            f.clauses
+                .push("COALESCE(m.jdn, 0) > ? AND COALESCE(m.jdn, 0) > 0".into());
+        }
+
+        if filter.status >= 0 && filter.status <= 3 {
+            let aliases: &[&str] = match filter.status {
+                0 => &[
+                    "0",
+                    "completed",
+                    "completo",
+                    "completado",
+                    "finalizado",
+                    "tamat",
+                ],
+                1 => &[
+                    "1",
+                    "ongoing",
+                    "en curso",
+                    "en desarrollo",
+                    "berjalan",
+                    "releasing",
+                ],
+                2 => &["2", "hiatus", "pausado", "on hold"],
+                3 => &["3", "cancelled", "canceled", "cancelado"],
+                _ => &[],
+            };
+            let mut parts = Vec::new();
+            for a in aliases {
+                f.push_param(a.to_string());
+                f.push_param(a.to_string());
+                parts.push(format!(
+                    "(lower(trim({COL_STATUS})) = ? OR lower({COL_STATUS}) LIKE '%' || ? || '%')"
+                ));
+            }
+            if !parts.is_empty() {
+                f.clauses.push(format!("({})", parts.join(" OR ")));
+            }
+        }
+
+        let match_all = filter.match_mode != "one";
+        let mut include_parts = Vec::new();
+        for group in &filter.include_groups {
+            if let Some(c) = f.add_genre_token(group, false, use_re) {
+                include_parts.push(c);
+            }
+        }
+        if !include_parts.is_empty() {
+            let joiner = if match_all { " AND " } else { " OR " };
+            f.clauses
+                .push(format!("({})", include_parts.join(joiner)));
+        }
+
+        for alias in &filter.exclude_aliases {
+            if let Some(c) = f.add_genre_token(&[alias.clone()], true, use_re) {
+                f.clauses.push(c);
+            }
+        }
+
+        f
+    }
+
+    fn where_sql(&self) -> String {
+        let mut s = format!("WHERE {MASTERLIST_USABLE}");
+        for c in &self.clauses {
+            s.push_str(" AND ");
+            s.push_str(c);
+        }
+        s
+    }
+}
+
+fn existing_module_ids(module_ids: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for id in module_ids {
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        if catalog_db_path(id).exists() {
+            out.push(id.to_string());
+        }
+        if out.len() >= MAX_ATTACH_SITES {
+            break;
+        }
+    }
+    out
+}
+
+fn branch_select_sql(table_prefix: &str, module_id: &str, where_sql: &str) -> String {
+    let mid_lit = module_id.replace('\'', "''");
+    format!(
+        r#"SELECT
+  m.link AS link,
+  {COL_TITLE} AS title,
+  {COL_ALT} AS alttitles,
+  {COL_AUTHORS} AS authors,
+  {COL_ARTISTS} AS artists,
+  {COL_GENRES} AS genres,
+  {COL_STATUS} AS status,
+  {COL_SUMMARY} AS summary,
+  CASE
+    WHEN c.link IS NOT NULL AND IFNULL(c.title,'') = 'N/A' THEN COALESCE(m.numchapter, 0)
+    WHEN c.link IS NOT NULL THEN COALESCE(c.numchapter, 0)
+    ELSE COALESCE(m.numchapter, 0)
+  END AS numchapter,
+  COALESCE(m.jdn, 0) AS jdn,
+  COALESCE(c.cover, '') AS cover,
+  CASE WHEN IFNULL(c.title,'') = 'N/A' THEN 1 ELSE 0 END AS info_failed,
+  '{mid_lit}' AS module_id
+FROM {table_prefix}masterlist m
+LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = '{mid_lit}'
+{where_sql}"#
+    )
+}
+
+fn branch_count_sql(table_prefix: &str, module_id: &str, where_sql: &str) -> String {
+    let mid_lit = module_id.replace('\'', "''");
+    format!(
+        r#"SELECT m.link
+FROM {table_prefix}masterlist m
+LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = '{mid_lit}'
+{where_sql}"#
+    )
+}
+
+fn open_multi_catalog(ids: &[String]) -> Result<(Connection, Vec<String>), String> {
+    if ids.is_empty() {
+        return Err("sin módulos".into());
+    }
+    let conn = open_catalog(&ids[0])?;
+    register_regexp(&conn)?;
+    let _ = open_app_db()?;
+    let app_path = sql_quote_path(&app_db_path());
+    conn.execute(&format!("ATTACH DATABASE {app_path} AS appdb"), [])
+        .map_err(|e| format!("ATTACH appdb: {e}"))?;
+
+    let mut attached = vec![ids[0].clone()];
+    for id in ids.iter().skip(1) {
+        let path = catalog_db_path(id);
+        let qpath = sql_quote_path(&path);
+        let alias = sql_quote_ident(id);
+        match conn.execute(&format!("ATTACH DATABASE {qpath} AS {alias}"), []) {
+            Ok(_) => {
+                attached.push(id.clone());
+            }
+            Err(e) => {
+                // Stock SQLite often caps ATTACH at 10; fall back to merge path.
+                let _ = conn.execute("DETACH DATABASE appdb", []);
+                for a in attached.iter().skip(1).rev() {
+                    let _ = conn.execute(
+                        &format!("DETACH DATABASE {}", sql_quote_ident(a)),
+                        [],
+                    );
+                }
+                return Err(format!("ATTACH limit: {e}"));
+            }
+        }
+    }
+    Ok((conn, attached))
+}
+
+fn map_entry_all(r: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
+    let failed_flag: i64 = r.get(11)?;
+    Ok(CatalogEntry {
+        link: r.get(0)?,
+        title: r.get(1)?,
+        alttitles: r.get(2)?,
+        authors: r.get(3)?,
+        artists: r.get(4)?,
+        genres: r.get(5)?,
+        status: r.get(6)?,
+        summary: r.get(7)?,
+        numchapter: r.get(8)?,
+        jdn: r.get(9)?,
+        cover: r.get(10)?,
+        info_failed: failed_flag != 0,
+        module_id: r.get(12)?,
+        module_name: String::new(),
+    })
+}
+
+fn search_all_union(
+    ids: &[String],
+    query: &str,
+    filter: &CatalogAdvFilter,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<CatalogEntry>, String> {
+    let (conn, attached) = open_multi_catalog(ids)?;
+    let filter_sql = FilterSql::from_adv(filter, query);
+    let where_sql = filter_sql.where_sql();
+
+    let mut branches = Vec::new();
+    for (i, id) in attached.iter().enumerate() {
+        let prefix = if i == 0 {
+            String::new()
+        } else {
+            format!("{}.", sql_quote_ident(id))
+        };
+        branches.push(branch_select_sql(&prefix, id, &where_sql));
+    }
+    let union_body = branches.join("\nUNION ALL\n");
+    let sql = format!(
+        "SELECT * FROM (\n{union_body}\n) ORDER BY title COLLATE NATCMP, link LIMIT ? OFFSET ?"
+    );
+
+    // Anonymous `?` per branch — repeat bound values for each UNION arm.
+    let mut all_params: Vec<SqlValue> = Vec::new();
+    for _ in 0..attached.len() {
+        all_params.extend(filter_sql.params.iter().cloned());
+    }
+    all_params.push(SqlValue::Integer(limit));
+    all_params.push(SqlValue::Integer(offset));
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params_from_iter(all_params), map_entry_all)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+
+    // Cleanup attaches (conn drop would too, but be explicit for WAL).
+    let _ = conn.execute("DETACH DATABASE appdb", []);
+    for a in attached.iter().skip(1).rev() {
+        let _ = conn.execute(&format!("DETACH DATABASE {}", sql_quote_ident(a)), []);
+    }
+    Ok(out)
+}
+
+fn count_all_union(ids: &[String], query: &str, filter: &CatalogAdvFilter) -> Result<i64, String> {
+    let (conn, attached) = open_multi_catalog(ids)?;
+    let filter_sql = FilterSql::from_adv(filter, query);
+    let where_sql = filter_sql.where_sql();
+
+    let mut branches = Vec::new();
+    for (i, id) in attached.iter().enumerate() {
+        let prefix = if i == 0 {
+            String::new()
+        } else {
+            format!("{}.", sql_quote_ident(id))
+        };
+        branches.push(branch_count_sql(&prefix, id, &where_sql));
+    }
+    let union_body = branches.join("\nUNION ALL\n");
+    let sql = format!("SELECT COUNT(*) FROM (\n{union_body}\n)");
+
+    let mut all_params: Vec<SqlValue> = Vec::new();
+    for _ in 0..attached.len() {
+        all_params.extend(filter_sql.params.iter().cloned());
+    }
+
+    let n: i64 = conn
+        .query_row(&sql, params_from_iter(all_params), |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+
+    let _ = conn.execute("DETACH DATABASE appdb", []);
+    for a in attached.iter().skip(1).rev() {
+        let _ = conn.execute(&format!("DETACH DATABASE {}", sql_quote_ident(a)), []);
+    }
+    Ok(n)
+}
+
+fn search_all_merge(
+    ids: &[String],
+    query: &str,
+    filter: &CatalogAdvFilter,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<CatalogEntry>, String> {
+    let fetch_n = (offset + limit).max(1);
+    let mut streams: Vec<std::collections::VecDeque<CatalogEntry>> = Vec::new();
+    for id in ids {
+        let rows = search_filtered_module(id, query, filter, fetch_n, 0)?;
+        streams.push(rows.into());
+    }
+
+    let mut out = Vec::with_capacity(limit as usize);
+    let mut skipped = 0i64;
+    loop {
+        let mut best_i: Option<usize> = None;
+        for (i, s) in streams.iter().enumerate() {
+            if let Some(front) = s.front() {
+                best_i = match best_i {
+                    None => Some(i),
+                    Some(j) => {
+                        let a = &streams[j].front().unwrap().title;
+                        let b = &front.title;
+                        match nat_cmp(a, b) {
+                            Ordering::Greater => Some(i),
+                            Ordering::Equal => {
+                                let al = &streams[j].front().unwrap().link;
+                                if front.link < *al {
+                                    Some(i)
+                                } else {
+                                    Some(j)
+                                }
+                            }
+                            Ordering::Less => Some(j),
+                        }
+                    }
+                };
+            }
+        }
+        let Some(i) = best_i else { break };
+        let row = streams[i].pop_front().unwrap();
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+        out.push(row);
+        if out.len() as i64 >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+fn search_filtered_module(
+    module_id: &str,
+    query: &str,
+    filter: &CatalogAdvFilter,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<CatalogEntry>, String> {
+    let path = catalog_db_path(module_id);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = open_catalog(module_id)?;
+    register_regexp(&conn)?;
+    let _attach = AppDbAttach::attach(&conn)?;
+    let filter_sql = FilterSql::from_adv(filter, query);
+    let where_sql = filter_sql.where_sql();
+    let mid_lit = module_id.replace('\'', "''");
+    let sql = format!(
+        r#"SELECT
+  m.link,
+  {COL_TITLE},
+  {COL_ALT},
+  {COL_AUTHORS},
+  {COL_ARTISTS},
+  {COL_GENRES},
+  {COL_STATUS},
+  {COL_SUMMARY},
+  CASE
+    WHEN c.link IS NOT NULL AND IFNULL(c.title,'') = 'N/A' THEN COALESCE(m.numchapter, 0)
+    WHEN c.link IS NOT NULL THEN COALESCE(c.numchapter, 0)
+    ELSE COALESCE(m.numchapter, 0)
+  END,
+  COALESCE(m.jdn, 0),
+  COALESCE(c.cover, ''),
+  CASE WHEN IFNULL(c.title,'') = 'N/A' THEN 1 ELSE 0 END,
+  '{mid_lit}' AS module_id
+FROM masterlist m
+LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = '{mid_lit}'
+{where_sql}
+ORDER BY m.title COLLATE NATCMP, m.link
+LIMIT ? OFFSET ?"#,
+    );
+
+    let mut all_params = filter_sql.params.clone();
+    all_params.push(SqlValue::Integer(limit));
+    all_params.push(SqlValue::Integer(offset));
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params_from_iter(all_params), map_entry_all)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn count_filtered_module(
+    module_id: &str,
+    query: &str,
+    filter: &CatalogAdvFilter,
+) -> Result<i64, String> {
+    let path = catalog_db_path(module_id);
+    if !path.exists() {
+        return Ok(0);
+    }
+    let conn = open_catalog(module_id)?;
+    register_regexp(&conn)?;
+    let _attach = AppDbAttach::attach(&conn)?;
+    let filter_sql = FilterSql::from_adv(filter, query);
+    let where_sql = filter_sql.where_sql();
+    let mid_lit = module_id.replace('\'', "''");
+    let sql = format!(
+        r#"SELECT COUNT(*)
+FROM masterlist m
+LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = '{mid_lit}'
+{where_sql}"#
+    );
+    conn.query_row(&sql, params_from_iter(filter_sql.params), |r| r.get(0))
+        .map_err(|e| e.to_string())
+}
+
+fn count_all_merge(ids: &[String], query: &str, filter: &CatalogAdvFilter) -> Result<i64, String> {
+    let mut total = 0i64;
+    for id in ids {
+        total += count_filtered_module(id, query, filter)?;
+    }
+    Ok(total)
+}
+
+/// FMD2 FilterAllSites: search across module DBs with SQL filters + pagination.
+pub fn search_all(
+    module_ids: &[String],
+    query: &str,
+    filter: &CatalogAdvFilter,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<CatalogEntry>, String> {
+    let ids = existing_module_ids(module_ids);
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = limit.clamp(1, 500);
+    let offset = offset.max(0);
+    match search_all_union(&ids, query, filter, limit, offset) {
+        Ok(v) => Ok(v),
+        Err(_e) => search_all_merge(&ids, query, filter, limit, offset),
+    }
+}
+
+/// Count rows matching `search_all` filters.
+pub fn count_all(
+    module_ids: &[String],
+    query: &str,
+    filter: &CatalogAdvFilter,
+) -> Result<i64, String> {
+    let ids = existing_module_ids(module_ids);
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    match count_all_union(&ids, query, filter) {
+        Ok(n) => Ok(n),
+        Err(_e) => count_all_merge(&ids, query, filter),
     }
 }
 
@@ -1063,5 +1732,53 @@ mod tests {
         link_set_insert(&mut set, "/manga/foo/");
         assert!(link_set_contains(&set, "/manga/foo"));
         assert!(link_set_contains(&set, "/manga/foo/"));
+    }
+
+    #[test]
+    fn search_all_merges_modules_and_filters() {
+        let a = "testalla000000000000000000000001";
+        let b = "testallb000000000000000000000002";
+        let _ = std::fs::remove_file(catalog_db_path(a));
+        let _ = std::fs::remove_file(catalog_db_path(b));
+        upsert_links(
+            a,
+            &[
+                ("/a/same/".into(), "Same Title".into()),
+                ("/a/only/".into(), "Alpha Only".into()),
+            ],
+        )
+        .expect("a");
+        upsert_links(
+            b,
+            &[
+                ("/b/same/".into(), "Same Title".into()),
+                ("/b/only/".into(), "Beta Only".into()),
+            ],
+        )
+        .expect("b");
+
+        assert_eq!(search(a, "", 50, 0).expect("sa").len(), 2);
+        assert_eq!(search(b, "", 50, 0).expect("sb").len(), 2);
+        assert!(catalog_db_path(a).exists());
+        assert!(catalog_db_path(b).exists());
+
+        let filter = CatalogAdvFilter::default();
+        let ids = vec![a.to_string(), b.to_string()];
+        let n = count_all(&ids, "", &filter).unwrap_or_else(|e| panic!("count_all: {e}"));
+        assert_eq!(n, 4, "count_all");
+        let all = search_all(&ids, "", &filter, 50, 0).unwrap_or_else(|e| panic!("search_all: {e}"));
+        assert_eq!(all.len(), 4);
+        let same: Vec<_> = all.iter().filter(|e| e.title == "Same Title").collect();
+        assert_eq!(same.len(), 2);
+        assert!(same.iter().any(|e| e.module_id == a));
+        assert!(same.iter().any(|e| e.module_id == b));
+
+        let q = search_all(&ids, "Alpha", &filter, 50, 0).expect("q");
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].title, "Alpha Only");
+        assert_eq!(q[0].module_id, a);
+
+        let _ = std::fs::remove_file(catalog_db_path(a));
+        let _ = std::fs::remove_file(catalog_db_path(b));
     }
 }

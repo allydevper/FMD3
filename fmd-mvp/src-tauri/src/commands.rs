@@ -1,4 +1,4 @@
-use crate::catalog::{self, CatalogEntry, CatalogStats, MangaCacheRow, MangaCacheUpsert};
+use crate::catalog::{self, CatalogAdvFilter, CatalogEntry, CatalogStats, MangaCacheRow, MangaCacheUpsert};
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
     get_info, modules_list, modules_match_url, modules_refresh, update_list, ChapterInfo,
@@ -77,6 +77,48 @@ pub fn catalog_count(module_id: String, query: String) -> Result<i64, String> {
         );
     }
     catalog::count(&module_id, &query)
+}
+
+#[tauri::command]
+pub fn catalog_search_all(
+    module_ids: Vec<String>,
+    query: String,
+    filter: Option<CatalogAdvFilter>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<CatalogEntry>, String> {
+    let ids: Vec<String> = module_ids
+        .into_iter()
+        .filter(|id| !id.trim().is_empty() && !crate::settings_keys::module_disabled(id))
+        .collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let filter = filter.unwrap_or_default();
+    catalog::search_all(
+        &ids,
+        &query,
+        &filter,
+        limit.unwrap_or(100),
+        offset.unwrap_or(0),
+    )
+}
+
+#[tauri::command]
+pub fn catalog_count_all(
+    module_ids: Vec<String>,
+    query: String,
+    filter: Option<CatalogAdvFilter>,
+) -> Result<i64, String> {
+    let ids: Vec<String> = module_ids
+        .into_iter()
+        .filter(|id| !id.trim().is_empty() && !crate::settings_keys::module_disabled(id))
+        .collect();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let filter = filter.unwrap_or_default();
+    catalog::count_all(&ids, &query, &filter)
 }
 
 #[tauri::command]

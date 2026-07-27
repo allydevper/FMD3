@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type SyntheticEvent,
 } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -17,6 +18,7 @@ import {
   CATALOG_PAGE,
   CAT_OVERSCAN,
   CAT_ROW_H,
+  CAT_ROW_H_ALL_SITES,
   CH_OVERSCAN,
   CH_ROW_GAP,
   CH_ROW_H,
@@ -25,6 +27,7 @@ import {
   GENRE_TRI_CYCLE,
   emptyAdvFilter,
   cloneAdvFilter,
+  advFilterToPayload,
   isCatalogEntryNew,
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
@@ -168,6 +171,12 @@ export function InfoView() {
   const [activeCatalogTitle, setActiveCatalogTitle] = useState("");
   /** Title from last catalog stub — survives async GetInfo when painting fail state. */
   const pendingSidebarTitleRef = useRef("");
+  const [catalogCtxMenu, setCatalogCtxMenu] = useState<{
+    x: number;
+    y: number;
+    entry: CatalogEntry;
+  } | null>(null);
+  const catalogCtxMenuRef = useRef<HTMLDivElement | null>(null);
 
   const catalogQueryRef = useRef("");
   const catalogLoadedKeyRef = useRef("");
@@ -308,6 +317,7 @@ export function InfoView() {
   const [appliedAdvFilter, setAppliedAdvFilter] = useState<AdvFilterState>(() => emptyAdvFilter());
   const [advFilterApplied, setAdvFilterApplied] = useState(false);
   const advFilterAppliedRef = useRef(false);
+  const appliedAdvFilterRef = useRef<AdvFilterState>(emptyAdvFilter());
   const [filterNewDays, setFilterNewDays] = useState(1);
   const [liveSearch, setLiveSearch] = useState(true);
 
@@ -435,6 +445,8 @@ export function InfoView() {
 
   const visibleCatalog = useMemo((): (CatalogEntry | undefined)[] => {
     if (!advFilterApplied) return catalogRows;
+    // All-sites: SQL already applied filters + title query; keep virtualized rows.
+    if (appliedAdvFilter.allSites) return catalogRows;
     const needle = catalogText.trim().toLowerCase();
     return catalogRows.filter((e): e is CatalogEntry => {
       if (!e || !entryMatchesFilter(e, appliedAdvFilter, filterNewDays)) return false;
@@ -449,29 +461,18 @@ export function InfoView() {
     setAdvFilterApplied(on);
   }
 
-  async function loadAllEnabledCatalogs(): Promise<CatalogEntry[]> {
-    const query = catalogQueryRef.current;
-    const out: CatalogEntry[] = [];
-    for (const m of enabledModules) {
-      let offset = 0;
-      for (;;) {
-        setCatalogLoadingText(`Cargando ${m.name}… (${out.length})`);
-        const page = await api.catalogSearch(m.id, query, CATALOG_PAGE, offset);
-        for (const e of page) {
-          out.push({
-            ...e,
-            module_id: e.module_id || m.id,
-            module_name: m.name,
-          });
-        }
-        if (page.length < CATALOG_PAGE) break;
-        offset += CATALOG_PAGE;
-      }
-    }
-    out.sort((a, b) =>
-      a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: "base" }),
-    );
-    return out;
+  function enrichModuleNames(rows: CatalogEntry[]): CatalogEntry[] {
+    const names = new Map(enabledModules.map((m) => [m.id, m.name]));
+    return rows.map((e) => ({
+      ...e,
+      module_id: e.module_id || "",
+      module_name: e.module_name || names.get(e.module_id || "") || "",
+    }));
+  }
+
+  function allSitesFilterPayload(snapshot?: AdvFilterState) {
+    const f = snapshot ?? appliedAdvFilterRef.current;
+    return advFilterToPayload(f, filterNewDays);
   }
 
   function applyAdvFilter() {
@@ -480,27 +481,28 @@ export function InfoView() {
       setCatalogLoadingText("Cargando títulos…");
       try {
         const snapshot = cloneAdvFilter(advFilter);
-        let all: CatalogEntry[];
+        appliedAdvFilterRef.current = snapshot;
+        setAppliedAdvFilter(snapshot);
+        setAdvFilterAppliedBoth(true);
+
         if (snapshot.allSites) {
-          all = await loadAllEnabledCatalogs();
-          const pages = Math.max(1, Math.ceil(all.length / CATALOG_PAGE));
-          loadedPagesRef.current = new Set(Array.from({ length: pages }, (_, i) => i));
-          wantedPagesRef.current = [];
-          setCatalogRows(all);
-          setCatalogTotalBoth(all.length);
-          catalogLoadedKeyRef.current = `allsites||${catalogQueryRef.current}`;
-          bumpCatalogReset();
-        } else {
-          all = await ensureAllPagesLoaded();
-          const mid = selectedModuleId;
-          const mname = currentModule?.name || "";
-          if (mid) {
-            all = all.map((e) => ({
-              ...e,
-              module_id: e.module_id || mid,
-              module_name: e.module_name || mname,
-            }));
-            setCatalogRows(catalogRowsRef.current.map((e) =>
+          catalogQueryRef.current = catalogText.trim();
+          await loadAllSitesCatalog(true, true, snapshot);
+          log(`Filtro aplicado (todas las fuentes): ${catalogTotalRef.current} títulos`, "ok");
+          return;
+        }
+
+        let all = await ensureAllPagesLoaded();
+        const mid = selectedModuleId;
+        const mname = currentModule?.name || "";
+        if (mid) {
+          all = all.map((e) => ({
+            ...e,
+            module_id: e.module_id || mid,
+            module_name: e.module_name || mname,
+          }));
+          setCatalogRows(
+            catalogRowsRef.current.map((e) =>
               e
                 ? {
                     ...e,
@@ -508,8 +510,8 @@ export function InfoView() {
                     module_name: e.module_name || mname,
                   }
                 : e,
-            ));
-          }
+            ),
+          );
         }
         const needle = catalogText.trim().toLowerCase();
         const n = all.filter((e) => {
@@ -517,8 +519,6 @@ export function InfoView() {
           if (!needle) return true;
           return `${e.title} ${e.alttitles || ""}`.toLowerCase().includes(needle);
         }).length;
-        setAppliedAdvFilter(snapshot);
-        setAdvFilterAppliedBoth(true);
         setCatalogStatsText(String(n));
         log(`Filtro aplicado: ${n} títulos`, "ok");
       } catch (e) {
@@ -594,12 +594,29 @@ export function InfoView() {
   }
 
   async function fetchPage(page: number, gen: number) {
-    const id = selectedModuleId;
-    if (!id || !enabledModuleIds.has(id)) return;
+    const allSites =
+      advFilterAppliedRef.current && appliedAdvFilterRef.current.allSites;
     const query = catalogQueryRef.current;
     inflightRef.current.add(page);
     try {
-      const rows = await api.catalogSearch(id, query, CATALOG_PAGE, page * CATALOG_PAGE);
+      let rows: CatalogEntry[];
+      if (allSites) {
+        const ids = enabledModules.map((m) => m.id);
+        if (!ids.length) return;
+        rows = enrichModuleNames(
+          await api.catalogSearchAll(
+            ids,
+            query,
+            allSitesFilterPayload(),
+            CATALOG_PAGE,
+            page * CATALOG_PAGE,
+          ),
+        );
+      } else {
+        const id = selectedModuleId;
+        if (!id || !enabledModuleIds.has(id)) return;
+        rows = await api.catalogSearch(id, query, CATALOG_PAGE, page * CATALOG_PAGE);
+      }
       if (gen !== catalogLoadGenRef.current || catalogQueryRef.current !== query) return;
       const next = catalogRowsRef.current.slice();
       const base = page * CATALOG_PAGE;
@@ -672,6 +689,10 @@ export function InfoView() {
   }
 
   async function loadCatalog(force = false, silent = false) {
+    if (advFilterAppliedRef.current && appliedAdvFilterRef.current.allSites) {
+      await loadAllSitesCatalog(force, silent);
+      return;
+    }
     const id = selectedModuleId;
     if (!enabledModules.length) {
       catalogLoadGenRef.current += 1;
@@ -770,7 +791,92 @@ export function InfoView() {
     }
   }
 
+  /** Virtualized all-sites catalog (FMD2 FilterAllSites + ATTACH/UNION). */
+  async function loadAllSitesCatalog(
+    force = false,
+    silent = false,
+    snapshot?: AdvFilterState,
+  ) {
+    const ids = enabledModules.map((m) => m.id);
+    if (!ids.length) {
+      catalogLoadGenRef.current += 1;
+      resetFillQueues();
+      setCatalogRows([]);
+      setCatalogTotalBoth(0);
+      setCatalogStatsText("0");
+      catalogLoadedKeyRef.current = "";
+      if (!silent) {
+        log(
+          "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
+          "err",
+        );
+      }
+      return;
+    }
+
+    const filter = allSitesFilterPayload(snapshot);
+    const query = catalogQueryRef.current;
+    const key = `allsites||${query}||${JSON.stringify(filter)}`;
+    if (!force && key === catalogLoadedKeyRef.current && loadedPagesRef.current.size > 0) {
+      return;
+    }
+
+    const gen = ++catalogLoadGenRef.current;
+    resetFillQueues();
+    window.clearTimeout(catalogLoadingDelayRef.current);
+    const preserveUntilData = silent && catalogRowsRef.current.length > 0;
+
+    if (!preserveUntilData) {
+      setCatalogRows([]);
+      setCatalogTotalBoth(0);
+      setCatalogError(false);
+      setCatalogLoading(false);
+      catalogSpinnerShownRef.current = false;
+      catalogLoadingDelayRef.current = window.setTimeout(() => {
+        if (gen !== catalogLoadGenRef.current) return;
+        catalogSpinnerShownRef.current = true;
+        setCatalogLoading(true);
+        setCatalogLoadingText("Cargando todas las fuentes…");
+      }, 200);
+    } else {
+      setCatalogLoadingText("Cargando todas las fuentes…");
+    }
+
+    try {
+      const [page0Raw, total] = await Promise.all([
+        api.catalogSearchAll(ids, query, filter, CATALOG_PAGE, 0),
+        api.catalogCountAll(ids, query, filter),
+      ]);
+      if (gen !== catalogLoadGenRef.current) return;
+      const page0 = enrichModuleNames(page0Raw);
+      const actualTotal =
+        total > 0 && page0.length < CATALOG_PAGE && page0.length < total ? page0.length : total;
+      const rows: (CatalogEntry | undefined)[] = Array.from({ length: actualTotal });
+      for (let i = 0; i < page0.length && i < actualTotal; i++) rows[i] = page0[i];
+      loadedPagesRef.current = new Set(actualTotal > 0 ? [0] : []);
+      setCatalogTotalBoth(actualTotal);
+      setCatalogStatsText(String(actualTotal));
+      setCatalogRows(rows);
+      catalogLoadedKeyRef.current = key;
+      bumpCatalogReset();
+      void startFill(gen);
+    } catch (e) {
+      if (gen !== catalogLoadGenRef.current) return;
+      catalogLoadedKeyRef.current = "";
+      setCatalogRows([]);
+      setCatalogTotalBoth(0);
+      setCatalogError(true);
+      log(String(e), "err");
+    } finally {
+      if (gen === catalogLoadGenRef.current) {
+        window.clearTimeout(catalogLoadingDelayRef.current);
+        setCatalogLoading(false);
+      }
+    }
+  }
+
   useEffect(() => {
+    if (advFilterAppliedRef.current && appliedAdvFilterRef.current.allSites) return;
     if (!selectedModuleId || !enabledModuleIds.has(selectedModuleId)) return;
     void refreshCatalogStats();
     void loadCatalog(true);
@@ -791,6 +897,10 @@ export function InfoView() {
 
   useEffect(() => {
     if (!catalogJobDoneSeq) return;
+    if (advFilterAppliedRef.current && appliedAdvFilterRef.current.allSites) {
+      void loadAllSitesCatalog(true, true);
+      return;
+    }
     if (!selectedModuleId) return;
     if (!lastCatalogJobModuleIds.includes(selectedModuleId)) return;
     void loadCatalog(true, true);
@@ -867,8 +977,16 @@ export function InfoView() {
    * ------------------------------------------------------------------- */
   function scheduleCatalogSearch(value: string) {
     window.clearTimeout(catalogSearchTimerRef.current);
-    // Advanced mode: text filters client-side on the already-loaded catalog (no reload flicker).
-    if (advFilterAppliedRef.current) return;
+    if (advFilterAppliedRef.current) {
+      // All-sites: re-query SQL with the bar text; single-module keeps client filter.
+      if (!appliedAdvFilterRef.current.allSites) return;
+      catalogSearchTimerRef.current = window.setTimeout(() => {
+        const next = value.trim();
+        catalogQueryRef.current = next;
+        void loadAllSitesCatalog(true, true);
+      }, 150);
+      return;
+    }
     catalogSearchTimerRef.current = window.setTimeout(() => {
       const next = value.trim();
       if (next === catalogQueryRef.current && catalogLoadedKeyRef.current.startsWith(`${selectedModuleId}||`)) {
@@ -886,7 +1004,12 @@ export function InfoView() {
 
   function runCatalogSearch() {
     window.clearTimeout(catalogSearchTimerRef.current);
-    if (advFilterAppliedRef.current) return;
+    if (advFilterAppliedRef.current) {
+      if (!appliedAdvFilterRef.current.allSites) return;
+      catalogQueryRef.current = catalogText.trim();
+      void loadAllSitesCatalog(true, true);
+      return;
+    }
     catalogQueryRef.current = catalogText.trim();
     void loadCatalog(true, true);
   }
@@ -894,7 +1017,12 @@ export function InfoView() {
   function clearCatalogFilter() {
     window.clearTimeout(catalogSearchTimerRef.current);
     setCatalogText("");
-    if (advFilterAppliedRef.current) return;
+    if (advFilterAppliedRef.current) {
+      if (!appliedAdvFilterRef.current.allSites) return;
+      catalogQueryRef.current = "";
+      void loadAllSitesCatalog(true, true);
+      return;
+    }
     catalogQueryRef.current = "";
     void loadCatalog(true, true);
   }
@@ -904,7 +1032,9 @@ export function InfoView() {
     setCatalogText("");
     catalogQueryRef.current = "";
     setAdvFilter(emptyAdvFilter());
-    setAppliedAdvFilter(emptyAdvFilter());
+    const empty = emptyAdvFilter();
+    setAppliedAdvFilter(empty);
+    appliedAdvFilterRef.current = empty;
     setAdvFilterAppliedBoth(false);
     void loadCatalog(true, true);
     log("Filtro quitado.", "ok");
@@ -1369,6 +1499,7 @@ export function InfoView() {
   }
 
   function handleCatalogRowClick(idx: number, entry: CatalogEntry) {
+    setCatalogCtxMenu(null);
     setInfoMode("search");
     const title = entry.title || entry.link;
     setActiveCatalogTitle(title);
@@ -1381,6 +1512,84 @@ export function InfoView() {
     }
     lastCatalogClickRef.current = { idx, at: now };
   }
+
+  function handleCatalogRowContextMenu(
+    ev: ReactMouseEvent,
+    entry: CatalogEntry,
+  ) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    setInfoMode("search");
+    setActiveCatalogTitle(entry.title || entry.link);
+    // Keep select-without-open; reset double-click timer so this isn't a false open.
+    lastCatalogClickRef.current = { idx: -1, at: 0 };
+    const pad = 8;
+    const menuW = 200;
+    const menuH = 40;
+    const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
+    const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
+    setCatalogCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), entry });
+  }
+
+  async function addFavoriteFromCatalog(entry: CatalogEntry) {
+    setCatalogCtxMenu(null);
+    const moduleId = entry.module_id || selectedModuleId || "";
+    const mod =
+      (moduleId ? modules.find((m) => m.id === moduleId) : undefined) || currentModule;
+    if (!mod || !moduleId) {
+      log("No hay fuente para este título.", "err");
+      return;
+    }
+    const root = mod.root_url || "";
+    const url = maybeFillHost(root, entry.link);
+    if (!url) {
+      log("Enlace vacío; no se puede añadir a favoritos.", "err");
+      return;
+    }
+    const title = entry.title || entry.link;
+    try {
+      const fav = await api.favoritesAdd({
+        module_id: moduleId,
+        module_name: entry.module_name || mod.name || "",
+        root_url: root,
+        manga_url: url,
+        title,
+        chapters: [],
+      });
+      if (mangaUrl && catalogLinkKey(mangaUrl) === catalogLinkKey(url)) {
+        setIsFavorite(true);
+      }
+      log(
+        `Favorito guardado: ${fav.title} (sin GetInfo; el check rellenará capítulos)`,
+        "ok",
+      );
+      const gotoFav = await api.settingsGet("ui.goto_favorites_on_add");
+      if (gotoFav === "1" || gotoFav === "true") setActiveNav("favorites");
+    } catch (e) {
+      log(String(e), "err");
+    }
+  }
+
+  useEffect(() => {
+    if (!catalogCtxMenu) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setCatalogCtxMenu(null);
+    };
+    const onPointer = (ev: MouseEvent) => {
+      const el = catalogCtxMenuRef.current;
+      if (el && ev.target instanceof Node && el.contains(ev.target)) return;
+      setCatalogCtxMenu(null);
+    };
+    const onScroll = () => setCatalogCtxMenu(null);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onPointer, true);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onPointer, true);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [catalogCtxMenu]);
 
   /* ---------------------------------------------------------------------
    * Chapters
@@ -1723,7 +1932,10 @@ export function InfoView() {
         </div>
       );
     }
-    const isEmpty = advFilterApplied ? visibleCatalog.length === 0 : catalogTotal === 0;
+    const isEmpty =
+      advFilterApplied && !appliedAdvFilter.allSites
+        ? visibleCatalog.length === 0
+        : catalogTotal === 0;
     if (isEmpty && !catalogLoading) {
       return (
         <div className="catalog-results" id="catalog-list">
@@ -1731,19 +1943,22 @@ export function InfoView() {
         </div>
       );
     }
+    const showSite = advFilterApplied && appliedAdvFilter.allSites;
     return (
       <VirtualList
         id="catalog-list"
         className="catalog-results"
         innerClassName="catalog-virtual"
         items={visibleCatalog}
-        itemHeight={CAT_ROW_H}
+        itemHeight={showSite ? CAT_ROW_H_ALL_SITES : CAT_ROW_H}
         overscan={CAT_OVERSCAN}
         resetKey={catalogResetSeq}
         onRange={(s, e) => {
-          if (!advFilterApplied) requestRange(s, e);
+          if (!advFilterApplied || appliedAdvFilter.allSites) requestRange(s, e);
         }}
-        getKey={(e, i) => (e ? `${i}:${e.link}` : `ph:${i}`)}
+        getKey={(e, i) =>
+          e ? `${e.module_id || ""}:${e.link}:${i}` : `ph:${i}`
+        }
         renderItem={(e, i, style: CSSProperties) => {
           if (!e) {
             return <div className="catalog-row is-loading" style={style} aria-hidden />;
@@ -1757,14 +1972,20 @@ export function InfoView() {
           return (
             <button
               type="button"
-              className={`catalog-row${title === activeCatalogTitle ? " active" : ""}${
-                isNew ? " is-new" : ""
-              }`}
+              className={`catalog-row${showSite ? " has-site" : ""}${
+                title === activeCatalogTitle ? " active" : ""
+              }${isNew ? " is-new" : ""}`}
               style={style}
               title={tip}
               onClick={() => handleCatalogRowClick(i, e)}
+              onContextMenu={(ev) => handleCatalogRowContextMenu(ev, e)}
             >
-              <div className="catalog-row-title">{title}</div>
+              <div className="catalog-row-body">
+                <div className="catalog-row-title">{title}</div>
+                {showSite && site ? (
+                  <div className="catalog-row-site">{site}</div>
+                ) : null}
+              </div>
               <span className="catalog-row-meta">{meta}</span>
             </button>
           );
@@ -1926,7 +2147,9 @@ export function InfoView() {
               <Icon name="filterOff" className="ico ico-sm" />
             </button>
             <span className="result-badge" id="catalog-stats">
-              {advFilterApplied ? visibleCatalog.length : catalogStatsText}
+              {advFilterApplied && !appliedAdvFilter.allSites
+                ? visibleCatalog.length
+                : catalogStatsText}
             </span>
           </div>
         </div>
@@ -2328,10 +2551,7 @@ export function InfoView() {
                         </span>
                       </span>
                     </label>
-                    <label
-                      className="opt-row opt-row-switch ui-status-none"
-                      title="Sin función — paridad imposible por ahora"
-                    >
+                    <label className="opt-row opt-row-switch">
                       <div>
                         <div className="opt-row-title">Buscar en todas las fuentes</div>
                         <div className="opt-row-desc">Ignora la fuente seleccionada</div>
@@ -2587,6 +2807,24 @@ export function InfoView() {
               </button>
             </footer>
           </div>
+        </div>
+      ) : null}
+      {catalogCtxMenu ? (
+        <div
+          ref={catalogCtxMenuRef}
+          className="catalog-ctx-menu"
+          style={{ left: catalogCtxMenu.x, top: catalogCtxMenu.y }}
+          role="menu"
+        >
+          <button
+            type="button"
+            className="catalog-ctx-item"
+            role="menuitem"
+            onClick={() => void addFavoriteFromCatalog(catalogCtxMenu.entry)}
+          >
+            <Icon name="heart" className="ico ico-sm" />
+            Añadir a favoritos
+          </button>
         </div>
       ) : null}
     </section>
