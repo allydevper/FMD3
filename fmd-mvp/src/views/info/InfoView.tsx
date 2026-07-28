@@ -11,6 +11,7 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { appConfirm } from "../../components/AppConfirm";
+import { appToastUndo } from "../../components/AppToast";
 import { Icon } from "../../components/Icon";
 import { VirtualList } from "../../components/VirtualList";
 import type { IconName } from "../../icons";
@@ -38,6 +39,7 @@ import chaptersEmptyUrl from "../../assets/chapters-empty.png";
 import type {
   AdvFilterState,
   CatalogEntry,
+  FavoriteAddRequest,
   GenreTri,
   InfoMode,
   MangaInfoResult,
@@ -231,6 +233,22 @@ export function InfoView() {
   function applySidebarFavoriteState(isFav: boolean, id: number | null) {
     setIsFavorite(isFav);
     setFavoriteId(id);
+  }
+
+  function showFavoriteRemovedToast(snapshot: FavoriteAddRequest, matchesSidebar: boolean) {
+    appToastUndo({
+      message: "Se quitó de favoritos",
+      durationMs: 6000,
+      onUndo: async () => {
+        try {
+          const fav = await api.favoritesAdd(snapshot);
+          if (matchesSidebar) applySidebarFavoriteState(true, fav.id);
+          log(`Favorito restaurado: ${fav.title}`, "ok");
+        } catch (e) {
+          log(String(e), "err");
+        }
+      },
+    });
   }
 
   function replaceCatalogSelection(entry: CatalogEntry, idx: number) {
@@ -1888,21 +1906,30 @@ export function InfoView() {
       log("No se encontró el favorito.", "err");
       return;
     }
-    const ok = await appConfirm({
-      title: "Quitar de favoritos",
-      message: `¿Quitar «${title}» de favoritos?`,
-      okLabel: "Quitar",
-      cancelLabel: "Cancelar",
-    });
-    if (!ok) return;
+    const { moduleId, mod } = catalogEntryModule(entry);
+    if (!mod || !moduleId) {
+      log("No hay fuente para este título.", "err");
+      return;
+    }
+    const root = mod.root_url || "";
+    const url = maybeFillHost(root, entry.link);
+    const matchesSidebar = catalogEntryMatchesSidebar(entry, url);
+    const snapshot: FavoriteAddRequest = {
+      module_id: moduleId,
+      module_name: entry.module_name || mod.name || "",
+      root_url: root,
+      manga_url:
+        matchesSidebar && (mangaUrl || urlInput).trim()
+          ? (mangaUrl || urlInput).trim()
+          : url,
+      title,
+      chapters: matchesSidebar ? mangaRef.current?.chapters ?? [] : [],
+    };
     try {
       await api.favoritesRemove(favId);
-      const { mod } = catalogEntryModule(entry);
-      const url = maybeFillHost(mod?.root_url || "", entry.link);
-      if (catalogEntryMatchesSidebar(entry, url)) {
-        applySidebarFavoriteState(false, null);
-      }
+      if (matchesSidebar) applySidebarFavoriteState(false, null);
       log(`Quitado de favoritos: ${title}`, "ok");
+      showFavoriteRemovedToast(snapshot, matchesSidebar);
     } catch (e) {
       log(String(e), "err");
     }
@@ -2057,18 +2084,28 @@ export function InfoView() {
         return;
       }
       const title = live?.title || sidebarRows.title || url;
-      const ok = await appConfirm({
-        title: "Quitar de favoritos",
-        message: `¿Quitar «${title}» de favoritos?`,
-        okLabel: "Quitar",
-        cancelLabel: "Cancelar",
-      });
-      if (!ok) return;
+      const moduleId =
+        live?.module_id || sidebarModuleIdRef.current || selectedModuleId || "";
+      const mod =
+        (moduleId ? modules.find((m) => m.id === moduleId) : undefined) || currentModule;
+      if (!mod || !moduleId) {
+        log("No hay fuente para este título.", "err");
+        return;
+      }
+      const snapshot: FavoriteAddRequest = {
+        module_id: moduleId,
+        module_name: live?.module_name || mod.name || sidebarRows.moduleName || "",
+        root_url: live?.root_url || mod.root_url || "",
+        manga_url: url,
+        title,
+        chapters: live?.chapters ?? [],
+      };
       try {
         await api.favoritesRemove(favoriteId);
         setIsFavorite(false);
         setFavoriteId(null);
         log(`Quitado de favoritos: ${title}`, "ok");
+        showFavoriteRemovedToast(snapshot, true);
       } catch (e) {
         log(String(e), "err");
       }

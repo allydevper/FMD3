@@ -3,6 +3,7 @@ import { CatalogJobBar } from "./components/CatalogJobBar";
 import { Icon } from "./components/Icon";
 import { ICO } from "./icons";
 import { AppConfirmProvider } from "./components/AppConfirm";
+import { AppToastProvider } from "./components/AppToast";
 import { AppProvider, useApp } from "./context/AppContext";
 import type { NavId } from "./types";
 import * as api from "./api/tauri";
@@ -91,6 +92,7 @@ function Shell() {
   return (
     <div className={appClass}>
       <AppConfirmProvider>
+      <AppToastProvider>
       <svg className="svg-filters" aria-hidden="true" focusable="false" width={0} height={0}>
         <filter id="cover-sharpen" colorInterpolationFilters="sRGB">
           <feConvolveMatrix
@@ -158,6 +160,7 @@ function Shell() {
       <select id="module-sel" hidden>
         <option value="">Auto</option>
       </select>
+      </AppToastProvider>
       </AppConfirmProvider>
     </div>
   );

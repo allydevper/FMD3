@@ -481,3 +481,77 @@
   color: #e07070;
 }
 
+/* Undo toast (OmniManga: quitar favoritos) */
+.app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 74px;
+  transform: translateX(-50%);
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 12px 11px 16px;
+  background: var(--deep);
+  color: var(--on-deep);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 12px 30px var(--shadow);
+  max-width: min(460px, calc(100% - 48px));
+  border-radius: 0;
+  pointer-events: auto;
+}
+
+.app-toast-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-toast-undo {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 0 1px;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.app-toast-undo:hover {
+  border-bottom-color: currentColor;
+}
+
+.app-toast-close {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.app-toast-close:hover {
+  opacity: 1;
+}
+
+.app-toast-close .ico {
+  color: inherit;
+}
+
