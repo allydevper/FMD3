@@ -203,6 +203,9 @@ export function InfoView() {
   const fillRunningRef = useRef(false);
   const fillWaitersRef = useRef<Array<() => void>>([]);
   const lastCatalogClickRef = useRef<{ idx: number; at: number }>({ idx: -1, at: 0 });
+  const downloadAllFromCatalogBulkRef = useRef<(entries?: CatalogEntry[]) => void>(
+    () => {},
+  );
 
   function bumpCatalogReset() {
     setCatalogResetSeq((s) => s + 1);
@@ -1696,8 +1699,8 @@ export function InfoView() {
 
     const pad = 8;
     const menuW = 232;
-    /* Single: Ver info + 3 acciones; bulk: título + 1 acción. */
-    const menuH = isBulk ? 72 : 168;
+    /* Single: Ver info + 3 acciones; bulk: título + Descargar todo + fav. */
+    const menuH = isBulk ? 120 : 168;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     const bulkCount = isBulk ? catalogSelectedKeys.size : 1;
@@ -1998,6 +2001,110 @@ export function InfoView() {
       log(`Carpeta por defecto: ${dir}`, "ok");
     }
   }
+
+  /** FMD2 MD_DownloadAll: silent GetInfo → enqueue every chapter. */
+  async function downloadAllFromCatalog(entry: CatalogEntry): Promise<number> {
+    const { moduleId, mod } = catalogEntryModule(entry);
+    if (!mod || !moduleId) {
+      log("No hay fuente para este título.", "err");
+      return 0;
+    }
+    const root = mod.root_url || "";
+    const url = maybeFillHost(root, entry.link);
+    if (!url) {
+      log("Enlace vacío; no se puede descargar.", "err");
+      return 0;
+    }
+    const title = entry.title || entry.link;
+    const dir = await ensureOutputDir();
+    if (!dir) {
+      log("Elige una carpeta de salida.", "err");
+      return 0;
+    }
+    log(`Obteniendo info: ${title}…`);
+    try {
+      const info = await api.getMangaInfo(url, moduleId);
+      if (!info.chapters?.length) {
+        log(`Sin capítulos: ${info.title || title}`, "err");
+        return 0;
+      }
+      const n = await api.queueAdd({
+        manga_title: info.title || title,
+        root_url: info.root_url || root,
+        manga_url: url,
+        module_id: info.module_id || moduleId,
+        output_dir: dir,
+        chapters: info.chapters,
+        start: !taskStopped,
+      });
+      log(
+        taskStopped
+          ? `Encolados ${n} de «${info.title || title}» (detenidos). Ve a Descargas y reanuda.`
+          : `Encolados ${n} de «${info.title || title}».`,
+        "ok",
+      );
+      if (n > 0) {
+        const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
+        if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
+      }
+      return n;
+    } catch (e) {
+      log(`${title}: ${String(e)}`, "err");
+      return 0;
+    }
+  }
+
+  async function downloadAllFromCatalogBulk(entries?: CatalogEntry[]) {
+    setCatalogCtxMenu(null);
+    const list = entries?.length
+      ? entries
+      : [...catalogSelectedEntriesRef.current.values()];
+    if (!list.length) {
+      log("No hay títulos seleccionados.", "err");
+      return;
+    }
+    let total = 0;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i]!;
+      if (list.length > 1) {
+        log(`[${i + 1}/${list.length}] Descargar todo: ${e.title || e.link}`);
+      }
+      total += await downloadAllFromCatalog(e);
+    }
+    if (list.length > 1) {
+      log(`Descargar todo: ${total} capítulo(s) en ${list.length} título(s).`, "ok");
+    }
+  }
+
+  downloadAllFromCatalogBulkRef.current = (entries) => {
+    void downloadAllFromCatalogBulk(entries);
+  };
+
+  useEffect(() => {
+    if (activeNav !== "info") return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "d") return;
+      const t = ev.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.tagName === "SELECT" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      ev.preventDefault();
+      const selected = [...catalogSelectedEntriesRef.current.values()];
+      if (selected.length > 0) {
+        downloadAllFromCatalogBulkRef.current(selected);
+        return;
+      }
+      log("Selecciona al menos un título del catálogo (Ctrl+D).", "err");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeNav]);
 
   async function handleEnqueue() {
     if (!manga) {
@@ -3265,6 +3372,16 @@ export function InfoView() {
             {(catalogCtxMenu.isBulk
               ? [
                   {
+                    id: "dl-all",
+                    icon: "download" as IconName,
+                    label: `Descargar todo (${catalogCtxMenu.bulkCount})`,
+                    hint: "Ctrl+D",
+                    onClick: () =>
+                      void downloadAllFromCatalogBulk([
+                        ...catalogSelectedEntriesRef.current.values(),
+                      ]),
+                  },
+                  {
                     id: "fav",
                     icon: "heart" as IconName,
                     label: `Agregar a favoritos (${catalogCtxMenu.bulkCount})`,
@@ -3288,7 +3405,11 @@ export function InfoView() {
                     label: "Descargar todo",
                     hint: "Ctrl+D",
                     sep: true,
-                    off: true,
+                    onClick: () => {
+                      const entry = catalogCtxMenu.entry;
+                      setCatalogCtxMenu(null);
+                      void downloadAllFromCatalog(entry);
+                    },
                   },
                   {
                     id: "fav",
