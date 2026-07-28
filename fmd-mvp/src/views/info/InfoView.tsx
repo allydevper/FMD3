@@ -2025,7 +2025,7 @@ export function InfoView() {
     try {
       const info = await api.getMangaInfo(url, moduleId);
       if (!info.chapters?.length) {
-        log(`Sin capítulos: ${info.title || title}`, "err");
+        log(`Sin capítulos: ${info.title || title} · ${url}`, "err");
         return 0;
       }
       const n = await api.queueAdd({

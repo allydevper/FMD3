@@ -1342,9 +1342,16 @@ fn get_page_links_inner(
     let root = module.inner.lock().root_url.clone();
     let globals = lua.globals();
 
-    // FMD2: ChapterLinks are host-stripped; DoGetPageNumber passes AURL as-is.
-    // Legacy queue rows may still store absolute URLs — strip once.
-    let chapter_rel = super::strings::remove_host_from_url(chapter_url);
+    // Prefer path relative to RootURL (keeps /__test_catalog out of the path so
+    // MaybeFillHost does not double the prefix). Fall back to host-strip.
+    let chapter_rel = {
+        let rel = relative_url(&root, chapter_url);
+        if rel.starts_with('/') || rel.starts_with("http://") || rel.starts_with("https://") {
+            rel
+        } else {
+            super::strings::remove_host_from_url(chapter_url)
+        }
+    };
     if let Some(m) = manga_url.filter(|s| !s.trim().is_empty()) {
         let referer = absolute_url(&root, m);
         http.set_header("Referer", &referer);
@@ -1632,7 +1639,15 @@ pub fn download_chapter(
 
     let root = module.inner.lock().root_url.clone();
     let globals = lua.globals();
-    let chapter_rel = super::strings::remove_host_from_url(chapter_url);
+    // Prefer path relative to RootURL (avoids doubling path prefixes like /__test_catalog).
+    let chapter_rel = {
+        let rel = relative_url(&root, chapter_url);
+        if rel.starts_with('/') || rel.starts_with("http://") || rel.starts_with("https://") {
+            rel
+        } else {
+            super::strings::remove_host_from_url(chapter_url)
+        }
+    };
 
     if let Some(m) = manga_url.filter(|s| !s.trim().is_empty()) {
         let referer = absolute_url(&root, m);

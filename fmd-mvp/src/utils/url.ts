@@ -29,7 +29,14 @@ export function normalizeMangaUrl(raw: string): string | null {
   try {
     const u = new URL(candidate);
     if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    if (!u.hostname || !u.hostname.includes(".")) return null;
+    const host = (u.hostname || "").toLowerCase();
+    /* Allow localhost / IPv6 loopback for TestCatalog and local mocks. */
+    const local =
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "[::1]" ||
+      host === "::1";
+    if (!host || (!local && !host.includes("."))) return null;
     return u.href;
   } catch {
     return null;
@@ -40,11 +47,10 @@ export function maybeFillHost(root: string, link: string): string {
   if (!link) return link;
   if (/^https?:\/\//i.test(link)) return link;
   if (link.startsWith("//")) return `https:${link}`;
-  try {
-    return new URL(link, root.endsWith("/") ? root : `${root}/`).href;
-  } catch {
-    return link;
-  }
+  /* Match Rust lua_host::maybe_fill_host: concat onto RootURL (keeps path prefix). */
+  const host = root.replace(/\/+$/, "");
+  if (link.startsWith("/")) return `${host}${link}`;
+  return `${host}/${link.replace(/^\/+/, "")}`;
 }
 
 export function resolveCover(cover: string, root: string): string {
