@@ -61,3 +61,32 @@ export function catalogLinkKey(link: string): string {
     return link.replace(/\/+$/, "");
   }
 }
+
+/** Path-only key so relative catalog links match absolute manga URLs. */
+export function mangaPathKey(link: string): string {
+  const s = (link || "").trim();
+  if (!s) return "";
+  try {
+    const u = new URL(s);
+    return u.pathname.replace(/\/+$/, "").toLowerCase();
+  } catch {
+    const path = s.split("?")[0].split("#")[0].trim();
+    const withSlash = path.startsWith("/") ? path : `/${path}`;
+    return withSlash.replace(/\/+$/, "").toLowerCase();
+  }
+}
+
+/** True if two manga URLs/links likely point to the same title. */
+export function urlsReferToSameManga(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (catalogLinkKey(a) === catalogLinkKey(b)) return true;
+  const pa = mangaPathKey(a);
+  const pb = mangaPathKey(b);
+  if (!pa || !pb) return false;
+  if (pa === pb) return true;
+  // Relative vs absolute / host variants: share a meaningful path suffix.
+  const shorter = pa.length <= pb.length ? pa : pb;
+  const longer = pa.length <= pb.length ? pb : pa;
+  return shorter.length > 4 && longer.endsWith(shorter);
+}

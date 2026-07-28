@@ -32,7 +32,7 @@ import {
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
-import { catalogLinkKey, maybeFillHost, normalizeMangaUrl, resolveCover } from "../../utils/url";
+import { catalogLinkKey, maybeFillHost, normalizeMangaUrl, resolveCover, urlsReferToSameManga } from "../../utils/url";
 import coverDefaultUrl from "../../assets/cover-default.svg";
 import chaptersEmptyUrl from "../../assets/chapters-empty.png";
 import type {
@@ -215,6 +215,24 @@ export function InfoView() {
     return `${entry.module_id || selectedModuleId || ""}:${entry.link}`;
   }
 
+  /** True if this catalog row is the title currently shown in the info sidebar. */
+  function catalogEntryMatchesSidebar(entry: CatalogEntry, entryUrl?: string): boolean {
+    const rowKey = catalogRowKey(entry);
+    if (rowKey && rowKey === sidebarCatalogRowKeyRef.current) return true;
+    const openUrl = (mangaUrl || urlInput || "").trim();
+    if (!openUrl) return false;
+    const openKey = catalogLinkKey(openUrl);
+    if (entryUrl && catalogLinkKey(entryUrl) === openKey) return true;
+    const { mod } = catalogEntryModule(entry);
+    const filled = maybeFillHost(mod?.root_url || "", entry.link);
+    return !!filled && catalogLinkKey(filled) === openKey;
+  }
+
+  function applySidebarFavoriteState(isFav: boolean, id: number | null) {
+    setIsFavorite(isFav);
+    setFavoriteId(id);
+  }
+
   function replaceCatalogSelection(entry: CatalogEntry, idx: number) {
     const key = catalogRowKey(entry);
     const map = new Map<string, CatalogEntry>([[key, entry]]);
@@ -261,6 +279,11 @@ export function InfoView() {
     "update_one" | "fetch_one" | "update_all" | "fetch_all"
   >("update_one");
   const [isFavorite, setIsFavorite] = useState(false);
+  const [favoriteId, setFavoriteId] = useState<number | null>(null);
+  /** Module of the manga currently shown / loading in the info sidebar. */
+  const sidebarModuleIdRef = useRef("");
+  /** Stable catalog row key for the title open in the sidebar (`module:link`). */
+  const sidebarCatalogRowKeyRef = useRef("");
   const [taskStopped, setTaskStopped] = useState(false);
   const [loadCovers, setLoadCovers] = useState(true);
 
@@ -1258,12 +1281,26 @@ export function InfoView() {
     }
   }
 
-  async function syncFavoriteState(url: string) {
+  async function syncFavoriteState(url: string, moduleId?: string | null) {
     setIsFavorite(false);
-    if (!url) return;
+    setFavoriteId(null);
+    if (!url && !sidebarCatalogRowKeyRef.current) return;
     try {
       const favs = await api.favoritesList();
-      setIsFavorite(favs.some((f) => f.manga_url === url));
+      const mid = (moduleId || sidebarModuleIdRef.current || "").trim();
+      const rowKey = sidebarCatalogRowKeyRef.current;
+      const rowLink = rowKey.includes(":") ? rowKey.slice(rowKey.indexOf(":") + 1) : "";
+      const hit = favs.find((f) => {
+        if (url && urlsReferToSameManga(f.manga_url, url)) return true;
+        if (rowLink && urlsReferToSameManga(f.manga_url, rowLink)) return true;
+        if (mid && f.module_id === mid) {
+          if (url && urlsReferToSameManga(f.manga_url, url)) return true;
+          if (rowLink && urlsReferToSameManga(f.manga_url, rowLink)) return true;
+        }
+        return false;
+      });
+      setIsFavorite(!!hit);
+      setFavoriteId(hit?.id ?? null);
     } catch {
       /* ignore */
     }
@@ -1276,7 +1313,10 @@ export function InfoView() {
     const seq = ++mangaLoadSeqRef.current;
     const raw = (explicitUrl ?? urlInput).trim();
     // URL bar / Enter: don't reuse a previous catalog stub title.
-    if (explicitUrl === undefined) pendingSidebarTitleRef.current = "";
+    if (explicitUrl === undefined) {
+      pendingSidebarTitleRef.current = "";
+      sidebarCatalogRowKeyRef.current = "";
+    }
     setInfoPanelOpen(true);
     setInfoInaccessible(null);
     clearLog();
@@ -1342,6 +1382,7 @@ export function InfoView() {
     }
 
     if (moduleId) {
+      sidebarModuleIdRef.current = moduleId;
       void applyCachedCover(moduleId, url);
       void (async () => {
         try {
@@ -1378,7 +1419,8 @@ export function InfoView() {
 
       if (isNaTitle(result.title)) {
         setManga(null);
-        setMangaUrl("");
+        // Mantener URL para poder favoritar / ver en línea desde el stub.
+        setMangaUrl(url);
         setSelected(new Set());
         bumpChaptersReset();
         setChaptersLoading(false);
@@ -1396,6 +1438,7 @@ export function InfoView() {
           altTitles: "",
         });
         syncMangaCacheFromInfo(url, result);
+        await syncFavoriteState(url, moduleId);
         const msg = inaccessibleInfoMessage(modName);
         log(
           `${msg} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
@@ -1409,6 +1452,7 @@ export function InfoView() {
       bumpChaptersReset();
       setChaptersLoading(false);
       setInfoInaccessible(null);
+      if (result.module_id) sidebarModuleIdRef.current = result.module_id;
       setActiveCatalogTitle((cur) => cur || result.title);
       paintRows({
         title: result.title,
@@ -1444,7 +1488,7 @@ export function InfoView() {
         void ensureCoverAsync(seq, mid, url, toEnsure, result.root_url || url);
       }
 
-      await syncFavoriteState(url);
+      await syncFavoriteState(url, result.module_id || moduleId);
       if (seq !== mangaLoadSeqRef.current) return;
       if (!result.title.trim() && result.chapters.length === 0) {
         log(
@@ -1459,7 +1503,7 @@ export function InfoView() {
     } catch (e) {
       if (seq !== mangaLoadSeqRef.current) return;
       setManga(null);
-      setMangaUrl("");
+      setMangaUrl(url);
       setChaptersLoading(false);
       const modName = currentModule?.name || "";
       setInfoInaccessible({ moduleName: modName });
@@ -1475,6 +1519,7 @@ export function InfoView() {
         moduleName: modName,
         altTitles: "",
       });
+      await syncFavoriteState(url, moduleId);
       const msg = inaccessibleInfoMessage(modName);
       log(
         `${msg} ${String(e)} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
@@ -1498,6 +1543,11 @@ export function InfoView() {
     setActiveCatalogTitle(title);
     pendingSidebarTitleRef.current = title;
     setUrlInput(url);
+    setMangaUrl(url);
+    if (moduleId) sidebarModuleIdRef.current = moduleId;
+    sidebarCatalogRowKeyRef.current = catalogRowKey(e);
+    // Marca el corazón en cuanto se abre (antes de GetInfo).
+    void syncFavoriteState(url, moduleId);
     if (mangaLoadingUrl === url) {
       log(`Ya se está cargando: ${title}`);
       setInfoPanelOpen(true);
@@ -1513,13 +1563,14 @@ export function InfoView() {
     // Cache already marked inaccessible: do not hit the invalid URL again.
     if (e.info_failed) {
       setManga(null);
-      setMangaUrl("");
+      setMangaUrl(url);
       setSelected(new Set());
       bumpChaptersReset();
       setChaptersLoading(false);
       const modName = e.module_name || mod?.name || "";
       setInfoInaccessible({ moduleName: modName });
       // Stub already painted real masterlist title; keep it (never show N/A in sidebar).
+      void syncFavoriteState(url, moduleId);
       const msg = inaccessibleInfoMessage(modName);
       log(
         `${msg} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
@@ -1643,15 +1694,18 @@ export function InfoView() {
 
     if (isBulk) return;
 
-    const { mod } = catalogEntryModule(entry);
+    const { mod, moduleId: entryModuleId } = catalogEntryModule(entry);
     const url = maybeFillHost(mod?.root_url || "", entry.link);
     if (!url) return;
-    const urlKey = catalogLinkKey(url);
     void api
       .favoritesList()
       .then((favs) => {
         const hit = favs.find(
-          (f) => f.manga_url === url || catalogLinkKey(f.manga_url) === urlKey,
+          (f) =>
+            urlsReferToSameManga(f.manga_url, url) ||
+            (entryModuleId &&
+              f.module_id === entryModuleId &&
+              urlsReferToSameManga(f.manga_url, entry.link)),
         );
         setCatalogCtxMenu((prev) =>
           prev &&
@@ -1696,30 +1750,38 @@ export function InfoView() {
       log("Enlace vacío; no se puede añadir a favoritos.", "err");
       return;
     }
+    const title = entry.title || entry.link;
+    const matchesSidebar = catalogEntryMatchesSidebar(entry, url);
+    const saveUrl =
+      matchesSidebar && (mangaUrl || urlInput).trim()
+        ? (mangaUrl || urlInput).trim()
+        : url;
     try {
       const favs = await api.favoritesList();
-      const key = catalogLinkKey(url);
-      if (favs.some((f) => f.manga_url === url || catalogLinkKey(f.manga_url) === key)) {
+      const existing = favs.find(
+        (f) =>
+          urlsReferToSameManga(f.manga_url, saveUrl) ||
+          urlsReferToSameManga(f.manga_url, url) ||
+          urlsReferToSameManga(f.manga_url, entry.link),
+      );
+      if (existing) {
         log("Ya está en favoritos.", "ok");
-        if (mangaUrl && catalogLinkKey(mangaUrl) === key) setIsFavorite(true);
+        if (matchesSidebar) applySidebarFavoriteState(true, existing.id);
         return;
       }
     } catch {
       /* continue to add */
     }
-    const title = entry.title || entry.link;
     try {
       const fav = await api.favoritesAdd({
         module_id: moduleId,
         module_name: entry.module_name || mod.name || "",
         root_url: root,
-        manga_url: url,
+        manga_url: saveUrl,
         title,
-        chapters: [],
+        chapters: matchesSidebar ? mangaRef.current?.chapters ?? [] : [],
       });
-      if (mangaUrl && catalogLinkKey(mangaUrl) === catalogLinkKey(url)) {
-        setIsFavorite(true);
-      }
+      if (matchesSidebar) applySidebarFavoriteState(true, fav.id);
       log(
         `Favorito guardado: ${fav.title} (sin GetInfo; el check rellenará capítulos)`,
         "ok",
@@ -1751,6 +1813,7 @@ export function InfoView() {
     let added = 0;
     let skipped = 0;
     let errors = 0;
+    let sidebarFavId: number | null = null;
     for (const entry of entries) {
       const { moduleId, mod } = catalogEntryModule(entry);
       if (!mod || !moduleId) {
@@ -1764,25 +1827,51 @@ export function InfoView() {
         continue;
       }
       const key = catalogLinkKey(url);
-      if (existing.has(url) || existing.has(key)) {
+      const matchesSidebar = catalogEntryMatchesSidebar(entry, url);
+      const saveUrl =
+        matchesSidebar && (mangaUrl || urlInput).trim()
+          ? (mangaUrl || urlInput).trim()
+          : url;
+      if (
+        existing.has(saveUrl) ||
+        existing.has(url) ||
+        existing.has(key) ||
+        existing.has(catalogLinkKey(saveUrl))
+      ) {
         skipped += 1;
+        if (matchesSidebar) {
+          const hit = favs.find(
+            (f) =>
+              f.manga_url === saveUrl ||
+              f.manga_url === url ||
+              catalogLinkKey(f.manga_url) === key,
+          );
+          if (hit) sidebarFavId = hit.id;
+        }
         continue;
       }
       try {
-        await api.favoritesAdd({
+        const fav = await api.favoritesAdd({
           module_id: moduleId,
           module_name: entry.module_name || mod.name || "",
           root_url: root,
-          manga_url: url,
+          manga_url: saveUrl,
           title: entry.title || entry.link,
-          chapters: [],
+          chapters: matchesSidebar ? mangaRef.current?.chapters ?? [] : [],
         });
+        existing.add(saveUrl);
         existing.add(url);
         existing.add(key);
+        existing.add(catalogLinkKey(saveUrl));
         added += 1;
+        if (matchesSidebar) sidebarFavId = fav.id;
       } catch {
         errors += 1;
       }
+    }
+    if (sidebarFavId != null) applySidebarFavoriteState(true, sidebarFavId);
+    else if ((mangaUrl || urlInput).trim()) {
+      void syncFavoriteState((mangaUrl || urlInput).trim());
     }
     log(
       `Favoritos en lote: añadidos ${added} · ya estaban ${skipped}${
@@ -1792,10 +1881,10 @@ export function InfoView() {
     );
   }
 
-  async function removeFavoriteFromCatalog(entry: CatalogEntry, favoriteId: number | null) {
+  async function removeFavoriteFromCatalog(entry: CatalogEntry, favId: number | null) {
     setCatalogCtxMenu(null);
     const title = entry.title || entry.link;
-    if (favoriteId == null) {
+    if (favId == null) {
       log("No se encontró el favorito.", "err");
       return;
     }
@@ -1807,11 +1896,11 @@ export function InfoView() {
     });
     if (!ok) return;
     try {
-      await api.favoritesRemove(favoriteId);
+      await api.favoritesRemove(favId);
       const { mod } = catalogEntryModule(entry);
       const url = maybeFillHost(mod?.root_url || "", entry.link);
-      if (url && mangaUrl && catalogLinkKey(mangaUrl) === catalogLinkKey(url)) {
-        setIsFavorite(false);
+      if (catalogEntryMatchesSidebar(entry, url)) {
+        applySidebarFavoriteState(false, null);
       }
       log(`Quitado de favoritos: ${title}`, "ok");
     } catch (e) {
@@ -1954,21 +2043,81 @@ export function InfoView() {
   }
 
   async function handleFavAdd() {
-    if (!manga || !mangaUrl) {
+    const live = mangaRef.current || manga;
+    const url = (mangaUrl || urlInput || "").trim();
+    if (!url) {
       log("Carga un manga primero.", "err");
       return;
     }
+
+    if (isFavorite) {
+      if (favoriteId == null) {
+        await syncFavoriteState(url);
+        log("No se encontró el favorito; vuelve a intentar.", "err");
+        return;
+      }
+      const title = live?.title || sidebarRows.title || url;
+      const ok = await appConfirm({
+        title: "Quitar de favoritos",
+        message: `¿Quitar «${title}» de favoritos?`,
+        okLabel: "Quitar",
+        cancelLabel: "Cancelar",
+      });
+      if (!ok) return;
+      try {
+        await api.favoritesRemove(favoriteId);
+        setIsFavorite(false);
+        setFavoriteId(null);
+        log(`Quitado de favoritos: ${title}`, "ok");
+      } catch (e) {
+        log(String(e), "err");
+      }
+      return;
+    }
+
+    const moduleId =
+      live?.module_id || sidebarModuleIdRef.current || selectedModuleId || "";
+    const mod =
+      (moduleId ? modules.find((m) => m.id === moduleId) : undefined) || currentModule;
+    if (!mod || !moduleId) {
+      log("No hay fuente para este título.", "err");
+      return;
+    }
+
+    try {
+      const favs = await api.favoritesList();
+      const existing = favs.find(
+        (f) =>
+          urlsReferToSameManga(f.manga_url, url) ||
+          (moduleId &&
+            f.module_id === moduleId &&
+            urlsReferToSameManga(f.manga_url, url)),
+      );
+      if (existing) {
+        setIsFavorite(true);
+        setFavoriteId(existing.id);
+        log("Ya está en favoritos.", "ok");
+        return;
+      }
+    } catch {
+      /* continue to add */
+    }
+
     try {
       const fav = await api.favoritesAdd({
-        module_id: manga.module_id,
-        module_name: manga.module_name,
-        root_url: manga.root_url,
-        manga_url: mangaUrl,
-        title: manga.title || mangaUrl,
-        chapters: manga.chapters,
+        module_id: moduleId,
+        module_name: live?.module_name || mod.name || sidebarRows.moduleName || "",
+        root_url: live?.root_url || mod.root_url || "",
+        manga_url: url,
+        title: live?.title || sidebarRows.title || url,
+        chapters: live?.chapters ?? [],
       });
       setIsFavorite(true);
-      log(`Favorito guardado: ${fav.title} (último: ${fav.last_chapter_name || "—"})`, "ok");
+      setFavoriteId(fav.id);
+      log(
+        `Favorito guardado: ${fav.title} (último: ${fav.last_chapter_name || "—"})`,
+        "ok",
+      );
       const gotoFav = await api.settingsGet("ui.goto_favorites_on_add");
       if (gotoFav === "1" || gotoFav === "true") setActiveNav("favorites");
     } catch (e) {
@@ -2537,11 +2686,13 @@ export function InfoView() {
                     type="button"
                     className="info-action-btn"
                     id="fav-add"
-                    disabled={!infoPanelOpen}
+                    disabled={!infoPanelOpen || !(mangaUrl || urlInput).trim()}
                     onClick={() => void handleFavAdd()}
                   >
                     <Icon name={isFavorite ? "heartSolid" : "heart"} className="ico ico-sm" />
-                    <span id="fav-label">{isFavorite ? "En favoritos" : "Añadir a favoritos"}</span>
+                    <span id="fav-label">
+                      {isFavorite ? "Quitar de favoritos" : "Añadir a favoritos"}
+                    </span>
                   </button>
                 </div>
                 <div className="info-rows" id="info-rows">
