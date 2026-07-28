@@ -2684,7 +2684,7 @@ export function InfoView() {
                   </button>
                   <button
                     type="button"
-                    className="info-action-btn"
+                    className={`info-action-btn info-action-fav${isFavorite ? " is-on" : ""}`}
                     id="fav-add"
                     disabled={!infoPanelOpen || !(mangaUrl || urlInput).trim()}
                     onClick={() => void handleFavAdd()}

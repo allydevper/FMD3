@@ -1889,6 +1889,28 @@
   cursor: not-allowed;
 }
 
+/* Fondo solo cuando ya está en favoritos. */
+.info-action-fav.is-on {
+  color: #fff;
+  background: rgb(192, 64, 90);
+  border-color: rgb(192, 64, 90);
+}
+
+.info-action-fav.is-on .ico {
+  color: #fff;
+}
+
+.info-action-fav.is-on:hover:not(:disabled) {
+  opacity: 1;
+  color: #fff;
+  background: rgb(168, 52, 76);
+  border-color: rgb(168, 52, 76);
+}
+
+.info-action-fav.is-on:hover:not(:disabled) .ico {
+  color: #fff;
+}
+
 .info-rows {
   display: flex;
   flex-direction: column;
