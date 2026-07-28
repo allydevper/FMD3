@@ -1696,7 +1696,8 @@ export function InfoView() {
 
     const pad = 8;
     const menuW = 232;
-    const menuH = isBulk ? 72 : 148;
+    /* Single: Ver info + 3 acciones; bulk: título + 1 acción. */
+    const menuH = isBulk ? 72 : 168;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     const bulkCount = isBulk ? catalogSelectedKeys.size : 1;
@@ -3256,11 +3257,11 @@ export function InfoView() {
             style={{ left: catalogCtxMenu.x, top: catalogCtxMenu.y }}
             role="menu"
           >
-            <div className="catalog-ctx-title">
-              {catalogCtxMenu.isBulk
-                ? `${catalogCtxMenu.bulkCount} títulos seleccionados`
-                : catalogCtxMenu.entry.title || catalogCtxMenu.entry.link}
-            </div>
+            {catalogCtxMenu.isBulk ? (
+              <div className="catalog-ctx-title">
+                {`${catalogCtxMenu.bulkCount} títulos seleccionados`}
+              </div>
+            ) : null}
             {(catalogCtxMenu.isBulk
               ? [
                   {
@@ -3272,10 +3273,21 @@ export function InfoView() {
                 ]
               : [
                   {
+                    id: "view",
+                    icon: "about" as IconName,
+                    label: "Ver información",
+                    onClick: () => {
+                      const entry = catalogCtxMenu.entry;
+                      setCatalogCtxMenu(null);
+                      void openCatalogEntry(entry);
+                    },
+                  },
+                  {
                     id: "dl-all",
                     icon: "download" as IconName,
                     label: "Descargar todo",
                     hint: "Ctrl+D",
+                    sep: true,
                     off: true,
                   },
                   {
