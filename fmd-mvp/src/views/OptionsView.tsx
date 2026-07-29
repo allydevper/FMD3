@@ -1545,7 +1545,7 @@ export function OptionsView() {
                       <SwitchRow id="opt-dl-toolbar" label="Mostrar barra de descargas" desc="Toolbar superior en la cola" checked={s.dlToolbar} onChange={(v) => update("dlToolbar", v)} />
                       <SwitchRow id="opt-dl-clear" label="Botón borrar completadas" desc="Preferencia legacy; «Limpiar completadas» en Descargas siempre está visible en el pie" checked={s.dlClearBtn} onChange={(v) => update("dlClearBtn", v)} />
                       <SwitchRow id="opt-dl-left" label="Barra izquierda de descargas" desc="Controles adicionales a la izquierda" checked={s.dlLeftBar} onChange={(v) => update("dlLeftBar", v)} />
-                      <SwitchRow id="opt-load-covers" label="Cargar portada del manga" desc="Descarga y muestra la imagen de portada" checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
+                      <SwitchRow id="opt-load-covers" label="Cargar portada del manga" desc="Descarga portadas; si está apagado solo usa las ya en caché" checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
                       <div className="st-row st-row-actions">
                         <div className="st-meta">
                           <div className="st-label">Caché</div>

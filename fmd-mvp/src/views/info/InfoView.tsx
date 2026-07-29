@@ -321,6 +321,7 @@ export function InfoView() {
     count: number;
   } | null>(null);
   const [loadCovers, setLoadCovers] = useState(true);
+  const loadCoversRef = useRef(true);
 
   const [sidebarRows, setSidebarRows] = useState<SidebarRows>(EMPTY_SIDEBAR_ROWS);
   const [altTitles, setAltTitles] = useState("");
@@ -346,6 +347,11 @@ export function InfoView() {
   const coverLocalFallbackRef = useRef("");
   const coverDisplayKeyRef = useRef("");
 
+  function setLoadCoversFlag(on: boolean) {
+    loadCoversRef.current = on;
+    setLoadCovers(on);
+  }
+
   function setCoverIsDefault(v: boolean) {
     coverIsDefaultRef.current = v;
     setCoverIsDefaultState(v);
@@ -363,6 +369,19 @@ export function InfoView() {
       coverLocalFallbackRef.current = opts.localFallback || "";
     }
     if (!url) {
+      if (coverLocalFallbackRef.current) {
+        setCover(coverLocalFallbackRef.current, { force: opts?.force });
+        return;
+      }
+      applyDefaultCover();
+      return;
+    }
+    // Off = no remote fetch; only show cover-cache / data URLs already on disk.
+    const remote =
+      url.startsWith("http://") ||
+      url.startsWith("https://") ||
+      url.startsWith("//");
+    if (!loadCoversRef.current && remote) {
       if (coverLocalFallbackRef.current) {
         setCover(coverLocalFallbackRef.current, { force: opts?.force });
         return;
@@ -420,7 +439,7 @@ export function InfoView() {
       })();
     }
     void api.settingsGet("ui.load_covers").then((v) => {
-      if (v === "0" || v === "false") setLoadCovers(false);
+      setLoadCoversFlag(!(v === "0" || v === "false"));
     });
     void api.settingsGet("ui.new_days").then((v) => {
       const n = Number(v ?? "1");
@@ -1231,7 +1250,7 @@ export function InfoView() {
     coverUrl: string,
     referer: string,
   ) {
-    if (!loadCovers) return;
+    if (!loadCoversRef.current) return;
     const ensureId = ++coverEnsureSeqRef.current;
     if (!coverUrl.trim()) return;
     try {
@@ -1396,6 +1415,13 @@ export function InfoView() {
     setInfoInaccessible(null);
     clearLog();
 
+    try {
+      const v = await api.settingsGet("ui.load_covers");
+      setLoadCoversFlag(!(v === "0" || v === "false"));
+    } catch {
+      /* keep current */
+    }
+
     const url = normalizeMangaUrl(raw);
     if (!url) {
       log(
@@ -1559,7 +1585,7 @@ export function InfoView() {
         coverDisplayKeyRef.current.startsWith("https://");
       const toEnsure = coverUrl || (remoteShowing ? coverDisplayKeyRef.current : "");
       const alreadyLocal = coverLocalFallbackRef.current.startsWith("data:");
-      if (loadCovers && mid && toEnsure && !alreadyLocal) {
+      if (loadCoversRef.current && mid && toEnsure && !alreadyLocal) {
         void ensureCoverAsync(seq, mid, url, toEnsure, result.root_url || url);
       }
 
