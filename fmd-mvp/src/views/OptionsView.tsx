@@ -117,6 +117,7 @@ type OptionsFormState = {
   updateListNoInfo: boolean;
   updateListFullScan: boolean;
   updateListThreads: number;
+  favThreads: number;
 };
 
 const DEFAULT_SETTINGS: OptionsFormState = {
@@ -183,6 +184,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   updateListNoInfo: false,
   updateListFullScan: false,
   updateListThreads: 1,
+  favThreads: 1,
 };
 
 function boolStr(v: boolean) {
@@ -579,44 +581,6 @@ function StubSelectRow({
   );
 }
 
-function StubStepperRow({
-  id,
-  label,
-  desc,
-  defaultValue,
-  min,
-  max,
-  suffix,
-  unit,
-}: {
-  id?: string;
-  label: string;
-  desc: string;
-  defaultValue: number;
-  min: number;
-  max: number;
-  suffix?: string;
-  unit?: string;
-  onDirty?: () => void;
-}) {
-  const [value, setValue] = useState(defaultValue);
-  return (
-    <OptRow label={label} desc={desc} status="none">
-      <div className="st-num-wrap">
-        <Stepper
-          id={id}
-          value={value}
-          min={min}
-          max={max}
-          suffix={suffix}
-          onChange={setValue}
-        />
-        {unit ? <span className="st-unit">{unit}</span> : null}
-      </div>
-    </OptRow>
-  );
-}
-
 function SelectRow({
   id,
   label,
@@ -907,6 +871,10 @@ export function OptionsView() {
       32,
       Math.max(1, Number((await get(SK.UPDATE_LIST_THREADS)) ?? "1") || 1),
     );
+    const favThreads = Math.min(
+      32,
+      Math.max(1, Number((await get(SK.FAV_THREADS)) ?? "1") || 1),
+    );
 
     setS((prev) => ({
       ...prev,
@@ -973,6 +941,7 @@ export function OptionsView() {
       updateListNoInfo,
       updateListFullScan,
       updateListThreads,
+      favThreads,
     }));
     setDirty(false);
   }, [modules]);
@@ -993,6 +962,7 @@ export function OptionsView() {
     );
     await api.settingsSet(SK.MAX_THREADS, String(s.threads));
     await api.settingsSet(SK.UPDATE_LIST_THREADS, String(s.updateListThreads));
+    await api.settingsSet(SK.FAV_THREADS, String(s.favThreads));
     await api.settingsSet(SK.PARALLEL_TASKS, String(s.parallelTasks));
     await api.settingsSet(SK.ONE_CHAPTER_PER_MANGA, boolStr(s.oneChapterPerManga));
     await api.settingsSet(SK.TASK_RETRIES, String(s.taskRetries));
@@ -1614,7 +1584,6 @@ export function OptionsView() {
                       <h2>Misceláneo</h2>
                     </div>
                     <div className="st-card">
-                      <StubStepperRow label="Hilos de favoritos" desc="Comprobaciones de favoritos a la vez" defaultValue={1} min={1} max={32} onDirty={markDirty} />
                       <BoundStepperRow
                         label="Hilos de actualizar lista"
                         desc="Paralelismo al actualizar el catálogo"
@@ -1623,7 +1592,14 @@ export function OptionsView() {
                         max={32}
                         onChange={(v) => update("updateListThreads", v)}
                       />
-                      <StubStepperRow label="Hilos en segundo plano" desc="Cargas en background" defaultValue={1} min={1} max={32} onDirty={markDirty} />
+                      <BoundStepperRow
+                        label="Hilos de favoritos"
+                        desc="Comprobaciones de favoritos a la vez"
+                        value={s.favThreads}
+                        min={1}
+                        max={32}
+                        onChange={(v) => update("favThreads", v)}
+                      />
                     </div>
                   </section>
                   <section className="st-section">

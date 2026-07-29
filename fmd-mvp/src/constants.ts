@@ -244,6 +244,7 @@ export const SK = {
   HTTP_RETRIES: "http.retries",
   MAX_THREADS: "download.max_threads",
   UPDATE_LIST_THREADS: "connections.max_update_list_threads",
+  FAV_THREADS: "connections.max_favorite_threads",
   PACK: "download.pack_format",
   PACK_DELETE: "download.pack_delete_folder",
   CONVERT: "download.convert_to",

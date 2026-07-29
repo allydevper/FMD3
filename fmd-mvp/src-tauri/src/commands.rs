@@ -402,12 +402,32 @@ pub async fn favorites_check_all(
         .map(|f| f.id)
         .collect();
     drop(state);
-    let mut out = Vec::new();
+
+    let limit = crate::settings_keys::favorite_threads();
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
+    let mut handles = Vec::with_capacity(ids.len());
+
     for id in ids {
-        let st = app.state::<QueueState>();
-        match check_favorite_inner(&app, &st, id, enqueue).await {
-            Ok(r) => out.push(r),
-            Err(e) => eprintln!("favorites_check {id}: {e}"),
+        let permit = sem
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| format!("semaphore: {e}"))?;
+        let app_c = app.clone();
+        handles.push(tauri::async_runtime::spawn(async move {
+            let _permit = permit;
+            let st = app_c.state::<QueueState>();
+            let result = check_favorite_inner(&app_c, &st, id, enqueue).await;
+            (id, result)
+        }));
+    }
+
+    let mut out = Vec::new();
+    for h in handles {
+        match h.await {
+            Ok((_, Ok(r))) => out.push(r),
+            Ok((id, Err(e))) => eprintln!("favorites_check {id}: {e}"),
+            Err(e) => eprintln!("favorites_check join: {e}"),
         }
     }
     Ok(out)

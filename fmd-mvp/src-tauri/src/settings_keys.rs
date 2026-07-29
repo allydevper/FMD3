@@ -29,6 +29,8 @@ pub const DOWNLOAD_PDF_QUALITY: &str = "download.pdf_quality";
 
 /// Max concurrent GetInfo workers during Update List (FMD2 MaxUpdateListThreads).
 pub const CONNECTIONS_MAX_UPDATE_LIST_THREADS: &str = "connections.max_update_list_threads";
+/// Max concurrent favorite checks (FMD2 MaxFavoriteThreads).
+pub const CONNECTIONS_MAX_FAVORITE_THREADS: &str = "connections.max_favorite_threads";
 
 pub const QUEUE_SORT_ON_ADD: &str = "queue.sort_on_add";
 
@@ -103,6 +105,11 @@ pub fn max_threads() -> usize {
 /// Global Update List GetInfo parallelism (default 1, like FMD2 OptionMaxUpdateListThreads).
 pub fn update_list_threads() -> usize {
     usize_setting(CONNECTIONS_MAX_UPDATE_LIST_THREADS, 1).clamp(1, 32)
+}
+
+/// Concurrent favorite GetInfo checks (default 1, like FMD2 OptionMaxFavoriteThreads).
+pub fn favorite_threads() -> usize {
+    usize_setting(CONNECTIONS_MAX_FAVORITE_THREADS, 1).clamp(1, 32)
 }
 
 pub fn parallel_tasks() -> usize {
