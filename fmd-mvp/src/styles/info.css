@@ -2332,6 +2332,9 @@
   background: var(--accent);
   border-color: var(--accent);
   padding: 8px 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .info-modal-btn-primary:hover:not(:disabled) {

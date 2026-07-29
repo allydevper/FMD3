@@ -10,32 +10,52 @@ import {
 } from "react";
 import { Icon } from "./Icon";
 
+export type AppToastKind = "ok" | "err" | "";
+
+export type AppToastOptions = {
+  message: string;
+  kind?: AppToastKind;
+  durationMs?: number;
+  /** When set, shows a Deshacer action. */
+  onUndo?: () => void | Promise<void>;
+};
+
+/** @deprecated Prefer `appToast({ message, onUndo })`. */
 export type AppToastUndoOptions = {
   message: string;
   onUndo: () => void | Promise<void>;
   durationMs?: number;
 };
 
-type ToastUndoFn = (opts: AppToastUndoOptions) => void;
+type ToastFn = (opts: AppToastOptions) => void;
 
 type Pending = {
   id: number;
   message: string;
-  onUndo: () => void | Promise<void>;
+  kind: AppToastKind;
+  onUndo?: () => void | Promise<void>;
   durationMs: number;
 };
 
-const AppToastContext = createContext<ToastUndoFn | null>(null);
+const AppToastContext = createContext<ToastFn | null>(null);
 
 /** Imperative bridge for non-hook callers. */
-let bridge: ToastUndoFn | null = null;
+let bridge: ToastFn | null = null;
 
-export function appToastUndo(opts: AppToastUndoOptions): void {
+export function appToast(opts: AppToastOptions): void {
   if (bridge) {
     bridge(opts);
     return;
   }
-  /* Fallback when provider is missing: no UI. */
+}
+
+/** Undo-capable toast (favorites / queue delete). */
+export function appToastUndo(opts: AppToastUndoOptions): void {
+  appToast({
+    message: opts.message,
+    durationMs: opts.durationMs,
+    onUndo: opts.onUndo,
+  });
 }
 
 export function AppToastProvider({ children }: { children: ReactNode }) {
@@ -55,14 +75,15 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
     setPending(null);
   }, [clearTimer]);
 
-  const showUndo = useCallback<ToastUndoFn>(
+  const show = useCallback<ToastFn>(
     (opts) => {
       clearTimer();
       const id = ++seqRef.current;
-      const durationMs = opts.durationMs ?? 6000;
+      const durationMs = opts.durationMs ?? (opts.onUndo ? 6000 : 3200);
       setPending({
         id,
         message: opts.message,
+        kind: opts.kind ?? "",
         onUndo: opts.onUndo,
         durationMs,
       });
@@ -75,32 +96,46 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    bridge = showUndo;
+    bridge = show;
     return () => {
-      if (bridge === showUndo) bridge = null;
+      if (bridge === show) bridge = null;
       clearTimer();
     };
-  }, [showUndo, clearTimer]);
+  }, [show, clearTimer]);
 
   const handleUndo = useCallback(() => {
     const action = pending?.onUndo;
     dismiss();
-    if (action) void Promise.resolve(action()).catch(() => {
-      /* caller logs errors */
-    });
+    if (action) {
+      void Promise.resolve(action()).catch(() => {
+        /* caller logs errors */
+      });
+    }
   }, [pending, dismiss]);
 
-  const value = useMemo(() => showUndo, [showUndo]);
+  const value = useMemo(() => show, [show]);
+  const kindClass =
+    pending?.kind === "ok"
+      ? " is-ok"
+      : pending?.kind === "err"
+        ? " is-err"
+        : "";
 
   return (
     <AppToastContext.Provider value={value}>
       {children}
       {pending ? (
-        <div className="app-toast" role="status" aria-live="polite">
+        <div
+          className={`app-toast${kindClass}`}
+          role="status"
+          aria-live="polite"
+        >
           <span className="app-toast-text">{pending.message}</span>
-          <button type="button" className="app-toast-undo" onClick={handleUndo}>
-            Deshacer
-          </button>
+          {pending.onUndo ? (
+            <button type="button" className="app-toast-undo" onClick={handleUndo}>
+              Deshacer
+            </button>
+          ) : null}
           <button
             type="button"
             className="app-toast-close"
@@ -116,8 +151,13 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useAppToastUndo(): ToastUndoFn {
+export function useAppToast(): ToastFn {
   const ctx = useContext(AppToastContext);
-  if (!ctx) throw new Error("useAppToastUndo must be used within AppToastProvider");
+  if (!ctx) throw new Error("useAppToast must be used within AppToastProvider");
   return ctx;
+}
+
+/** @deprecated Prefer `useAppToast`. */
+export function useAppToastUndo(): ToastFn {
+  return useAppToast();
 }

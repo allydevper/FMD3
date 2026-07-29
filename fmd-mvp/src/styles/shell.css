@@ -299,6 +299,17 @@
   flex: 0 0 auto;
 }
 
+.spinner.spinner-sm {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex: 0 0 auto;
+  display: inline-block;
+}
+
 .source-trigger:disabled {
   opacity: 0.65;
   cursor: wait;
@@ -499,6 +510,15 @@
   max-width: min(460px, calc(100% - 48px));
   border-radius: 0;
   pointer-events: auto;
+}
+
+.app-toast.is-ok {
+  border-color: rgba(90, 190, 120, 0.45);
+}
+
+.app-toast.is-err {
+  border-color: rgba(220, 100, 100, 0.55);
+  background: #2a1616;
 }
 
 .app-toast-text {

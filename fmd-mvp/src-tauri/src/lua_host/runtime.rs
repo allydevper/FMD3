@@ -1644,25 +1644,50 @@ fn work_basename(file_names: &LuaStringList, work_id: usize, page_count: usize) 
     )
 }
 
+/// FMD2 `SaveImageStreamToFile` conversion:
+/// - PNG → JPEG only if `png_as_jpeg`
+/// - WebP → PNG/JPEG according to `webp_as` (0 keep / 1 png / 2 jpg)
+/// - JPEG/GIF stay as-is (legacy global `convert_to=png` is ignored so it cannot
+///   re-encode every page — that was a UI bug when WebP→PNG was the default)
 fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {
-    let fmt = crate::settings_keys::convert_to();
-    if fmt == "keep" || fmt.is_empty() {
+    let src = ext_from_bytes(bytes);
+    let target: Option<&'static str> = match src {
+        "png" if crate::settings_keys::png_as_jpeg() => Some("jpg"),
+        "webp" => match crate::settings_keys::webp_as() {
+            1 => Some("png"),
+            2 => Some("jpg"),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(ext) = target else {
+        return (bytes.to_vec(), None);
+    };
+    if ext == src {
         return (bytes.to_vec(), None);
     }
+
     let Ok(img) = image::load_from_memory(bytes) else {
         return (bytes.to_vec(), None);
     };
     let mut cursor = std::io::Cursor::new(Vec::new());
-    let (enc, ext) = match fmt.as_str() {
-        "png" => (image::ImageFormat::Png, "png"),
-        "webp" => (image::ImageFormat::WebP, "webp"),
-        "jpg" | "jpeg" => (image::ImageFormat::Jpeg, "jpg"),
+    let result = match ext {
+        "jpg" => {
+            use image::ImageEncoder;
+            let q = crate::settings_keys::jpeg_quality();
+            let rgb = img.to_rgb8();
+            let (w, h) = (rgb.width(), rgb.height());
+            let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, q);
+            enc.write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+                .map_err(|e| e.to_string())
+        }
+        "png" => img
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .map_err(|e| e.to_string()),
+        "webp" => img
+            .write_to(&mut cursor, image::ImageFormat::WebP)
+            .map_err(|e| e.to_string()),
         _ => return (bytes.to_vec(), None),
-    };
-    let result = if enc == image::ImageFormat::Jpeg {
-        img.to_rgb8().write_to(&mut cursor, enc)
-    } else {
-        img.write_to(&mut cursor, enc)
     };
     match result {
         Ok(()) => (cursor.into_inner(), Some(ext)),

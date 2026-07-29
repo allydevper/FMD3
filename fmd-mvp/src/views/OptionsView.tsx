@@ -135,7 +135,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   httpTimeout: 30,
   httpRetries: 5,
   packFormat: "none",
-  packDelete: false,
+  packDelete: true,
   convertTo: "keep",
   patManga: "%MANGA%",
   patChapter: "%CHAPTER%",
@@ -237,13 +237,10 @@ function clampNum(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.trunc(v)));
 }
 
-/** When no explicit `convertTo` is set, derive it from the per-format toggles
- * (PNG→JPEG switch, WebP target) so `download.convert_to` stays consistent. */
-function deriveConvertTo(convertTo: string, pngAsJpeg: boolean, webpAs: string): string {
-  if (convertTo !== "keep") return convertTo;
-  if (pngAsJpeg) return "jpg";
-  if (webpAs === "2") return "jpg";
-  if (webpAs === "1") return "png";
+/** Always persist `keep`. Per-format conversion (PNG→JPEG, WebP→PNG/JPEG) is
+ * applied in Rust from those settings — never force a global convert_to (that
+ * used to re-encode every JPEG to PNG when WebP→PNG was the default). */
+function deriveConvertTo(_convertTo: string, _pngAsJpeg: boolean, _webpAs: string): string {
   return "keep";
 }
 
@@ -783,8 +780,9 @@ export function OptionsView() {
     const httpRetries = !Number.isFinite(httpRetriesRaw) || httpRetriesRaw < 0
       ? 5
       : Math.min(5, Math.floor(httpRetriesRaw));
-    const packDelete = parseB(await get(SK.PACK_DELETE), false);
-    const convertTo = (await get(SK.CONVERT)) ?? "keep";
+    const packDelete = parseB(await get(SK.PACK_DELETE), true);
+    // Legacy global convert_to (png/jpg) is ignored; per-format toggles own conversion.
+    const convertTo = "keep";
     const patManga = (await get(SK.PAT_MANGA)) ?? "%MANGA%";
     const patChapter = (await get(SK.PAT_CHAPTER)) ?? "%CHAPTER%";
     const patPage = (await get(SK.PAT_PAGE)) ?? "%FILENAME%";

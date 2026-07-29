@@ -13,6 +13,9 @@ pub const DOWNLOAD_MANGA_FOLDER_PATTERN: &str = "download.manga_folder_pattern";
 pub const DOWNLOAD_CHAPTER_FOLDER_PATTERN: &str = "download.chapter_folder_pattern";
 pub const DOWNLOAD_PAGE_NAME_PATTERN: &str = "download.page_name_pattern";
 pub const DOWNLOAD_CONVERT_TO: &str = "download.convert_to";
+pub const DOWNLOAD_PNG_AS_JPEG: &str = "download.png_as_jpeg";
+pub const DOWNLOAD_WEBP_AS: &str = "download.webp_as";
+pub const DOWNLOAD_JPEG_QUALITY: &str = "download.jpeg_quality";
 pub const DOWNLOAD_MANGA_FOLDER_ON: &str = "download.manga_folder_on";
 pub const DOWNLOAD_CHAPTER_FOLDER_ON: &str = "download.chapter_folder_on";
 pub const DOWNLOAD_ASCII_ON: &str = "download.ascii_on";
@@ -138,11 +141,29 @@ pub fn pack_format() -> String {
 }
 
 pub fn pack_delete_folder() -> bool {
-    bool_setting(DOWNLOAD_PACK_DELETE_FOLDER, false)
+    bool_setting(DOWNLOAD_PACK_DELETE_FOLDER, true)
 }
 
 pub fn convert_to() -> String {
     get_direct(DOWNLOAD_CONVERT_TO).unwrap_or_else(|| "keep".into())
+}
+
+/// FMD2 `OptionPNGSaveAsJPEG`.
+pub fn png_as_jpeg() -> bool {
+    bool_setting(DOWNLOAD_PNG_AS_JPEG, false)
+}
+
+/// FMD2 `OptionWebPSaveAs`: 0 = keep WebP, 1 = PNG, 2 = JPEG.
+pub fn webp_as() -> u8 {
+    get_direct(DOWNLOAD_WEBP_AS)
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(1)
+        .clamp(0, 2)
+}
+
+/// FMD2 `OptionJPEGQuality` (used when converting to JPEG).
+pub fn jpeg_quality() -> u8 {
+    usize_setting(DOWNLOAD_JPEG_QUALITY, 80).clamp(1, 100) as u8
 }
 
 pub fn manga_folder_pattern() -> String {

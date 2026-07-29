@@ -11,7 +11,7 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { appConfirm } from "../../components/AppConfirm";
-import { appToastUndo } from "../../components/AppToast";
+import { appToast, appToastUndo } from "../../components/AppToast";
 import { Icon } from "../../components/Icon";
 import { VirtualList } from "../../components/VirtualList";
 import type { IconName } from "../../icons";
@@ -34,6 +34,13 @@ import {
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
 import { catalogLinkKey, maybeFillHost, mangaPathKey, normalizeMangaUrl, resolveCover, urlsReferToSameManga } from "../../utils/url";
+import {
+  favoritesCacheRemove,
+  favoritesCacheUpsert,
+  loadFavoritesCached,
+  matchFavorite,
+  matchFavoriteCached,
+} from "../../utils/favoritesCache";
 import coverDefaultUrl from "../../assets/cover-default.svg";
 import chaptersEmptyUrl from "../../assets/chapters-empty.png";
 import type {
@@ -253,6 +260,7 @@ export function InfoView() {
       onUndo: async () => {
         try {
           const fav = await api.favoritesAdd(snapshot);
+          favoritesCacheUpsert(fav);
           if (matchesSidebar) applySidebarFavoriteState(true, fav.id);
           log(`Favorito restaurado: ${fav.title}`, "ok");
         } catch (e) {
@@ -320,6 +328,8 @@ export function InfoView() {
     chapters: { index: number; name: string; link: string }[];
     count: number;
   } | null>(null);
+  const [enqueueBusy, setEnqueueBusy] = useState(false);
+  const [splitBusy, setSplitBusy] = useState(false);
   const [loadCovers, setLoadCovers] = useState(true);
   const loadCoversRef = useRef(true);
 
@@ -330,6 +340,7 @@ export function InfoView() {
 
   const mangaLoadSeqRef = useRef(0);
   const coverEnsureSeqRef = useRef(0);
+  const favSyncSeqRef = useRef(0);
 
   function bumpChaptersReset() {
     setChaptersResetSeq((s) => s + 1);
@@ -431,6 +442,10 @@ export function InfoView() {
    * ------------------------------------------------------------------- */
   useEffect(() => {
     if (!modules.length) void refreshModules();
+    // Warm favorites cache so sidebar heart doesn't flicker on first open.
+    void loadFavoritesCached().catch(() => {
+      /* ignore */
+    });
     if (!outputDir) {
       void (async () => {
         const saved = ((await api.settingsGet("default_output_dir")) ?? "").trim();
@@ -1376,25 +1391,27 @@ export function InfoView() {
   }
 
   async function syncFavoriteState(url: string, moduleId?: string | null) {
-    setIsFavorite(false);
-    setFavoriteId(null);
-    if (!url && !sidebarCatalogRowKeyRef.current) return;
+    const seq = ++favSyncSeqRef.current;
+    const mid = moduleId || sidebarModuleIdRef.current || "";
+    const rowKey = sidebarCatalogRowKeyRef.current;
+    const rowLink = rowKey.includes(":") ? rowKey.slice(rowKey.indexOf(":") + 1) : "";
+
+    if (!url && !rowKey) {
+      applySidebarFavoriteState(false, null);
+      return;
+    }
+
+    // Apply warm cache immediately — avoids heart off→on flicker while DB opens.
+    const cached = matchFavoriteCached(url, mid, rowLink);
+    if (cached !== null) {
+      applySidebarFavoriteState(!!cached, cached?.id ?? null);
+    }
+
     try {
-      const favs = await api.favoritesList();
-      const mid = (moduleId || sidebarModuleIdRef.current || "").trim();
-      const rowKey = sidebarCatalogRowKeyRef.current;
-      const rowLink = rowKey.includes(":") ? rowKey.slice(rowKey.indexOf(":") + 1) : "";
-      const hit = favs.find((f) => {
-        if (url && urlsReferToSameManga(f.manga_url, url)) return true;
-        if (rowLink && urlsReferToSameManga(f.manga_url, rowLink)) return true;
-        if (mid && f.module_id === mid) {
-          if (url && urlsReferToSameManga(f.manga_url, url)) return true;
-          if (rowLink && urlsReferToSameManga(f.manga_url, rowLink)) return true;
-        }
-        return false;
-      });
-      setIsFavorite(!!hit);
-      setFavoriteId(hit?.id ?? null);
+      const favs = await loadFavoritesCached();
+      if (seq !== favSyncSeqRef.current) return;
+      const hit = matchFavorite(favs, url, mid, rowLink);
+      applySidebarFavoriteState(!!hit, hit?.id ?? null);
     } catch {
       /* ignore */
     }
@@ -1681,7 +1698,6 @@ export function InfoView() {
       const modName = e.module_name || mod?.name || "";
       setInfoInaccessible({ moduleName: modName });
       // Stub already painted real masterlist title; keep it (never show N/A in sidebar).
-      void syncFavoriteState(url, moduleId);
       const msg = inaccessibleInfoMessage(modName);
       log(
         `${msg} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
@@ -1794,31 +1810,29 @@ export function InfoView() {
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     const bulkCount = isBulk ? catalogSelectedKeys.size : 1;
+    const { mod, moduleId: entryModuleId } = catalogEntryModule(entry);
+    const url = maybeFillHost(mod?.root_url || "", entry.link);
+    const warmHit =
+      !isBulk && url
+        ? matchFavoriteCached(url, entryModuleId, entry.link)
+        : null;
+    const warmFav = warmHit === null ? undefined : warmHit;
     setCatalogCtxMenu({
       x: Math.max(pad, x),
       y: Math.max(pad, y),
       entry,
-      isFav: false,
-      favoriteId: null,
+      isFav: !!warmFav,
+      favoriteId: warmFav?.id ?? null,
       isBulk,
       bulkCount,
     });
 
     if (isBulk) return;
 
-    const { mod, moduleId: entryModuleId } = catalogEntryModule(entry);
-    const url = maybeFillHost(mod?.root_url || "", entry.link);
     if (!url) return;
-    void api
-      .favoritesList()
+    void loadFavoritesCached()
       .then((favs) => {
-        const hit = favs.find(
-          (f) =>
-            urlsReferToSameManga(f.manga_url, url) ||
-            (entryModuleId &&
-              f.module_id === entryModuleId &&
-              urlsReferToSameManga(f.manga_url, entry.link)),
-        );
+        const hit = matchFavorite(favs, url, entryModuleId, entry.link);
         setCatalogCtxMenu((prev) =>
           prev &&
           !prev.isBulk &&
@@ -1869,7 +1883,7 @@ export function InfoView() {
         ? (mangaUrl || urlInput).trim()
         : url;
     try {
-      const favs = await api.favoritesList();
+      const favs = await loadFavoritesCached();
       const existing = favs.find(
         (f) =>
           urlsReferToSameManga(f.manga_url, saveUrl) ||
@@ -1893,6 +1907,7 @@ export function InfoView() {
         title,
         chapters: matchesSidebar ? mangaRef.current?.chapters ?? [] : [],
       });
+      favoritesCacheUpsert(fav);
       if (matchesSidebar) applySidebarFavoriteState(true, fav.id);
       log(
         `Favorito guardado: ${fav.title} (sin GetInfo; el check rellenará capítulos)`,
@@ -1912,9 +1927,9 @@ export function InfoView() {
       if (entries[0]) void addFavoriteFromCatalog(entries[0]);
       return;
     }
-    let favs: Awaited<ReturnType<typeof api.favoritesList>> = [];
+    let favs: Awaited<ReturnType<typeof loadFavoritesCached>> = [];
     try {
-      favs = await api.favoritesList();
+      favs = await loadFavoritesCached();
     } catch (e) {
       log(String(e), "err");
       return;
@@ -1971,6 +1986,7 @@ export function InfoView() {
           title: entry.title || entry.link,
           chapters: matchesSidebar ? mangaRef.current?.chapters ?? [] : [],
         });
+        favoritesCacheUpsert(fav);
         existing.add(saveUrl);
         existing.add(url);
         existing.add(key);
@@ -2021,6 +2037,7 @@ export function InfoView() {
     };
     try {
       await api.favoritesRemove(favId);
+      favoritesCacheRemove(favId);
       if (matchesSidebar) applySidebarFavoriteState(false, null);
       log(`Quitado de favoritos: ${title}`, "ok");
       showFavoriteRemovedToast(snapshot, matchesSidebar);
@@ -2197,20 +2214,25 @@ export function InfoView() {
   }, [activeNav]);
 
   async function handleEnqueue() {
+    if (enqueueBusy) return;
     if (!manga) {
       log("Carga un manga primero.", "err");
+      appToast({ message: "Carga un manga primero.", kind: "err" });
       return;
     }
     const chapters = manga.chapters.filter((c) => selected.has(c.index));
     if (!chapters.length) {
       log("Selecciona al menos un capítulo.", "err");
+      appToast({ message: "Selecciona al menos un capítulo.", kind: "err" });
       return;
     }
     const dir = await ensureOutputDir();
     if (!dir) {
       log("Elige una carpeta de salida.", "err");
+      appToast({ message: "Elige una carpeta de salida.", kind: "err" });
       return;
     }
+    setEnqueueBusy(true);
     try {
       const n = await api.queueAdd({
         manga_title: manga.title || "manga",
@@ -2221,16 +2243,19 @@ export function InfoView() {
         chapters,
         start: !taskStopped,
       });
+      const msg = taskStopped
+        ? `Encolados ${n} (detenidos). Ve a Descargas y reanuda.`
+        : `Encolados ${n} capítulo(s).`;
+      log(msg, "ok");
+      appToast({ message: msg, kind: "ok" });
       const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
       if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
-      log(
-        taskStopped
-          ? `Encolados ${n} (detenidos). Ve a Descargas y reanuda.`
-          : `Encolados ${n} capítulo(s).`,
-        "ok",
-      );
     } catch (e) {
-      log(String(e), "err");
+      const msg = String(e);
+      log(msg, "err");
+      appToast({ message: msg, kind: "err" });
+    } finally {
+      setEnqueueBusy(false);
     }
   }
 
@@ -2239,6 +2264,10 @@ export function InfoView() {
     const chapters = manga.chapters.filter((c) => selected.has(c.index));
     if (chapters.length < 2) {
       log("Selecciona al menos 2 capítulos para dividir.", "err");
+      appToast({
+        message: "Selecciona al menos 2 capítulos para dividir.",
+        kind: "err",
+      });
       return;
     }
     setSplitPrompt({
@@ -2252,17 +2281,19 @@ export function InfoView() {
   }
 
   async function confirmSplitDownload() {
-    if (!manga || !splitPrompt) return;
+    if (!manga || !splitPrompt || splitBusy) return;
     const chapters = splitPrompt.chapters;
     let n = Math.floor(splitPrompt.count);
     if (!Number.isFinite(n) || n < 2) {
       log("La cuenta de descarga debe ser al menos 2.", "err");
+      appToast({ message: "La cuenta de descarga debe ser al menos 2.", kind: "err" });
       return;
     }
     n = Math.min(n, chapters.length);
     const dir = await ensureOutputDir();
     if (!dir) {
       log("Elige una carpeta de salida.", "err");
+      appToast({ message: "Elige una carpeta de salida.", kind: "err" });
       return;
     }
     // FMD2: base = len div N, remainder get +1 (first rem batches).
@@ -2276,7 +2307,7 @@ export function InfoView() {
       offset += size;
     }
     const stamp = Date.now().toString(36);
-    setSplitPrompt(null);
+    setSplitBusy(true);
     try {
       let total = 0;
       for (let i = 0; i < batches.length; i++) {
@@ -2294,16 +2325,20 @@ export function InfoView() {
           batch_id: batchId,
         });
       }
+      const msg = taskStopped
+        ? `Dividido en ${batches.length} tareas (${total} caps, detenidos).`
+        : `Dividido en ${batches.length} tareas (${total} caps).`;
+      log(msg, "ok");
+      appToast({ message: msg, kind: "ok" });
+      setSplitPrompt(null);
       const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
       if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
-      log(
-        taskStopped
-          ? `Dividido en ${batches.length} tareas (${total} caps, detenidos).`
-          : `Dividido en ${batches.length} tareas (${total} caps).`,
-        "ok",
-      );
     } catch (e) {
-      log(String(e), "err");
+      const msg = String(e);
+      log(msg, "err");
+      appToast({ message: msg, kind: "err" });
+    } finally {
+      setSplitBusy(false);
     }
   }
 
@@ -2340,6 +2375,7 @@ export function InfoView() {
       };
       try {
         await api.favoritesRemove(favoriteId);
+        favoritesCacheRemove(favoriteId);
         setIsFavorite(false);
         setFavoriteId(null);
         log(`Quitado de favoritos: ${title}`, "ok");
@@ -2360,7 +2396,7 @@ export function InfoView() {
     }
 
     try {
-      const favs = await api.favoritesList();
+      const favs = await loadFavoritesCached();
       const existing = favs.find(
         (f) =>
           urlsReferToSameManga(f.manga_url, url) ||
@@ -2387,6 +2423,7 @@ export function InfoView() {
         title: live?.title || sidebarRows.title || url,
         chapters: live?.chapters ?? [],
       });
+      favoritesCacheUpsert(fav);
       setIsFavorite(true);
       setFavoriteId(fav.id);
       log(
@@ -3327,7 +3364,7 @@ export function InfoView() {
               type="button"
               className="btn-split"
               id="btn-split"
-              disabled={!manga || selected.size < 2}
+              disabled={!manga || selected.size < 2 || enqueueBusy || splitBusy}
               title="Partir la selección en N tareas de cola"
               onClick={() => void handleSplitDownload()}
             >
@@ -3337,10 +3374,19 @@ export function InfoView() {
               type="button"
               className="btn-download"
               id="enqueue"
-              disabled={!manga || selected.size === 0}
+              disabled={!manga || selected.size === 0 || enqueueBusy || splitBusy}
+              aria-busy={enqueueBusy}
               onClick={() => void handleEnqueue()}
             >
-              <Icon name="download" className="ico ico-sm" /> Descargar
+              {enqueueBusy ? (
+                <>
+                  <span className="spinner spinner-sm" aria-hidden /> Encolando…
+                </>
+              ) : (
+                <>
+                  <Icon name="download" className="ico ico-sm" /> Descargar
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -3609,7 +3655,9 @@ export function InfoView() {
         <div
           className="info-modal-backdrop info-modal-backdrop-confirm"
           role="presentation"
-          onClick={() => setSplitPrompt(null)}
+          onClick={() => {
+            if (!splitBusy) setSplitPrompt(null);
+          }}
         >
           <div
             className="info-modal info-modal-confirm info-split-modal"
@@ -3638,7 +3686,7 @@ export function InfoView() {
                       type="button"
                       className="st-stepper-btn"
                       aria-label="Menos"
-                      disabled={splitPrompt.count <= 2}
+                      disabled={splitBusy || splitPrompt.count <= 2}
                       onClick={() =>
                         setSplitPrompt((prev) =>
                           prev
@@ -3661,6 +3709,7 @@ export function InfoView() {
                       value={splitPrompt.count}
                       autoFocus
                       autoComplete="off"
+                      disabled={splitBusy}
                       onChange={(e) => {
                         const max = splitPrompt.chapters.length;
                         const raw = Number(e.target.value);
@@ -3673,7 +3722,7 @@ export function InfoView() {
                       }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") void confirmSplitDownload();
-                        if (e.key === "Escape") setSplitPrompt(null);
+                        if (e.key === "Escape" && !splitBusy) setSplitPrompt(null);
                       }}
                     />
                     <button
@@ -3681,6 +3730,7 @@ export function InfoView() {
                       className="st-stepper-btn"
                       aria-label="Más"
                       disabled={
+                        splitBusy ||
                         splitPrompt.count >= splitPrompt.chapters.length
                       }
                       onClick={() =>
@@ -3711,6 +3761,7 @@ export function InfoView() {
               <button
                 type="button"
                 className="info-modal-btn"
+                disabled={splitBusy}
                 onClick={() => setSplitPrompt(null)}
               >
                 Cancelar
@@ -3718,9 +3769,17 @@ export function InfoView() {
               <button
                 type="button"
                 className="info-modal-btn info-modal-btn-primary"
+                disabled={splitBusy}
+                aria-busy={splitBusy}
                 onClick={() => void confirmSplitDownload()}
               >
-                Dividir
+                {splitBusy ? (
+                  <>
+                    <span className="spinner spinner-sm" aria-hidden /> Dividiendo…
+                  </>
+                ) : (
+                  "Dividir"
+                )}
               </button>
             </footer>
           </div>

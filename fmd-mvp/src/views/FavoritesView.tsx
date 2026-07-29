@@ -5,6 +5,11 @@ import { ICO } from "../icons";
 import * as api from "../api/tauri";
 import { useApp } from "../context/AppContext";
 import type { Favorite, FavoriteAddRequest, FavoriteCheckResult } from "../types";
+import {
+  favoritesCacheRemove,
+  favoritesCacheUpsert,
+  loadFavoritesCached,
+} from "../utils/favoritesCache";
 
 function favoriteSnapshot(fav: Favorite): FavoriteAddRequest {
   return {
@@ -95,7 +100,7 @@ export function FavoritesView() {
 
   const refreshFavorites = useCallback(async () => {
     try {
-      const favs = await api.favoritesList();
+      const favs = await loadFavoritesCached(true);
       const ids = new Set(favs.map((f) => f.id));
       setNewCounts((prev) => pruneMap(prev, ids));
       setCheckedAt((prev) => {
@@ -151,6 +156,7 @@ export function FavoritesView() {
       if (!fav) return;
       const snapshot = favoriteSnapshot(fav);
       await api.favoritesRemove(id);
+      favoritesCacheRemove(id);
       setSel((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -162,7 +168,8 @@ export function FavoritesView() {
         durationMs: 6000,
         onUndo: async () => {
           try {
-            await api.favoritesAdd(snapshot);
+            const fav = await api.favoritesAdd(snapshot);
+            favoritesCacheUpsert(fav);
             await refreshFavorites();
             log(`Favorito restaurado: ${snapshot.title}`, "ok");
           } catch (e) {
@@ -412,6 +419,7 @@ export function FavoritesView() {
       if (!fav) continue;
       snapshots.push(favoriteSnapshot(fav));
       await api.favoritesRemove(id);
+      favoritesCacheRemove(id);
     }
     if (!snapshots.length) return;
     setSel((prev) => {
@@ -427,7 +435,8 @@ export function FavoritesView() {
       onUndo: async () => {
         try {
           for (const snapshot of snapshots) {
-            await api.favoritesAdd(snapshot);
+            const fav = await api.favoritesAdd(snapshot);
+            favoritesCacheUpsert(fav);
           }
           await refreshFavorites();
           log(
