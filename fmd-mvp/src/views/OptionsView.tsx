@@ -154,7 +154,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   chapDigits: 3,
   asciiOn: false,
   asciiChar: "_",
-  favIntervalOn: true,
+  favIntervalOn: false,
   favIntervalMin: 60,
   favCheckOnStart: true,
   favOpenOnStart: false,
@@ -900,7 +900,7 @@ export function OptionsView() {
     const chapPadOn = parseB(await get(SK.CHAP_PAD), true);
     const volDigits = Number((await get(SK.VOL_DIGITS)) ?? "2") || 2;
     const chapDigits = Number((await get(SK.CHAP_DIGITS)) ?? "3") || 3;
-    const favIntervalOn = parseB(await get(SK.FAV_INTERVAL_ON), true);
+    const favIntervalOn = parseB(await get(SK.FAV_INTERVAL_ON), false);
     const favIntervalMin = Number((await get(SK.FAV_INTERVAL_MIN)) ?? "60") || 60;
     const favCheckOnStart = parseB(await get(SK.FAV_CHECK_ON_START), true);
     const favOpenOnStart = parseB(await get(SK.FAV_OPEN_ON_START), false);

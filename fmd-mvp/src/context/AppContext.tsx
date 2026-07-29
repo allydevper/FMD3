@@ -122,7 +122,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [outputDir, setOutputDir] = useState("");
   const [showMangaInfo, setShowMangaInfo] = useState(false);
   const [enabledModuleIds, setEnabledModuleIds] = useState<Set<string>>(() => new Set());
-  const [favAutoCheck, setFavAutoCheckState] = useState(true);
+  const [favAutoCheck, setFavAutoCheckState] = useState(false);
   const [catalogJob, setCatalogJob] = useState<CatalogJobState | null>(null);
   const [catalogJobDoneSeq, setCatalogJobDoneSeq] = useState(0);
   const [lastCatalogJobModuleIds, setLastCatalogJobModuleIds] = useState<string[]>([]);
@@ -501,7 +501,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        const intervalOn = parseBool(await api.settingsGet(SK.FAV_INTERVAL_ON), true);
+        const intervalOn = parseBool(await api.settingsGet(SK.FAV_INTERVAL_ON), false);
         if (!cancelled) {
           setFavAutoCheckState(intervalOn);
           await scheduleFavInterval(intervalOn);
