@@ -154,31 +154,67 @@ pub fn db_path() -> PathBuf {
     base.join("fmd-mvp")
 }
 
+pub fn userdata_path() -> PathBuf {
+    db_path().join("userdata")
+}
+
+pub fn favorites_db_path() -> PathBuf {
+    userdata_path().join("favorites.db")
+}
+
+const USERDATA_SPLIT_KEY: &str = "db.userdata_split";
+
+const FAVORITES_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS favorites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id TEXT NOT NULL,
+    module_name TEXT NOT NULL,
+    root_url TEXT NOT NULL,
+    manga_url TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    last_chapter_link TEXT NOT NULL DEFAULT '',
+    last_chapter_name TEXT NOT NULL DEFAULT '',
+    chapter_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_checked_at TEXT NOT NULL DEFAULT ''
+);
+"#;
+
+fn configure_connection(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        PRAGMA journal_mode=WAL;
+        PRAGMA busy_timeout=5000;
+        PRAGMA synchronous=NORMAL;
+        "#,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool, String> {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            params![name],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
+/// Open main app DB (`fmd-mvp.db`): settings, queue, manga_cache, downloaded_chapters.
 pub fn open_db() -> Result<Db, String> {
     let dir = db_path();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("fmd-mvp.db");
     let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    configure_connection(&conn)?;
     conn.execute_batch(
         r#"
-        PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY NOT NULL,
             value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS favorites (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            module_id TEXT NOT NULL,
-            module_name TEXT NOT NULL,
-            root_url TEXT NOT NULL,
-            manga_url TEXT NOT NULL UNIQUE,
-            title TEXT NOT NULL,
-            last_chapter_link TEXT NOT NULL DEFAULT '',
-            last_chapter_name TEXT NOT NULL DEFAULT '',
-            chapter_count INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            last_checked_at TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS queue_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,14 +275,6 @@ pub fn open_db() -> Result<Db, String> {
         [],
     );
     let _ = conn.execute(
-        "ALTER TABLE favorites ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE favorites ADD COLUMN last_checked_at TEXT NOT NULL DEFAULT ''",
-        [],
-    );
-    let _ = conn.execute(
         "ALTER TABLE queue_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
         [],
     );
@@ -282,6 +310,100 @@ pub fn open_db() -> Result<Db, String> {
         "#,
     );
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// Open portable favorites DB (`userdata/favorites.db`).
+pub fn open_favorites_db() -> Result<Db, String> {
+    let dir = userdata_path();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = favorites_db_path();
+    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    configure_connection(&conn)?;
+    conn.execute_batch(FAVORITES_DDL)
+        .map_err(|e| e.to_string())?;
+    let _ = conn.execute(
+        "ALTER TABLE favorites ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE favorites ADD COLUMN last_checked_at TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// One-shot: copy `favorites` from main DB into userdata, then drop the old table.
+fn migrate_favorites_from_main(main: &Db, favorites: &Db) -> Result<(), String> {
+    if settings_get(main, USERDATA_SPLIT_KEY)?
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    let main_has = {
+        let conn = main.lock();
+        table_exists(&conn, "favorites")?
+    };
+
+    if !main_has {
+        settings_set(main, USERDATA_SPLIT_KEY, "1")?;
+        return Ok(());
+    }
+
+    let fav_count = {
+        let fconn = favorites.lock();
+        fconn
+            .query_row("SELECT COUNT(*) FROM favorites", [], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+    };
+
+    let main_rows = favorites_list(main)?;
+    if !main_rows.is_empty() && fav_count == 0 {
+        let fconn = favorites.lock();
+        for fav in &main_rows {
+            fconn
+                .execute(
+                    "INSERT INTO favorites(
+                        id, module_id, module_name, root_url, manga_url, title,
+                        last_chapter_link, last_chapter_name, chapter_count, updated_at,
+                        enabled, last_checked_at
+                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                    params![
+                        fav.id,
+                        fav.module_id,
+                        fav.module_name,
+                        fav.root_url,
+                        fav.manga_url,
+                        fav.title,
+                        fav.last_chapter_link,
+                        fav.last_chapter_name,
+                        fav.chapter_count,
+                        fav.updated_at,
+                        if fav.enabled { 1 } else { 0 },
+                        fav.last_checked_at,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    {
+        let conn = main.lock();
+        conn.execute_batch("DROP TABLE IF EXISTS favorites;")
+            .map_err(|e| e.to_string())?;
+    }
+
+    settings_set(main, USERDATA_SPLIT_KEY, "1")?;
+    Ok(())
+}
+
+/// Open main + favorites DBs and run one-shot favorites migration.
+pub fn open_app_dbs() -> Result<(Db, Db), String> {
+    let main = open_db()?;
+    let favorites = open_favorites_db()?;
+    migrate_favorites_from_main(&main, &favorites)?;
+    Ok((main, favorites))
 }
 
 pub fn settings_get(db: &Db, key: &str) -> Result<Option<String>, String> {
@@ -734,6 +856,13 @@ pub fn queue_fail_or_retry(db: &Db, id: i64, error: &str, max_retries: usize) ->
 pub fn db_vacuum(db: &Db) -> Result<(), String> {
     let conn = db.lock();
     conn.execute_batch("VACUUM").map_err(|e| e.to_string())
+}
+
+/// Vacuum main + favorites (same open connections).
+pub fn db_vacuum_app(main: &Db, favorites: &Db) -> Result<(), String> {
+    db_vacuum(favorites)?;
+    db_vacuum(main)?;
+    Ok(())
 }
 
 pub fn queue_cancel(db: &Db, id: i64) -> Result<(), String> {

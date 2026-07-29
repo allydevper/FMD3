@@ -300,7 +300,7 @@ pub fn default_save_dir() -> Result<String, String> {
 
 #[tauri::command]
 pub fn favorites_list(state: State<QueueState>) -> Result<Vec<Favorite>, String> {
-    db::favorites_list(&state.db)
+    db::favorites_list(&state.favorites)
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,7 +329,7 @@ pub fn favorites_add(
         (String::new(), String::new(), 0)
     };
     db::favorites_add(
-        &state.db,
+        &state.favorites,
         &req.module_id,
         &req.module_name,
         &req.root_url,
@@ -343,7 +343,7 @@ pub fn favorites_add(
 
 #[tauri::command]
 pub fn favorites_remove(state: State<QueueState>, id: i64) -> Result<(), String> {
-    db::favorites_remove(&state.db, id)
+    db::favorites_remove(&state.favorites, id)
 }
 
 #[tauri::command]
@@ -352,7 +352,7 @@ pub fn favorites_set_enabled(
     id: i64,
     enabled: bool,
 ) -> Result<(), String> {
-    db::favorites_set_enabled(&state.db, id, enabled)
+    db::favorites_set_enabled(&state.favorites, id, enabled)
 }
 
 #[derive(Debug, Serialize)]
@@ -396,7 +396,7 @@ pub async fn favorites_check_all(
     state: State<'_, QueueState>,
     enqueue: bool,
 ) -> Result<Vec<FavoriteCheckResult>, String> {
-    let ids: Vec<i64> = db::favorites_list(&state.db)?
+    let ids: Vec<i64> = db::favorites_list(&state.favorites)?
         .into_iter()
         .filter(|f| f.enabled)
         .map(|f| f.id)
@@ -419,11 +419,12 @@ async fn check_favorite_inner(
     id: i64,
     enqueue: bool,
 ) -> Result<FavoriteCheckResult, String> {
-    let db = state.db.clone();
-    let fav = db::favorites_get(&db, id)?;
+    let main = state.db.clone();
+    let fav_db = state.favorites.clone();
+    let fav = db::favorites_get(&fav_db, id)?;
     if !fav.enabled {
-        let _ = db::favorites_touch_checked(&db, id);
-        let favorite = db::favorites_get(&db, id)?;
+        let _ = db::favorites_touch_checked(&fav_db, id);
+        let favorite = db::favorites_get(&fav_db, id)?;
         return Ok(FavoriteCheckResult {
             favorite,
             new_chapters: vec![],
@@ -445,7 +446,7 @@ async fn check_favorite_inner(
 
     let mut enqueued = 0usize;
     if enqueue && matched && !new_chapters.is_empty() {
-        let output = db::resolve_output_dir(&db)?;
+        let output = db::resolve_output_dir(&main)?;
         if output.trim().is_empty() {
             return Err("No se pudo resolver la carpeta de salida".into());
         }
@@ -476,7 +477,7 @@ async fn check_favorite_inner(
                 }
             })
             .collect();
-        let ids = db::queue_add_many(&db, &items)?;
+        let ids = db::queue_add_many(&main, &items)?;
         enqueued = ids.len();
         queue::ensure_started(app);
     }
@@ -486,9 +487,9 @@ async fn check_favorite_inner(
     } else {
         ("", "")
     };
-    db::favorites_update_progress(&db, id, last_link, last_name, chapters.len() as i64)?;
-    let _ = db::favorites_touch_checked(&db, id);
-    let favorite = db::favorites_get(&db, id)?;
+    db::favorites_update_progress(&fav_db, id, last_link, last_name, chapters.len() as i64)?;
+    let _ = db::favorites_touch_checked(&fav_db, id);
+    let favorite = db::favorites_get(&fav_db, id)?;
     Ok(FavoriteCheckResult {
         favorite,
         new_chapters,
@@ -909,7 +910,7 @@ pub fn favorites_import_list(
     let mut n = 0usize;
     for item in items {
         match db::favorites_add(
-            &state.db,
+            &state.favorites,
             &item.module_id,
             &item.module_name,
             &item.root_url,
@@ -1025,7 +1026,7 @@ pub fn log_clear(state: State<QueueState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn db_vacuum(state: State<QueueState>) -> Result<(), String> {
-    db::db_vacuum(&state.db)
+    db::db_vacuum_app(&state.db, &state.favorites)
 }
 
 #[tauri::command]

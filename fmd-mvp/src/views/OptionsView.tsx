@@ -1495,7 +1495,7 @@ export function OptionsView() {
                       <SwitchRow
                         id="opt-vacuum"
                         label="Vacuum de bases al salir"
-                        desc="Compacta las bases de datos al cerrar"
+                        desc="Compacta favoritos y la base de la app al cerrar"
                         checked={s.vacuum}
                         onChange={(v) => update("vacuum", v)}
                       />

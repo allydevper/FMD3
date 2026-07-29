@@ -11,6 +11,7 @@ use tokio::sync::mpsc::UnboundedSender;
 #[derive(Clone)]
 pub struct QueueState {
     pub db: Db,
+    pub favorites: Db,
     running: Arc<AtomicBool>,
     /// Per-item cancel flags for in-flight `process_item` jobs.
     cancels: Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>,
@@ -21,9 +22,10 @@ pub struct QueueState {
 }
 
 impl QueueState {
-    pub fn new(db: Db) -> Self {
+    pub fn new(db: Db, favorites: Db) -> Self {
         Self {
             db,
+            favorites,
             running: Arc::new(AtomicBool::new(false)),
             cancels: Arc::new(Mutex::new(HashMap::new())),
             active: Arc::new(AtomicUsize::new(0)),
@@ -450,26 +452,30 @@ fn process_item(
             .body(format!("{}: {}", item.manga_title, item.chapter_name))
             .show();
     }
-    maybe_remove_completed_favorite(&app.state::<QueueState>().db, &item.manga_url);
+    maybe_remove_completed_favorite(
+        &app.state::<QueueState>().db,
+        &app.state::<QueueState>().favorites,
+        &item.manga_url,
+    );
     Ok(())
 }
 
 /// If `favorites.remove_completed` is on and no other queue items remain
 /// pending/running for this manga, remove the matching favorite (MVP: keeps
 /// the favorites list clean once every enqueued chapter has finished).
-fn maybe_remove_completed_favorite(db: &Db, manga_url: &str) {
+fn maybe_remove_completed_favorite(main: &Db, favorites: &Db, manga_url: &str) {
     if manga_url.trim().is_empty() {
         return;
     }
     if !crate::settings_keys::bool_setting(crate::settings_keys::FAVORITES_REMOVE_COMPLETED, false) {
         return;
     }
-    let Ok(Some(fav)) = db::favorites_find_by_manga_url(db, manga_url) else {
+    let Ok(Some(fav)) = db::favorites_find_by_manga_url(favorites, manga_url) else {
         return;
     };
-    let remaining = db::queue_count_pending_for_manga(db, manga_url).unwrap_or(1);
+    let remaining = db::queue_count_pending_for_manga(main, manga_url).unwrap_or(1);
     if remaining == 0 {
-        let _ = db::favorites_remove(db, fav.id);
+        let _ = db::favorites_remove(favorites, fav.id);
     }
 }
 

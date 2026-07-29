@@ -74,7 +74,12 @@ pub fn download_pages_with_referer_for_test(
 }
 
 pub fn open_db_for_test() -> Result<db::Db, String> {
-    db::open_db()
+    let (main, _) = db::open_app_dbs()?;
+    Ok(main)
+}
+
+pub fn open_app_dbs_for_test() -> Result<(db::Db, db::Db), String> {
+    db::open_app_dbs()
 }
 
 pub fn db_path_for_test() -> std::path::PathBuf {
@@ -111,9 +116,9 @@ pub fn catalog_search_for_test(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let db = db::open_db().expect("no se pudo abrir la base de datos");
+    let (db, favorites) = db::open_app_dbs().expect("no se pudo abrir la base de datos");
     let _ = db::queue_reset_running_to_pending(&db);
-    let queue_state = QueueState::new(db);
+    let queue_state = QueueState::new(db, favorites);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -224,18 +229,17 @@ pub fn run() {
                     return;
                 }
                 if crate::settings_keys::bool_setting(crate::settings_keys::VACUUM_ON_EXIT, false) {
-                    let _ = crate::db::open_db().and_then(|db| {
-                        let conn = db.lock();
-                        conn.execute_batch("VACUUM;").map_err(|e| e.to_string())
-                    });
+                    use tauri::Manager;
+                    let state = window.app_handle().state::<QueueState>();
+                    let _ = crate::db::db_vacuum_app(&state.db, &state.favorites);
                 }
                 if crate::settings_keys::bool_setting(
                     crate::settings_keys::CLEAR_DONE_ON_EXIT,
                     false,
                 ) {
-                    if let Ok(db) = crate::db::open_db() {
-                        let _ = crate::db::queue_clear_finished(&db);
-                    }
+                    use tauri::Manager;
+                    let state = window.app_handle().state::<QueueState>();
+                    let _ = crate::db::queue_clear_finished(&state.db);
                 }
             }
         })
