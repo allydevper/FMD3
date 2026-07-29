@@ -841,7 +841,10 @@ export function OptionsView() {
     const oneChapterPerManga = parseB(await get(SK.ONE_CHAPTER_PER_MANGA), false);
     const taskRetries = Number((await get(SK.TASK_RETRIES)) ?? "1") || 0;
     const httpTimeout = Number((await get(SK.TIMEOUT)) ?? "30") || 30;
-    const httpRetries = Number((await get(SK.HTTP_RETRIES)) ?? "5") || 0;
+    const httpRetriesRaw = Number((await get(SK.HTTP_RETRIES)) ?? "5");
+    const httpRetries = !Number.isFinite(httpRetriesRaw) || httpRetriesRaw < 0
+      ? 5
+      : Math.min(5, Math.floor(httpRetriesRaw));
     const packDelete = parseB(await get(SK.PACK_DELETE), false);
     const convertTo = (await get(SK.CONVERT)) ?? "keep";
     const patManga = (await get(SK.PAT_MANGA)) ?? "%MANGA%";
@@ -1632,9 +1635,9 @@ export function OptionsView() {
                       <BoundStepperRow label="Timeout" desc="Segundos de espera de conexión" value={s.httpTimeout} min={1} max={300} suffix="s" onChange={(v) => update("httpTimeout", v)} />
                       <BoundStepperRow
                         label="Reintentos de conexión"
-                        desc="−1 = reintentar siempre"
+                        desc="Reintentos por petición HTTP (0 = no reintentar)"
                         value={s.httpRetries}
-                        min={-1}
+                        min={0}
                         max={5}
                         onChange={(v) => update("httpRetries", v)}
                       />

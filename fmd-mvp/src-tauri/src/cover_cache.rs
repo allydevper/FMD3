@@ -148,9 +148,10 @@ fn build_client() -> Result<reqwest::blocking::Client, String> {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FMD-MVP/0.1".into()
         });
     let proxy = db::settings_get(&db, HTTP_PROXY)?.unwrap_or_default();
+    let timeout = crate::settings_keys::http_timeout_secs().max(1);
     let mut b = reqwest::blocking::Client::builder()
         .user_agent(ua)
-        .timeout(std::time::Duration::from_secs(45))
+        .timeout(std::time::Duration::from_secs(timeout))
         .redirect(reqwest::redirect::Policy::limited(8));
     let proxy = proxy.trim();
     if !proxy.is_empty() {

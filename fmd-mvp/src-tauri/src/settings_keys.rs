@@ -115,15 +115,15 @@ pub fn one_chapter_per_manga() -> bool {
 }
 
 pub fn task_retries() -> usize {
-    usize_setting(DOWNLOAD_TASK_RETRIES, 0)
+    usize_setting(DOWNLOAD_TASK_RETRIES, 1)
 }
 
 pub fn http_timeout_secs() -> u64 {
-    usize_setting(HTTP_TIMEOUT_SECS, 45) as u64
+    usize_setting(HTTP_TIMEOUT_SECS, 30) as u64
 }
 
 pub fn http_retries() -> usize {
-    usize_setting(HTTP_RETRIES, 0)
+    usize_setting(HTTP_RETRIES, 5)
 }
 
 pub fn pack_format() -> String {
