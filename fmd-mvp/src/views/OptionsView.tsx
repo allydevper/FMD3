@@ -74,9 +74,6 @@ type OptionsFormState = {
   patChapter: string;
   patPage: string;
   outputDirField: string;
-  extOn: boolean;
-  extPath: string;
-  extArgs: string;
   logOn: boolean;
   logFile: string;
   mangaFolderOn: boolean;
@@ -147,9 +144,6 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   patChapter: "%CHAPTER%",
   patPage: "%FILENAME%",
   outputDirField: "",
-  extOn: false,
-  extPath: "",
-  extArgs: "%PATH%%CHAPTER%",
   logOn: false,
   logFile: "fmd.log",
   mangaFolderOn: true,
@@ -750,6 +744,8 @@ export function OptionsView() {
     "idle",
   );
   const cacheClearTimerRef = useRef<number | undefined>(undefined);
+  const [logClearFlash, setLogClearFlash] = useState<"idle" | "working" | "done" | "error">("idle");
+  const logClearTimerRef = useRef<number | undefined>(undefined);
   const [s, setS] = useState<OptionsFormState>(DEFAULT_SETTINGS);
 
   const outputDirRef = useRef(outputDir);
@@ -786,8 +782,34 @@ export function OptionsView() {
     return () => {
       if (saveFlashTimerRef.current != null) window.clearTimeout(saveFlashTimerRef.current);
       if (cacheClearTimerRef.current != null) window.clearTimeout(cacheClearTimerRef.current);
+      if (logClearTimerRef.current != null) window.clearTimeout(logClearTimerRef.current);
     };
   }, []);
+
+  function runLogClear() {
+    if (logClearFlash === "working") return;
+    setLogClearFlash("working");
+    void api
+      .clearLogFile()
+      .then(() => {
+        setLogClearFlash("done");
+        log("Log borrado", "ok");
+        if (logClearTimerRef.current != null) window.clearTimeout(logClearTimerRef.current);
+        logClearTimerRef.current = window.setTimeout(() => {
+          setLogClearFlash("idle");
+          logClearTimerRef.current = undefined;
+        }, 2500);
+      })
+      .catch((e) => {
+        setLogClearFlash("error");
+        log(String(e), "err");
+        if (logClearTimerRef.current != null) window.clearTimeout(logClearTimerRef.current);
+        logClearTimerRef.current = window.setTimeout(() => {
+          setLogClearFlash("idle");
+          logClearTimerRef.current = undefined;
+        }, 2500);
+      });
+  }
 
   function runCacheClear() {
     if (cacheClearFlash === "working") return;
@@ -900,9 +922,6 @@ export function OptionsView() {
       ((await get(SK.AFTER_FINISH)) || "none").toLowerCase() === "exit" ? "exit" : "none";
     const logOn = parseB(await get(SK.LOG_ON), false);
     const logFile = (await get(SK.LOG_FILE)) || "fmd.log";
-    const extOn = parseB(await get(SK.EXT_ON), false);
-    const extPath = (await get(SK.EXT_PATH)) || "";
-    const extArgs = (await get(SK.EXT_ARGS)) || "%PATH%%CHAPTER%";
     const trayMinimize = parseB(await get(SK.TRAY_MINIMIZE), false);
     const trayStart = parseB(await get(SK.TRAY_START), false);
     const singleInstance = parseB(await get(SK.SINGLE_INSTANCE), true);
@@ -976,9 +995,6 @@ export function OptionsView() {
       afterFinish,
       logOn,
       logFile,
-      extOn,
-      extPath,
-      extArgs,
       trayMinimize,
       trayStart,
       singleInstance,
@@ -1061,9 +1077,6 @@ export function OptionsView() {
     await api.settingsSet(SK.AFTER_FINISH, s.afterFinish === "exit" ? "exit" : "none");
     await api.settingsSet(SK.LOG_ON, boolStr(s.logOn));
     await api.settingsSet(SK.LOG_FILE, s.logFile || "fmd.log");
-    await api.settingsSet(SK.EXT_ON, boolStr(s.extOn));
-    await api.settingsSet(SK.EXT_PATH, s.extPath);
-    await api.settingsSet(SK.EXT_ARGS, s.extArgs);
     await api.settingsSet(SK.TRAY_MINIMIZE, boolStr(s.trayMinimize));
     await api.settingsSet(SK.TRAY_START, boolStr(s.trayStart));
     await api.settingsSet(SK.SINGLE_INSTANCE, boolStr(s.singleInstance));
@@ -1489,52 +1502,10 @@ export function OptionsView() {
                       <SwitchRow
                         id="opt-long-paths"
                         label="Rutas de nombre largo"
-                        warn="Sin función aún"
-                        desc="Permite rutas de más de 260 caracteres (\\?\). Pendiente de cablear en I/O."
+                        desc="Conserva títulos y carpetas completos aunque sean muy largos. Si está apagado, se acortan para que la descarga no falle."
                         checked={s.longPaths}
-                        status="none"
                         onChange={(v) => update("longPaths", v)}
                       />
-                    </div>
-                  </section>
-
-                  <section className="st-section">
-                    <div className="st-section-head">
-                      <Icon ico={ICO.external} className="ico ico-sm" />
-                      <h2>Programa externo</h2>
-                    </div>
-                    <div className="st-card">
-                      <SwitchRow
-                        id="opt-external"
-                        label="Abrir manga con programa externo"
-                        desc="Usa otra aplicación para abrir los capítulos"
-                        checked={s.extOn}
-                        onChange={(v) => update("extOn", v)}
-                      />
-                      <div className="st-row st-row-stack" hidden={!s.extOn}>
-                        <div className="st-form-grid">
-                          <label>Ruta</label>
-                          <input
-                            className="st-field st-mono"
-                            type="text"
-                            value={s.extPath}
-                            placeholder="C:\Program Files\...\visor.exe"
-                            autoComplete="off"
-                            spellCheck={false}
-                            onChange={(e) => update("extPath", e.target.value)}
-                          />
-                          <label>Parámetros</label>
-                          <input
-                            className="st-field st-mono"
-                            type="text"
-                            value={s.extArgs}
-                            placeholder="%PATH%%CHAPTER%"
-                            autoComplete="off"
-                            spellCheck={false}
-                            onChange={(e) => update("extArgs", e.target.value)}
-                          />
-                        </div>
-                      </div>
                     </div>
                   </section>
 
@@ -1566,17 +1537,28 @@ export function OptionsView() {
                           </div>
                         </div>
                         <div className="st-row st-row-actions">
+                          <div className="st-meta">
+                            {logClearFlash === "done" ? (
+                              <div className="st-inline-ok" role="status">
+                                Archivo de log borrado
+                              </div>
+                            ) : logClearFlash === "error" ? (
+                              <div className="st-inline-err" role="status">
+                                No se pudo borrar
+                              </div>
+                            ) : null}
+                          </div>
                           <button
                             type="button"
-                            className="secondary"
-                            onClick={() => {
-                              void api
-                                .clearLogFile()
-                                .then(() => log("Log borrado", "ok"))
-                                .catch((e) => log(String(e), "err"));
-                            }}
+                            className={`secondary${logClearFlash === "done" ? " is-saved" : ""}`}
+                            disabled={logClearFlash === "working"}
+                            onClick={runLogClear}
                           >
-                            Borrar archivo de log
+                            {logClearFlash === "working"
+                              ? "Borrando…"
+                              : logClearFlash === "done"
+                                ? "Listo"
+                                : "Borrar archivo de log"}
                           </button>
                           <button
                             type="button"

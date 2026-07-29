@@ -55,9 +55,6 @@ export const ICO = {
   arrowDown: svgIco('<path d="m6 9 6 6 6-6"/>'),
   arrowTop: svgIco('<path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/>'),
   arrowBottom: svgIco('<path d="m7 6 5 5 5-5"/><path d="m7 13 5 5 5-5"/>'),
-  external: svgIco(
-    '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
-  ),
   split: svgIco(
     '<path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/>',
   ),

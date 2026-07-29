@@ -7,6 +7,7 @@ mod download;
 pub mod lua_host;
 mod log_file;
 mod pack;
+mod paths;
 mod queue;
 mod rename_patterns;
 mod settings_keys;

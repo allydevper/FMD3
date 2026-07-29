@@ -1508,12 +1508,13 @@ fn ext_from_url(url: &str) -> Option<&'static str> {
 }
 
 fn find_existing_image(base_no_ext: &Path) -> Option<PathBuf> {
-    if base_no_ext.is_file() {
+    let exists = |p: &Path| crate::paths::fs_path(p).is_file();
+    if exists(base_no_ext) {
         return Some(base_no_ext.to_path_buf());
     }
     for ext in ["jpg", "jpeg", "png", "webp", "gif", "avif"] {
         let p = base_no_ext.with_extension(ext);
-        if p.is_file() {
+        if exists(&p) {
             return Some(p);
         }
     }
@@ -1546,7 +1547,7 @@ pub fn manga_output_dir(
     if manga_folder_on() {
         path = path.join(apply_pattern(&manga_folder_pattern(), &tokens));
     }
-    path
+    crate::paths::fit_download_path(&path)
 }
 
 pub fn chapter_output_dir(
@@ -1584,7 +1585,7 @@ pub fn chapter_output_dir(
     if chapter_folder_on() {
         path = path.join(apply_pattern(&chapter_folder_pattern(), &tokens));
     }
-    path
+    crate::paths::fit_download_path(&path)
 }
 
 /// Resolve manga + chapter folders with **current** settings (call at enqueue to freeze).
@@ -1843,7 +1844,7 @@ pub fn download_chapter(
     let mut files = Vec::new();
     let mut errors = Vec::new();
 
-    if let Err(e) = std::fs::create_dir_all(&chapter_dir) {
+    if let Err(e) = std::fs::create_dir_all(crate::paths::fs_path(&chapter_dir)) {
         return Ok(crate::download::DownloadResult {
             chapter_index,
             chapter_name: chapter_name.to_string(),
@@ -1870,7 +1871,7 @@ pub fn download_chapter(
                 let base_name = work_basename(&task.file_names, i, page_count);
                 let base_path = chapter_dir.join(&base_name);
                 if let Some(existing) = find_existing_image(&base_path) {
-                    if let Ok(meta) = std::fs::metadata(&existing) {
+                    if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(&existing)) {
                         bytes_counter.fetch_add(meta.len(), Ordering::SeqCst);
                     }
                     files.push(existing.display().to_string());
@@ -1933,7 +1934,7 @@ pub fn download_chapter(
                         let base_name = work_basename(&task.file_names, i, page_count);
                         let base_path = chapter_dir.join(&base_name);
                         if let Some(existing) = find_existing_image(&base_path) {
-                            if let Ok(meta) = std::fs::metadata(&existing) {
+                            if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(&existing)) {
                                 bytes_counter.fetch_add(meta.len(), Ordering::SeqCst);
                             }
                             files_m.lock().push(existing.display().to_string());
@@ -1975,7 +1976,7 @@ pub fn download_chapter(
                                 ext
                             ))
                         };
-                        match std::fs::write(&file_path, &bytes) {
+                        match std::fs::write(crate::paths::fs_path(&file_path), &bytes) {
                             Ok(()) => {
                                 bytes_counter.fetch_add(bytes.len() as u64, Ordering::SeqCst);
                                 files_m.lock().push(file_path.display().to_string());
@@ -2033,7 +2034,7 @@ pub fn download_chapter(
         let base_name = work_basename(&task.file_names, i, page_count);
         let base_path = chapter_dir.join(&base_name);
         if let Some(existing) = find_existing_image(&base_path) {
-            if let Ok(meta) = std::fs::metadata(&existing) {
+            if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(&existing)) {
                 bytes_so_far += meta.len();
             }
             files.push(existing.display().to_string());
@@ -2130,7 +2131,7 @@ pub fn download_chapter(
                 } else {
                     chapter_dir.join(format!("{base_name}.{ext}"))
                 };
-                match std::fs::write(&file_path, &bytes) {
+                match std::fs::write(crate::paths::fs_path(&file_path), &bytes) {
                     Ok(()) => Some(file_path),
                     Err(e) => {
                         errors.push(format!("Página {}: write error: {e}", i + 1));
@@ -2141,7 +2142,7 @@ pub fn download_chapter(
         };
 
         if let Some(path) = &saved {
-            if let Ok(meta) = std::fs::metadata(path) {
+            if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(path)) {
                 bytes_so_far += meta.len();
             }
         }

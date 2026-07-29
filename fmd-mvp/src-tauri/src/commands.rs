@@ -664,29 +664,33 @@ pub fn queue_delete_chapter_files(
             &artists,
         )
     };
-    let base_canon = base
+    let base_fs = crate::paths::fs_path(&base);
+    let base_canon = base_fs
         .canonicalize()
-        .unwrap_or_else(|_| base.clone());
+        .map(|p| crate::paths::strip_long_prefix(&p))
+        .unwrap_or_else(|_| crate::paths::strip_long_prefix(&base));
+    let chapter_fs = crate::paths::fs_path(&chapter_dir);
     // If chapter dir doesn't exist yet, nothing to delete.
-    if !chapter_dir.exists() {
+    if !chapter_fs.exists() {
         return Ok(chapter_dir.display().to_string());
     }
-    let chap_canon = chapter_dir
+    let chap_canon = chapter_fs
         .canonicalize()
         .map_err(|e| format!("ruta inválida {}: {e}", chapter_dir.display()))?;
-    if !chap_canon.starts_with(&base_canon) {
+    let chap_cmp = crate::paths::strip_long_prefix(&chap_canon);
+    if !chap_cmp.starts_with(&base_canon) {
         return Err(format!(
             "ruta fuera de la carpeta de salida: {}",
-            chap_canon.display()
+            chap_cmp.display()
         ));
     }
     // Never delete the base output root itself.
-    if chap_canon == base_canon {
+    if chap_cmp == base_canon {
         return Err("no se borra la carpeta raíz de descargas".into());
     }
     std::fs::remove_dir_all(&chap_canon)
-        .map_err(|e| format!("no se pudo borrar {}: {e}", chap_canon.display()))?;
-    Ok(chap_canon.display().to_string())
+        .map_err(|e| format!("no se pudo borrar {}: {e}", chap_cmp.display()))?;
+    Ok(chap_cmp.display().to_string())
 }
 
 #[tauri::command]
@@ -711,11 +715,13 @@ pub fn queue_open_item_folder(
     } else {
         manga_path.clone()
     };
-    if !open_path.exists() {
-        std::fs::create_dir_all(&open_path)
+    if !crate::paths::fs_path(&open_path).exists() {
+        std::fs::create_dir_all(crate::paths::fs_path(&open_path))
             .map_err(|e| format!("no se pudo crear {}: {e}", open_path.display()))?;
     }
-    let path_str = open_path.display().to_string();
+    let path_str = crate::paths::strip_long_prefix(&open_path)
+        .display()
+        .to_string();
     shell_open_external(path_str.clone(), None)?;
     Ok(path_str)
 }
@@ -803,12 +809,12 @@ fn pick_open_folder(
     manga_path: &std::path::Path,
     chapter_path: &std::path::Path,
 ) -> std::path::PathBuf {
-    if chapter_path.is_dir() {
+    if crate::paths::fs_path(chapter_path).is_dir() {
         return chapter_path.to_path_buf();
     }
     for ext in ["pdf", "cbz", "zip", "epub"] {
         let archive = chapter_path.with_extension(ext);
-        if archive.is_file() {
+        if crate::paths::fs_path(&archive).is_file() {
             return archive
                 .parent()
                 .map(|p| p.to_path_buf())
@@ -863,11 +869,13 @@ pub fn queue_open_manga_folder(
         &authors,
         &artists,
     );
-    if !path.exists() {
-        std::fs::create_dir_all(&path)
+    if !crate::paths::fs_path(&path).exists() {
+        std::fs::create_dir_all(crate::paths::fs_path(&path))
             .map_err(|e| format!("no se pudo crear {}: {e}", path.display()))?;
     }
-    let path_str = path.display().to_string();
+    let path_str = crate::paths::strip_long_prefix(&path)
+        .display()
+        .to_string();
     shell_open_external(path_str.clone(), None)?;
     Ok(path_str)
 }
@@ -991,47 +999,6 @@ pub fn shell_open_external(path: String, args: Option<String>) -> Result<(), Str
             .map_err(|e| format!("no se pudo abrir '{path}': {e}"))?;
         Ok(())
     }
-}
-
-/// Sustituye tokens `%PATH%` y `%CHAPTER%` en la plantilla de argumentos del
-/// visor externo (misma convención que FMD2).
-fn build_viewer_args(args_template: &str, target: &std::path::Path, chapter_name: &str) -> String {
-    args_template
-        .replace("%PATH%", &target.display().to_string())
-        .replace("%CHAPTER%", chapter_name)
-}
-
-/// Abre `target` (carpeta del capítulo o archivo empaquetado) con el visor
-/// externo configurado en Ajustes, si `external.viewer_on` está activo.
-/// Llamado justo después de que un ítem de la cola termina en "done".
-pub fn open_external_viewer(target: &std::path::Path, chapter_name: &str) {
-    if !crate::settings_keys::bool_setting(crate::settings_keys::EXTERNAL_VIEWER_ON, false) {
-        return;
-    }
-    if !target.exists() {
-        return;
-    }
-    let viewer_path = crate::db::settings_get_direct(crate::settings_keys::EXTERNAL_VIEWER_PATH)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let viewer_path = viewer_path.trim();
-    let target_str = target.display().to_string();
-    if viewer_path.is_empty() {
-        // Sin visor configurado: abre con la aplicación asociada del sistema.
-        let _ = shell_open_external(target_str, None);
-        return;
-    }
-    let args_template = crate::db::settings_get_direct(crate::settings_keys::EXTERNAL_VIEWER_ARGS)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let args = if args_template.trim().is_empty() {
-        target_str
-    } else {
-        build_viewer_args(&args_template, target, chapter_name)
-    };
-    let _ = shell_open_external(viewer_path.to_string(), Some(args));
 }
 
 #[tauri::command]

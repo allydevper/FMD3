@@ -393,11 +393,6 @@ fn process_item(
         result.errors.join("; ")
     };
 
-    let mut viewer_target: Option<PathBuf> = result
-        .files
-        .first()
-        .and_then(|f| std::path::Path::new(f).parent().map(|p| p.to_path_buf()));
-
     let pack_fmt = crate::settings_keys::pack_format();
     if matches!(pack_fmt.as_str(), "cbz" | "zip" | "pdf" | "epub") && !result.files.is_empty() {
         if let Some(first) = result.files.first() {
@@ -405,8 +400,7 @@ fn process_item(
                 match crate::pack::pack_chapter_dir(dir, &pack_fmt) {
                     Ok(archive) => {
                         if crate::settings_keys::pack_delete_folder() {
-                            let _ = std::fs::remove_dir_all(dir);
-                            viewer_target = Some(archive.clone());
+                            let _ = std::fs::remove_dir_all(crate::paths::fs_path(dir));
                         }
                         if !err.is_empty() {
                             err.push_str("; ");
@@ -455,9 +449,6 @@ fn process_item(
             .title("FMD3")
             .body(format!("{}: {}", item.manga_title, item.chapter_name))
             .show();
-    }
-    if let Some(target) = viewer_target {
-        crate::commands::open_external_viewer(&target, &item.chapter_name);
     }
     maybe_remove_completed_favorite(&app.state::<QueueState>().db, &item.manga_url);
     Ok(())

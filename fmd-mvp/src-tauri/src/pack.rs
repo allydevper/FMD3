@@ -8,7 +8,8 @@ use zip::CompressionMethod;
 use zip::ZipWriter;
 
 fn list_image_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+    let dir = crate::paths::fs_path(dir);
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -28,6 +29,7 @@ fn list_image_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn pack_zip_like(dir: &Path, ext: &str) -> Result<PathBuf, String> {
+    let dir = crate::paths::fs_path(dir);
     let out = dir.with_extension(ext);
     if out.exists() {
         std::fs::remove_file(&out).map_err(|e| e.to_string())?;
@@ -36,7 +38,7 @@ fn pack_zip_like(dir: &Path, ext: &str) -> Result<PathBuf, String> {
     let mut zip = ZipWriter::new(file);
     let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -56,14 +58,15 @@ fn pack_zip_like(dir: &Path, ext: &str) -> Result<PathBuf, String> {
         zip.write_all(&buf).map_err(|e| e.to_string())?;
     }
     zip.finish().map_err(|e| e.to_string())?;
-    Ok(out)
+    Ok(crate::paths::strip_long_prefix(&out))
 }
 
 /// Minimal PDF: one JPEG image per page (non-JPEG re-encoded via `image`).
 fn pack_pdf(dir: &Path) -> Result<PathBuf, String> {
     use image::ImageEncoder;
 
-    let images = list_image_files(dir)?;
+    let dir = crate::paths::fs_path(dir);
+    let images = list_image_files(&dir)?;
     if images.is_empty() {
         return Err("no hay imágenes para PDF".into());
     }
@@ -168,11 +171,12 @@ fn pack_pdf(dir: &Path) -> Result<PathBuf, String> {
     );
 
     std::fs::write(&out, &pdf).map_err(|e| e.to_string())?;
-    Ok(out)
+    Ok(crate::paths::strip_long_prefix(&out))
 }
 
 fn pack_epub(dir: &Path) -> Result<PathBuf, String> {
-    let images = list_image_files(dir)?;
+    let dir = crate::paths::fs_path(dir);
+    let images = list_image_files(&dir)?;
     if images.is_empty() {
         return Err("no hay imágenes para EPUB".into());
     }
@@ -301,7 +305,7 @@ fn pack_epub(dir: &Path) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())?;
 
     zip.finish().map_err(|e| e.to_string())?;
-    Ok(out)
+    Ok(crate::paths::strip_long_prefix(&out))
 }
 
 pub fn pack_chapter_dir(dir: &Path, format: &str) -> Result<PathBuf, String> {

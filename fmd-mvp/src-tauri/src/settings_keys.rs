@@ -57,10 +57,6 @@ pub const AFTER_FINISH: &str = "app.after_finish";
 pub const LOG_ENABLED: &str = "log.enabled";
 pub const LOG_FILE: &str = "log.file";
 
-pub const EXTERNAL_VIEWER_ON: &str = "external.viewer_on";
-pub const EXTERNAL_VIEWER_PATH: &str = "external.viewer_path";
-pub const EXTERNAL_VIEWER_ARGS: &str = "external.viewer_args";
-
 pub const CONFIRM_EXIT: &str = "dialogs.confirm_exit";
 pub const CONFIRM_DELETE: &str = "dialogs.confirm_delete";
 

@@ -81,15 +81,15 @@ pub fn download_pages_with_progress(
     let client = build_client().ok();
 
     let manga_dir = output_dir.join(sanitize(manga_title));
-    let chapter_dir = manga_dir.join(format!(
+    let chapter_dir = crate::paths::fit_download_path(&manga_dir.join(format!(
         "{:03}_{}",
         chapter_index + 1,
         sanitize(chapter_name)
-    ));
+    )));
     let mut files = Vec::new();
     let mut errors = Vec::new();
 
-    if let Err(e) = fs::create_dir_all(&chapter_dir) {
+    if let Err(e) = fs::create_dir_all(crate::paths::fs_path(&chapter_dir)) {
         errors.push(format!("No se pudo crear {}: {e}", chapter_dir.display()));
         return DownloadResult {
             chapter_index,
@@ -126,7 +126,7 @@ pub fn download_pages_with_progress(
             match req.send() {
                 Ok(resp) if resp.status().is_success() => match resp.bytes() {
                     Ok(bytes) => {
-                        if let Err(e) = fs::write(&file_path, &bytes) {
+                        if let Err(e) = fs::write(crate::paths::fs_path(&file_path), &bytes) {
                             last_err = Some(format!("Página {}: write error: {e}", i + 1));
                         } else {
                             files.push(file_path.display().to_string());
