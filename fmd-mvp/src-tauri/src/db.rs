@@ -902,13 +902,12 @@ pub fn queue_remove(db: &Db, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove successfully completed tasks only (FMD2 `RemoveAllFinishedTasks` parity).
+/// Leaves `failed` / `cancelled` / pending / running in the queue.
 pub fn queue_clear_finished(db: &Db) -> Result<usize, String> {
     let conn = db.lock();
     let n = conn
-        .execute(
-            "DELETE FROM queue_items WHERE status IN ('done','failed','cancelled')",
-            [],
-        )
+        .execute("DELETE FROM queue_items WHERE status = 'done'", [])
         .map_err(|e| e.to_string())?;
     Ok(n)
 }

@@ -788,9 +788,7 @@ export function DownloadsView() {
   const activeN = items.filter((i) => i.status === "running").length;
   const queuedN = items.filter((i) => i.status === "pending").length;
   const doneN = items.filter((i) => i.status === "done").length;
-  const clearableN = items.filter(
-    (i) => i.status === "done" || i.status === "failed" || i.status === "cancelled",
-  ).length;
+  const clearableN = items.filter((i) => i.status === "done").length;
   const canResumeAll = items.some(
     (i) => i.status === "cancelled" || i.status === "failed",
   );

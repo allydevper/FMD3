@@ -1481,14 +1481,14 @@ export function OptionsView() {
                       <SwitchRow
                         id="opt-clear-done"
                         label="Borrar tareas completadas al cerrar"
-                        desc="Limpia la cola de descargas al salir"
+                        desc="Al salir, quita de la cola solo las terminadas con éxito"
                         checked={s.clearDoneExit}
                         onChange={(v) => update("clearDoneExit", v)}
                       />
                       <SwitchRow
                         id="opt-sort-on-add"
-                        label="Ordenar descargas al añadir tareas"
-                        desc="Reordena la cola automáticamente"
+                        label="Ordenar cola al añadir tareas"
+                        desc="Si está apagado, lo nuevo va al final; si está activo, reordena por título A–Z"
                         checked={s.sortOnAdd}
                         onChange={(v) => update("sortOnAdd", v)}
                       />
