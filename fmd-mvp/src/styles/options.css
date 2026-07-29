@@ -174,8 +174,14 @@
 }
 
 .st-row-actions {
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-wrap: nowrap;
+  gap: 12px;
+}
+
+.st-row-actions > button,
+.st-row-actions > .secondary {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .st-inline-ok {

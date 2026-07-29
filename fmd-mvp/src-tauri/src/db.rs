@@ -615,6 +615,68 @@ pub fn queue_count_pending_for_manga(db: &Db, manga_url: &str) -> Result<i64, St
     .map_err(|e| e.to_string())
 }
 
+/// Remaining pending/running work in the same download group as `item`.
+/// Split batches (`batch_id` set) are grouped by batch; otherwise by `manga_url`
+/// among items with empty `batch_id` (FMD2-style "task finished").
+pub fn queue_count_pending_for_group(db: &Db, item: &QueueItem) -> Result<i64, String> {
+    let conn = db.lock();
+    let batch = item.batch_id.trim();
+    if !batch.is_empty() {
+        return conn
+            .query_row(
+                "SELECT COUNT(*) FROM queue_items
+                 WHERE COALESCE(batch_id, '') = ?1
+                   AND status IN ('pending','running')",
+                params![batch],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string());
+    }
+    let manga = item.manga_url.trim();
+    if manga.is_empty() {
+        return Ok(0);
+    }
+    conn.query_row(
+        "SELECT COUNT(*) FROM queue_items
+         WHERE manga_url = ?1
+           AND TRIM(COALESCE(batch_id, '')) = ''
+           AND status IN ('pending','running')",
+        params![manga],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Whether any sibling in the same group ended as `failed`.
+pub fn queue_group_has_failed(db: &Db, item: &QueueItem) -> Result<bool, String> {
+    let conn = db.lock();
+    let batch = item.batch_id.trim();
+    let count: i64 = if !batch.is_empty() {
+        conn.query_row(
+            "SELECT COUNT(*) FROM queue_items
+             WHERE COALESCE(batch_id, '') = ?1 AND status = 'failed'",
+            params![batch],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?
+    } else {
+        let manga = item.manga_url.trim();
+        if manga.is_empty() {
+            return Ok(false);
+        }
+        conn.query_row(
+            "SELECT COUNT(*) FROM queue_items
+             WHERE manga_url = ?1
+               AND TRIM(COALESCE(batch_id, '')) = ''
+               AND status = 'failed'",
+            params![manga],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    Ok(count > 0)
+}
+
 pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
     let conn = db.lock();
     let mut stmt = conn

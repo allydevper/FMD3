@@ -4,7 +4,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -223,12 +224,14 @@ pub fn start_worker(app: AppHandle) {
                             let max = crate::settings_keys::task_retries();
                             crate::log_file::append(&format!("ERR {}: {e}", item.chapter_name));
                             let _ = db::queue_fail_or_retry(&db_item, item_id, &e, max);
+                            maybe_notify_group_done(&app_item, &item);
                         }
                         Err(e) => {
                             let max = crate::settings_keys::task_retries();
                             let msg = format!("tarea cancelada: {e}");
                             crate::log_file::append(&format!("ERR {}: {msg}", item.chapter_name));
                             let _ = db::queue_fail_or_retry(&db_item, item_id, &msg, max);
+                            maybe_notify_group_done(&app_item, &item);
                         }
                     }
                     if let Ok(mut map) = cancels.lock() {
@@ -447,21 +450,62 @@ fn process_item(
         item.chapter_name,
         result.files.len()
     ));
-    if crate::settings_keys::bool_setting(crate::settings_keys::NOTIFY_ON_DONE, true) {
-        use tauri_plugin_notification::NotificationExt;
-        let _ = app
-            .notification()
-            .builder()
-            .title("FMD3")
-            .body(format!("{}: {}", item.manga_title, item.chapter_name))
-            .show();
-    }
+    maybe_notify_group_done(&app, &item);
     maybe_remove_completed_favorite(
         &app.state::<QueueState>().db,
         &app.state::<QueueState>().favorites,
         &item.manga_url,
     );
     Ok(())
+}
+
+/// FMD2-style balloon: one notification when the whole download group finishes
+/// (all chapters of a manga, or all chapters of a split `batch_id`), not per chapter.
+fn maybe_notify_group_done(app: &AppHandle, item: &QueueItem) {
+    if !crate::settings_keys::bool_setting(crate::settings_keys::NOTIFY_ON_DONE, true) {
+        return;
+    }
+    let db = &app.state::<QueueState>().db;
+    // Serialize count+notify so parallel chapter finishes of the same group
+    // don't each show a balloon.
+    static GATE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let gate = GATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = {
+        let batch = item.batch_id.trim();
+        if !batch.is_empty() {
+            format!("b:{batch}")
+        } else {
+            format!("m:{}", item.manga_url.trim())
+        }
+    };
+    if key == "m:" {
+        return;
+    }
+    let Ok(mut recent) = gate.lock() else {
+        return;
+    };
+    let remaining = db::queue_count_pending_for_group(db, item).unwrap_or(1);
+    if remaining > 0 {
+        return;
+    }
+    let now = Instant::now();
+    recent.retain(|_, t| now.duration_since(*t) < Duration::from_secs(60));
+    if recent.contains_key(&key) {
+        return;
+    }
+    recent.insert(key, now);
+    drop(recent);
+
+    let failed = db::queue_group_has_failed(db, item).unwrap_or(false);
+    let title = item.manga_title.trim();
+    let title = if title.is_empty() { "Manga" } else { title };
+    let body = if failed {
+        format!("\"{title}\" — Falló")
+    } else {
+        format!("\"{title}\" — Finalizado")
+    };
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title("FMD3").body(body).show();
 }
 
 /// If `favorites.remove_completed` is on and no other queue items remain

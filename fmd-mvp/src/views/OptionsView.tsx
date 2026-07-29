@@ -623,35 +623,6 @@ function StubStepperRow({
   );
 }
 
-function StubRangeRow({
-  label,
-  desc,
-  defaultValue,
-  min,
-  max,
-}: {
-  label: string;
-  desc: string;
-  defaultValue: number;
-  min: number;
-  max: number;
-  onDirty?: () => void;
-}) {
-  const [value, setValue] = useState(defaultValue);
-  return (
-    <OptRow label={label} desc={desc} status="none">
-      <input
-        className="st-range opt-stub"
-        type="range"
-        min={min}
-        max={max}
-        value={value}
-        onChange={(e) => setValue(Number(e.target.value))}
-      />
-    </OptRow>
-  );
-}
-
 function SelectRow({
   id,
   label,
@@ -811,8 +782,7 @@ export function OptionsView() {
     void (async () => {
       const ok = await appConfirm({
         title: "Limpiar caché",
-        message:
-          "¿Limpiar caché de info y portadas?\n\nSe borrarán también las infos fallidas en caché (“desaparecidos”). El catálogo del sitio, favoritos y la cola no se tocan.",
+        message: "¿Borrar info y portadas en caché?\n\nFavoritos, cola y catálogo no se tocan.",
         okLabel: "Limpiar",
         cancelLabel: "Cancelar",
       });
@@ -1568,26 +1538,6 @@ export function OptionsView() {
                 <div className="st-wrap">
                   <section className="st-section">
                     <div className="st-section-head">
-                      <Icon ico={ICO.layout} className="ico ico-sm" />
-                      <h2>Drop Box</h2>
-                    </div>
-                    <div className="st-card">
-                      <StubSwitchRow label="Mostrar Drop Box" desc="Ventana flotante para soltar enlaces" onDirty={markDirty} />
-                      <StubSelectRow
-                        label="Modo"
-                        desc="Qué hacer con los enlaces soltados"
-                        defaultValue="download"
-                        onDirty={markDirty}
-                        options={[
-                          { value: "download", label: "Descargar todo" },
-                          { value: "favorite", label: "Añadir a favoritos" },
-                        ]}
-                      />
-                      <StubRangeRow label="Opacidad" desc="Transparencia de la ventana Drop Box" defaultValue={255} min={5} max={255} onDirty={markDirty} />
-                    </div>
-                  </section>
-                  <section className="st-section">
-                    <div className="st-section-head">
                       <Icon ico={ICO.sliders} className="ico ico-sm" />
                       <h2>Interfaz</h2>
                     </div>
@@ -1598,11 +1548,9 @@ export function OptionsView() {
                       <SwitchRow id="opt-load-covers" label="Cargar portada del manga" desc="Descarga y muestra la imagen de portada" checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
                       <div className="st-row st-row-actions">
                         <div className="st-meta">
-                          <div className="st-label">Caché de info y portadas</div>
+                          <div className="st-label">Caché</div>
                           <div className="st-desc">
-                            Borra la metadata de GetInfo (manga_cache), incluidas las infos fallidas
-                            (“desaparecidos” con N/A), y las portadas en cover-cache. No toca
-                            favoritos, cola ni la lista del sitio (masterlist).
+                            Borra info y portadas guardadas. No afecta favoritos, cola ni catálogo.
                           </div>
                           {cacheClearFlash === "done" ? (
                             <div className="st-inline-ok" role="status">
@@ -1625,10 +1573,10 @@ export function OptionsView() {
                             ? "Limpiando…"
                             : cacheClearFlash === "done"
                               ? "Listo"
-                              : "Limpiar caché"}
+                              : "Limpiar"}
                         </button>
                       </div>
-                      <SwitchRow id="opt-notify" label="Globo de notificación" desc="Avisos del sistema al completar tareas" checked={s.notify} onChange={(v) => update("notify", v)} />
+                      <SwitchRow id="opt-notify" label="Globo de notificación" desc="Aviso del sistema al terminar todos los capítulos en cola de un manga" checked={s.notify} onChange={(v) => update("notify", v)} />
                       <SwitchRow id="opt-goto-dl" label="Ir a Descargas al añadir" desc="Cambia a la vista Descargas al crear tareas" checked={s.gotoDl} onChange={(v) => update("gotoDl", v)} />
                       <SwitchRow id="opt-goto-fav" label="Ir a Favoritos al añadir manga" desc="Cambia a Favoritos al guardar un título" checked={s.gotoFav} onChange={(v) => update("gotoFav", v)} />
                     </div>
