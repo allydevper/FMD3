@@ -517,35 +517,6 @@ function SwitchRow({
   );
 }
 
-/** Stub sin cablear: fondo rojo, no marca dirty. */
-function StubSwitchRow({
-  id,
-  label,
-  desc,
-  warn,
-  defaultChecked = false,
-}: {
-  id?: string;
-  label: string;
-  desc: string;
-  warn?: string;
-  defaultChecked?: boolean;
-  onDirty?: () => void;
-}) {
-  const [checked, setChecked] = useState(defaultChecked);
-  return (
-    <SwitchRow
-      id={id}
-      label={label}
-      desc={desc}
-      warn={warn}
-      checked={checked}
-      status="none"
-      onChange={setChecked}
-    />
-  );
-}
-
 function StubSelectRow({
   id,
   label,
@@ -1570,12 +1541,6 @@ export function OptionsView() {
                         </div>
                       </OptRow>
                       <BoundStepperRow label="Reintentos de tarea" desc="Si la tarea falla, cuántas veces reintentar" value={s.taskRetries} min={0} max={10} onChange={(v) => update("taskRetries", v)} />
-                      <StubSwitchRow
-                        label="Reiniciar desde capítulos fallidos"
-                        desc="Continúa siempre desde el último fallo"
-                        defaultChecked
-                        onDirty={markDirty}
-                      />
                     </div>
                   </section>
                   <section className="st-section">
