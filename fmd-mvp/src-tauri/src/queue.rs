@@ -268,9 +268,13 @@ pub fn start_worker(app: AppHandle) {
         let state = app2.state::<QueueState>();
         if db::queue_has_pending(&state.db).unwrap_or(false) {
             start_worker(app2);
-        } else if crate::settings_keys::after_finish_exit() {
-            app2.exit(0);
         }
+        // FMD2 LetFMDDo — UI ocultada; no salir/apagar/hibernar hasta reactivar la opción.
+        // else if crate::settings_keys::after_finish_exit() {
+        //     app2.exit(0);
+        // }
+        // else if after_finish_shutdown() { /* countdown then power off */ }
+        // else if after_finish_hibernate() { /* countdown then hibernate */ }
     });
 }
 

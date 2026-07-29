@@ -202,6 +202,13 @@ pub fn after_finish_exit() -> bool {
         .unwrap_or(false)
 }
 
+// FMD2 parity — OptionLetFMDDo / DoAfterFMD (not implemented yet):
+// - "shutdown" / "hibernate" values in app.after_finish
+// - countdown dialog before exit/power (Exit 5s, Hibernate 30s, Shutdown 60s)
+// - Windows: fmdPowerOff / fmdHibernate equivalents
+// pub fn after_finish_shutdown() -> bool { ... }
+// pub fn after_finish_hibernate() -> bool { ... }
+
 /// True if `id` is **not** in the opt-in list [`MODULES_ENABLED`].
 /// Missing key or `[]` means nothing is enabled (all disabled).
 pub fn module_disabled(id: &str) -> bool {

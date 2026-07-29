@@ -1397,7 +1397,8 @@ export function OptionsView() {
                         value={s.theme}
                         onChange={(v) => {
                           const t = (v === "dark" || v === "light" || v === "system" ? v : "system") as AppTheme;
-                          update("theme", t);
+                          // Aplica y guarda al instante; no marca “Cambios sin guardar”.
+                          setS((prev) => ({ ...prev, theme: t }));
                           setTheme(t);
                         }}
                         options={[
@@ -1406,6 +1407,9 @@ export function OptionsView() {
                           { value: "dark", label: "Oscuro" },
                         ]}
                       />
+                      {/* FMD2 "After download finish" / LetFMDDo — oculto por ahora (casi no aporta
+                          sin countdown / apagar / hibernar). Reactivar junto con stubs en
+                          settings_keys + queue.rs when ready to test.
                       <SelectRow
                         label="Tras terminar"
                         desc="Acción al completar todas las descargas"
@@ -1414,8 +1418,11 @@ export function OptionsView() {
                         options={[
                           { value: "none", label: "No hacer nada" },
                           { value: "exit", label: "Salir del programa" },
+                          { value: "shutdown", label: "Apagar el sistema" },
+                          { value: "hibernate", label: "Hibernar el sistema" },
                         ]}
                       />
+                      */}
                       <BoundStepperRow
                         id="opt-new-days"
                         label="Marcar manga como nuevo"
