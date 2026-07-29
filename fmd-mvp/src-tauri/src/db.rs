@@ -588,6 +588,20 @@ pub fn queue_set_status(db: &Db, id: i64, status: &str, error: &str) -> Result<(
     Ok(())
 }
 
+/// Mark cancelled only if still `running`. Avoids clobbering a concurrent
+/// `queue_retry` that already moved the row back to `pending`.
+pub fn queue_mark_cancelled_if_running(db: &Db, id: i64, error: &str) -> Result<bool, String> {
+    let conn = db.lock();
+    let n = conn
+        .execute(
+            "UPDATE queue_items SET status='cancelled', error=?1, updated_at=?2
+             WHERE id=?3 AND status='running'",
+            params![error, now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
 /// Increment retry_count and set status back to pending.
 pub fn queue_inc_retry(db: &Db, id: i64, error: &str) -> Result<(), String> {
     let conn = db.lock();

@@ -536,7 +536,7 @@ pub fn queue_start(app: AppHandle) -> Result<(), String> {
 pub fn queue_cancel(state: State<QueueState>, id: i64) -> Result<(), String> {
     let item = db::queue_get(&state.db, id)?;
     if item.status == "running" {
-        queue::request_cancel_current(&state);
+        queue::request_cancel(&state, id);
     }
     db::queue_cancel(&state.db, id)
 }

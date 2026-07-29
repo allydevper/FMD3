@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
+import { appToastUndo } from "../components/AppToast";
 import { ICO } from "../icons";
 import * as api from "../api/tauri";
 import { useApp } from "../context/AppContext";
-import { confirmIfEnabled, SK } from "../utils/settings";
-import type { Favorite, FavoriteCheckResult } from "../types";
+import type { Favorite, FavoriteAddRequest, FavoriteCheckResult } from "../types";
+
+function favoriteSnapshot(fav: Favorite): FavoriteAddRequest {
+  return {
+    module_id: fav.module_id,
+    module_name: fav.module_name,
+    root_url: fav.root_url,
+    manga_url: fav.manga_url,
+    title: fav.title,
+    chapters: [],
+  };
+}
 
 type FavFilter = "Todo" | "Habilitado" | "Deshabilitado";
 type SortKey = "new" | "title" | "cur" | "site" | "status" | "path" | "added" | "checked";
@@ -136,8 +147,9 @@ export function FavoritesView() {
 
   const removeFavorite = useCallback(
     async (id: number) => {
-      const ok = await confirmIfEnabled(SK.CONFIRM_DELETE, "¿Eliminar este favorito?");
-      if (!ok) return;
+      const fav = favorites.find((f) => f.id === id);
+      if (!fav) return;
+      const snapshot = favoriteSnapshot(fav);
       await api.favoritesRemove(id);
       setSel((prev) => {
         const next = { ...prev };
@@ -145,8 +157,21 @@ export function FavoritesView() {
         return next;
       });
       await refreshFavorites();
+      appToastUndo({
+        message: "Se quitó de favoritos",
+        durationMs: 6000,
+        onUndo: async () => {
+          try {
+            await api.favoritesAdd(snapshot);
+            await refreshFavorites();
+            log(`Favorito restaurado: ${snapshot.title}`, "ok");
+          } catch (e) {
+            log(String(e), "err");
+          }
+        },
+      });
     },
-    [refreshFavorites],
+    [favorites, refreshFavorites, log],
   );
 
   const runFavChecks = useCallback(
@@ -379,9 +404,43 @@ export function FavoritesView() {
   };
 
   const handleDeleteSelected = async () => {
-    for (const id of selectedIds) {
-      await removeFavorite(id);
+    const ids = [...selectedIds];
+    if (!ids.length) return;
+    const snapshots: FavoriteAddRequest[] = [];
+    for (const id of ids) {
+      const fav = favorites.find((f) => f.id === id);
+      if (!fav) continue;
+      snapshots.push(favoriteSnapshot(fav));
+      await api.favoritesRemove(id);
     }
+    if (!snapshots.length) return;
+    setSel((prev) => {
+      const next = { ...prev };
+      for (const id of ids) delete next[id];
+      return next;
+    });
+    await refreshFavorites();
+    const n = snapshots.length;
+    appToastUndo({
+      message: n === 1 ? "Se quitó de favoritos" : `Se quitaron ${n} favoritos`,
+      durationMs: 6000,
+      onUndo: async () => {
+        try {
+          for (const snapshot of snapshots) {
+            await api.favoritesAdd(snapshot);
+          }
+          await refreshFavorites();
+          log(
+            n === 1
+              ? `Favorito restaurado: ${snapshots[0].title}`
+              : `Restaurados ${n} favoritos`,
+            "ok",
+          );
+        } catch (e) {
+          log(String(e), "err");
+        }
+      },
+    });
   };
 
   const handleQueueAll = () => {

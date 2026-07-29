@@ -1,16 +1,18 @@
 use crate::db::{self, Db, QueueItem};
 use crate::lua_host::{self, download_chapter};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Clone)]
 pub struct QueueState {
     pub db: Db,
     running: Arc<AtomicBool>,
-    cancel_current: Arc<AtomicBool>,
+    /// Per-item cancel flags for in-flight `process_item` jobs.
+    cancels: Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>,
     /// Number of items currently being processed (for parallel workers).
     active: Arc<AtomicUsize>,
 }
@@ -20,8 +22,22 @@ impl QueueState {
         Self {
             db,
             running: Arc::new(AtomicBool::new(false)),
-            cancel_current: Arc::new(AtomicBool::new(false)),
+            cancels: Arc::new(Mutex::new(HashMap::new())),
             active: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn register_cancel(&self, id: i64) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut map) = self.cancels.lock() {
+            map.insert(id, flag.clone());
+        }
+        flag
+    }
+
+    fn unregister_cancel(&self, id: i64) {
+        if let Ok(mut map) = self.cancels.lock() {
+            map.remove(&id);
         }
     }
 }
@@ -97,7 +113,6 @@ pub fn start_worker(app: AppHandle) {
     if state.running.swap(true, Ordering::SeqCst) {
         return; // already running
     }
-    state.cancel_current.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
         let parallel = crate::settings_keys::parallel_tasks();
@@ -107,13 +122,9 @@ pub fn start_worker(app: AppHandle) {
             let state = app2.state::<QueueState>();
             let active = state.active.clone();
             let db = state.db.clone();
-            let cancel = state.cancel_current.clone();
 
             // Fill worker slots up to parallel
             while active.load(Ordering::SeqCst) < parallel {
-                if cancel.load(Ordering::SeqCst) {
-                    break;
-                }
                 let next = match tauri::async_runtime::spawn_blocking({
                     let db = db.clone();
                     move || db::queue_take_next_pending(&db)
@@ -135,6 +146,8 @@ pub fn start_worker(app: AppHandle) {
                     break;
                 };
 
+                let cancel_flag = state.register_cancel(item.id);
+
                 emit_changed(&app2);
                 let _ = app2.emit(
                     "queue-progress",
@@ -147,19 +160,26 @@ pub fn start_worker(app: AppHandle) {
                     ),
                 );
 
-                if cancel.load(Ordering::SeqCst) {
-                    let _ = db::queue_set_status(&db, item.id, "cancelled", "cancelado");
+                // Stop raced after take: DB cancelled and/or per-item flag set.
+                let already_cancelled = cancel_flag.load(Ordering::SeqCst)
+                    || db::queue_get(&db, item.id)
+                        .map(|i| i.status == "cancelled")
+                        .unwrap_or(false);
+                if already_cancelled {
+                    let _ = db::queue_mark_cancelled_if_running(&db, item.id, "cancelado");
+                    state.unregister_cancel(item.id);
                     emit_changed(&app2);
                     continue;
                 }
 
                 active.fetch_add(1, Ordering::SeqCst);
                 let app_item = app2.clone();
-                let cancel_item = cancel.clone();
+                let cancel_item = cancel_flag.clone();
                 let db_item = db.clone();
                 let active_item = active.clone();
                 let done_tx = done_tx.clone();
                 let item_id = item.id;
+                let cancels = state.cancels.clone();
 
                 tauri::async_runtime::spawn(async move {
                     let result = tauri::async_runtime::spawn_blocking({
@@ -184,6 +204,9 @@ pub fn start_worker(app: AppHandle) {
                             let _ = db::queue_fail_or_retry(&db_item, item_id, &msg, max);
                         }
                     }
+                    if let Ok(mut map) = cancels.lock() {
+                        map.remove(&item_id);
+                    }
                     emit_changed(&app_item);
                     active_item.fetch_sub(1, Ordering::SeqCst);
                     let _ = done_tx.send(());
@@ -192,9 +215,6 @@ pub fn start_worker(app: AppHandle) {
 
             // Idle: no active work and nothing pending
             if active.load(Ordering::SeqCst) == 0 {
-                if cancel.load(Ordering::SeqCst) {
-                    cancel.store(false, Ordering::SeqCst);
-                }
                 if !db::queue_has_pending(&db).unwrap_or(false) {
                     break;
                 }
@@ -248,7 +268,11 @@ fn process_item(
     };
 
     if cancel.load(Ordering::SeqCst) {
-        let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
+        let _ = db::queue_mark_cancelled_if_running(
+            &app.state::<QueueState>().db,
+            item.id,
+            "",
+        );
         return Ok(());
     }
 
@@ -300,7 +324,11 @@ fn process_item(
         Some(&cancel),
     ) {
         Err(e) if e == lua_host::DOWNLOAD_CANCELLED || cancel.load(Ordering::SeqCst) => {
-            let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
+            let _ = db::queue_mark_cancelled_if_running(
+                &app.state::<QueueState>().db,
+                item.id,
+                "",
+            );
             return Ok(());
         }
         Err(e) => return Err(e),
@@ -308,7 +336,11 @@ fn process_item(
     };
 
     if cancel.load(Ordering::SeqCst) {
-        let _ = db::queue_set_status(&app.state::<QueueState>().db, item.id, "cancelled", "");
+        let _ = db::queue_mark_cancelled_if_running(
+            &app.state::<QueueState>().db,
+            item.id,
+            "",
+        );
         return Ok(());
     }
 
@@ -405,10 +437,13 @@ fn maybe_remove_completed_favorite(db: &Db, manga_url: &str) {
     }
 }
 
-/// Cancel the currently running item(s). With parallel workers, this signals
-/// all in-flight downloads to stop at the next cancel check.
-pub fn request_cancel_current(state: &QueueState) {
-    state.cancel_current.store(true, Ordering::SeqCst);
+/// Signal cancel for a single in-flight item. Other parallel workers keep going.
+pub fn request_cancel(state: &QueueState, id: i64) {
+    if let Ok(map) = state.cancels.lock() {
+        if let Some(flag) = map.get(&id) {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 pub fn ensure_started(app: &AppHandle) {
