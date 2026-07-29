@@ -1703,7 +1703,7 @@ export function OptionsView() {
                             <label htmlFor="set-proxy-user">Usuario</label>
                             <input
                               id="set-proxy-user"
-                              className="st-field st-mono opt-stub"
+                              className="st-field st-mono"
                               type="text"
                               placeholder="opcional"
                               autoComplete="off"
@@ -1716,7 +1716,7 @@ export function OptionsView() {
                             <label htmlFor="set-proxy-pass">Contraseña</label>
                             <input
                               id="set-proxy-pass"
-                              className="st-field st-mono opt-stub"
+                              className="st-field st-mono"
                               type="password"
                               placeholder="opcional"
                               autoComplete="off"
