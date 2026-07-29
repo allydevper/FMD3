@@ -113,7 +113,7 @@ pub fn favorite_threads() -> usize {
 }
 
 pub fn parallel_tasks() -> usize {
-    usize_setting(DOWNLOAD_PARALLEL_TASKS, 1).clamp(1, 8)
+    usize_setting(DOWNLOAD_PARALLEL_TASKS, 1).clamp(1, 32)
 }
 
 /// When true, at most one chapter of the same manga may be `running` at a time.

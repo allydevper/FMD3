@@ -772,7 +772,10 @@ export function OptionsView() {
     });
 
     const maxThreads = Number((await get(SK.MAX_THREADS)) ?? "1") || 1;
-    const parallelTasks = Number((await get(SK.PARALLEL_TASKS)) ?? "1") || 1;
+    const parallelTasks = Math.min(
+      32,
+      Math.max(1, Number((await get(SK.PARALLEL_TASKS)) ?? "1") || 1),
+    );
     const oneChapterPerManga = parseB(await get(SK.ONE_CHAPTER_PER_MANGA), false);
     const taskRetries = Number((await get(SK.TASK_RETRIES)) ?? "1") || 0;
     const httpTimeout = Number((await get(SK.TIMEOUT)) ?? "30") || 30;
@@ -1521,7 +1524,7 @@ export function OptionsView() {
                       <h2>Descargas</h2>
                     </div>
                     <div className="st-card">
-                      <BoundStepperRow label="Tareas en paralelo" desc="Mangas descargando a la vez" value={s.parallelTasks} min={1} max={8} onChange={(v) => update("parallelTasks", v)} />
+                      <BoundStepperRow label="Tareas en paralelo" desc="Capítulos descargando a la vez" value={s.parallelTasks} min={1} max={32} onChange={(v) => update("parallelTasks", v)} />
                       <SwitchRow
                         id="opt-one-chapter-per-manga"
                         label="Un capítulo a la vez por obra"
@@ -1529,7 +1532,7 @@ export function OptionsView() {
                         checked={s.oneChapterPerManga}
                         onChange={(v) => update("oneChapterPerManga", v)}
                       />
-                      <OptRow label="Archivos por tarea" desc="Hilos de descarga dentro de un capítulo">
+                      <OptRow label="Páginas en paralelo" desc="Imágenes bajando a la vez dentro de un capítulo">
                         <div className="st-num-wrap">
                           <Stepper
                             id="set-threads"

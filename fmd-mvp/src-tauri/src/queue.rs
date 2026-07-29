@@ -121,7 +121,7 @@ fn progress_event(
 }
 
 /// Start the queue worker. Spawns up to `DOWNLOAD_PARALLEL_TASKS` concurrent
-/// `process_item` jobs (clamped 1–8). Page downloads inside a chapter still use
+/// `process_item` jobs (clamped 1–32). Page downloads inside a chapter still use
 /// `settings_keys::max_threads()` for parallel page GETs.
 ///
 /// If already running, wakes the loop so newly enqueued items (e.g. second split
