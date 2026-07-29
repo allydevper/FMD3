@@ -694,11 +694,36 @@ pub fn queue_clear_finished(state: State<QueueState>) -> Result<usize, String> {
     db::queue_clear_finished(&state.db)
 }
 
-/// Open the frozen manga folder for a queue item (fallback: resolve live).
+/// Open folder for a queue item.
+/// When `prefer_chapter` is true: chapter dir if present, else packed archive parent,
+/// else manga folder. When false/omitted: always manga folder (group list).
 #[tauri::command]
-pub fn queue_open_item_folder(state: State<QueueState>, id: i64) -> Result<String, String> {
+pub fn queue_open_item_folder(
+    state: State<QueueState>,
+    id: i64,
+    prefer_chapter: Option<bool>,
+) -> Result<String, String> {
     let item = db::queue_get(&state.db, id)?;
-    let path = if !item.manga_path.trim().is_empty() {
+    let (manga_path, chapter_path) = resolve_item_open_paths(&item)?;
+
+    let open_path = if prefer_chapter.unwrap_or(false) {
+        pick_open_folder(&manga_path, &chapter_path)
+    } else {
+        manga_path.clone()
+    };
+    if !open_path.exists() {
+        std::fs::create_dir_all(&open_path)
+            .map_err(|e| format!("no se pudo crear {}: {e}", open_path.display()))?;
+    }
+    let path_str = open_path.display().to_string();
+    shell_open_external(path_str.clone(), None)?;
+    Ok(path_str)
+}
+
+fn resolve_item_open_paths(
+    item: &crate::db::QueueItem,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let manga_path = if !item.manga_path.trim().is_empty() {
         std::path::PathBuf::from(item.manga_path.trim())
     } else {
         let base = item.output_dir.trim();
@@ -735,13 +760,70 @@ pub fn queue_open_item_folder(state: State<QueueState>, id: i64) -> Result<Strin
             &artists,
         )
     };
-    if !path.exists() {
-        std::fs::create_dir_all(&path)
-            .map_err(|e| format!("no se pudo crear {}: {e}", path.display()))?;
+
+    let chapter_path = if !item.chapter_path.trim().is_empty() {
+        std::path::PathBuf::from(item.chapter_path.trim())
+    } else if !item.output_dir.trim().is_empty() {
+        let site = if item.module_id.trim().is_empty() {
+            String::new()
+        } else {
+            crate::lua_host::find_by_id(&item.module_id)
+                .map(|m| m.name)
+                .unwrap_or_default()
+        };
+        let (authors, artists) = if !item.module_id.trim().is_empty()
+            && !item.manga_url.trim().is_empty()
+        {
+            crate::catalog::manga_cache_get(&item.module_id, &item.manga_url)
+                .ok()
+                .flatten()
+                .map(|row| (row.authors, row.artists))
+                .unwrap_or_default()
+        } else {
+            (String::new(), String::new())
+        };
+        crate::lua_host::chapter_output_dir(
+            std::path::Path::new(item.output_dir.trim()),
+            &item.manga_title,
+            item.chapter_index as usize,
+            &item.chapter_name,
+            &site,
+            &authors,
+            &artists,
+        )
+    } else {
+        manga_path.clone()
+    };
+
+    Ok((manga_path, chapter_path))
+}
+
+/// Prefer chapter folder; if packed (pdf/cbz/…) and folder gone, open parent so the archive is visible.
+fn pick_open_folder(
+    manga_path: &std::path::Path,
+    chapter_path: &std::path::Path,
+) -> std::path::PathBuf {
+    if chapter_path.is_dir() {
+        return chapter_path.to_path_buf();
     }
-    let path_str = path.display().to_string();
-    shell_open_external(path_str.clone(), None)?;
-    Ok(path_str)
+    for ext in ["pdf", "cbz", "zip", "epub"] {
+        let archive = chapter_path.with_extension(ext);
+        if archive.is_file() {
+            return archive
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| manga_path.to_path_buf());
+        }
+    }
+    // Chapter folder never created / not downloaded yet → manga (or create manga).
+    if manga_path.as_os_str().is_empty() {
+        chapter_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| chapter_path.to_path_buf())
+    } else {
+        manga_path.to_path_buf()
+    }
 }
 
 /// Resolve and open the manga work folder (base + manga pattern), not just `output_dir`.

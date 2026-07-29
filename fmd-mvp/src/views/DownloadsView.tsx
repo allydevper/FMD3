@@ -736,9 +736,9 @@ export function DownloadsView() {
     setRemoveConfirm({ items: toRemove, label });
   }
 
-  async function handleOpenFolder(itemId: number) {
+  async function handleOpenFolder(itemId: number, preferChapter = false) {
     try {
-      await api.queueOpenItemFolder(itemId);
+      await api.queueOpenItemFolder(itemId, preferChapter);
     } catch (e) {
       log(String(e), "err");
     }
@@ -1420,7 +1420,7 @@ export function DownloadsView() {
                         title="Abrir carpeta"
                         onClick={() => {
                           const id = focusGroup.items[0]?.id;
-                          if (id != null) void handleOpenFolder(id);
+                          if (id != null) void handleOpenFolder(id, false);
                         }}
                       >
                         <Icon ico={ICO.folderOpen} className="ico ico-sm" />
@@ -1602,6 +1602,22 @@ export function DownloadsView() {
                             <button
                               type="button"
                               className="dl-ibtn"
+                              title="Abrir carpeta del capítulo"
+                              style={{
+                                width: "22px",
+                                height: "22px",
+                                borderColor: "transparent",
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleOpenFolder(c.id, true);
+                              }}
+                            >
+                              <Icon ico={ICO.folderOpen} className="ico ico-sm" />
+                            </button>
+                            <button
+                              type="button"
+                              className="dl-ibtn"
                               title="Quitar"
                               style={{
                                 width: "22px",
@@ -1777,7 +1793,8 @@ export function DownloadsView() {
                 const it = ctxOpenTarget;
                 setDlCtxMenu(null);
                 if (!it) return;
-                void handleOpenFolder(it.id);
+                // Fila de capítulo (panel) → carpeta del cap; grupo (lista) → carpeta de la obra
+                void handleOpenFolder(it.id, ctxItems.length === 1);
               }}
             >
               <Icon ico={ICO.folderOpen} className="ico ico-sm" />

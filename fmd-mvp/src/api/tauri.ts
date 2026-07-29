@@ -250,9 +250,12 @@ export function openExternal(path: string, args?: string) {
   return invoke("shell_open_external", { path, args: args ?? null });
 }
 
-/** Open the frozen manga folder for a queue item (falls back to live resolve). */
-export function queueOpenItemFolder(id: number) {
-  return invoke<string>("queue_open_item_folder", { id });
+/** Open folder for a queue item. Default: manga folder. Pass preferChapter for chapter dir. */
+export function queueOpenItemFolder(id: number, preferChapter = false) {
+  return invoke<string>("queue_open_item_folder", {
+    id,
+    preferChapter,
+  });
 }
 
 /** Open the manga work folder (base + rename pattern), not just the download root. */
