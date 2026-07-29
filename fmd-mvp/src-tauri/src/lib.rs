@@ -14,7 +14,104 @@ mod settings_keys;
 mod xpath;
 
 use queue::QueueState;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager,
+};
+
+/// Keeps the tray icon alive for the process lifetime (dropping it removes the icon).
+struct AppTray {
+    icon: Mutex<Option<TrayIcon>>,
+}
+
+fn hide_tray(app: &AppHandle) {
+    let state = app.state::<AppTray>();
+    let guard = state.icon.lock();
+    if let Some(tray) = guard.as_ref() {
+        let _ = tray.set_visible(false);
+    }
+}
+
+fn show_tray(app: &AppHandle) -> bool {
+    if !ensure_tray(app) {
+        return false;
+    }
+    let state = app.state::<AppTray>();
+    let guard = state.icon.lock();
+    if let Some(tray) = guard.as_ref() {
+        let _ = tray.set_visible(true);
+        return true;
+    }
+    false
+}
+
+fn restore_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_skip_taskbar(false);
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    hide_tray(app);
+}
+
+fn build_tray_icon(app: &AppHandle) -> Result<TrayIcon, String> {
+    let show_i = MenuItem::with_id(app, "show", "Mostrar", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let quit_i = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(app, &[&show_i, &quit_i]).map_err(|e| e.to_string())?;
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| "no hay icono de ventana para la bandeja".to_string())?;
+
+    TrayIconBuilder::new()
+        .icon(icon)
+        .tooltip("FMD3")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "quit" => app.exit(0),
+            "show" => restore_main_window(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                restore_main_window(tray.app_handle());
+            }
+        })
+        .build(app)
+        .map_err(|e| e.to_string())
+}
+
+/// Create the tray once (initially hidden) and keep it in managed state.
+fn ensure_tray(app: &AppHandle) -> bool {
+    let state = app.state::<AppTray>();
+    let mut guard = state.icon.lock();
+    if guard.is_some() {
+        return true;
+    }
+    match build_tray_icon(app) {
+        Ok(tray) => {
+            let _ = tray.set_visible(false);
+            *guard = Some(tray);
+            true
+        }
+        Err(e) => {
+            eprintln!("[tray] no se pudo crear el icono de bandeja: {e}");
+            false
+        }
+    }
+}
 
 /// Set once the user has confirmed the exit dialog, so the follow-up
 /// `window.close()` call doesn't re-trigger the confirmation prompt.
@@ -125,14 +222,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            use tauri::Manager;
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.set_focus();
-                let _ = w.unminimize();
-                let _ = w.show();
-            }
+            restore_main_window(app);
         }))
         .manage(queue_state)
+        .manage(AppTray {
+            icon: Mutex::new(None),
+        })
         .setup(|app| {
             crate::lua_host::set_lua_log_app(app.handle().clone());
             let handle = app.handle().clone();
@@ -142,50 +237,14 @@ pub fn run() {
             });
             queue::ensure_started(&app.handle());
 
-            // Optional tray when enabled in settings
-            if crate::settings_keys::bool_setting(crate::settings_keys::TRAY_MINIMIZE, false)
-                || crate::settings_keys::bool_setting(crate::settings_keys::TRAY_START_MINIMIZED, false)
-            {
-                use tauri::{
-                    menu::{Menu, MenuItem},
-                    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-                    Manager,
-                };
-                let show_i = MenuItem::with_id(app, "show", "Mostrar", true, None::<&str>)?;
-                let quit_i = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
-                let _tray = TrayIconBuilder::new()
-                    .icon(app.default_window_icon().cloned().unwrap())
-                    .menu(&menu)
-                    .on_menu_event(|app, event| match event.id.as_ref() {
-                        "quit" => app.exit(0),
-                        "show" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                        }
-                        _ => {}
-                    })
-                    .on_tray_icon_event(|tray, event| {
-                        if let TrayIconEvent::Click {
-                            button: MouseButton::Left,
-                            button_state: MouseButtonState::Up,
-                            ..
-                        } = event
-                        {
-                            let app = tray.app_handle();
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                        }
-                    })
-                    .build(app)?;
-
-                if crate::settings_keys::bool_setting(crate::settings_keys::TRAY_START_MINIMIZED, false)
-                {
+            // Solo crear/mostrar bandeja al arrancar si inicia minimizado.
+            if crate::settings_keys::bool_setting(
+                crate::settings_keys::TRAY_START_MINIMIZED,
+                false,
+            ) {
+                if show_tray(app.handle()) {
                     if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.set_skip_taskbar(true);
                         let _ = w.hide();
                     }
                 }
@@ -193,23 +252,28 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // FMD2 parity: minimize → tray (not close → tray).
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
+                let to_tray = crate::settings_keys::bool_setting(
+                    crate::settings_keys::TRAY_MINIMIZE,
+                    false,
+                );
+                if to_tray && window.is_minimized().unwrap_or(false) {
+                    if show_tray(window.app_handle()) {
+                        let _ = window.set_skip_taskbar(true);
+                        let _ = window.hide();
+                    }
+                }
+                return;
+            }
+
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let confirm = crate::settings_keys::bool_setting(
                     crate::settings_keys::CONFIRM_EXIT,
                     true,
                 );
-                let to_tray = crate::settings_keys::bool_setting(
-                    crate::settings_keys::TRAY_MINIMIZE,
-                    false,
-                );
-                if to_tray {
-                    api.prevent_close();
-                    let _ = window.hide();
-                    return;
-                }
                 if confirm && !EXIT_CONFIRMED.load(Ordering::SeqCst) {
                     api.prevent_close();
-                    use tauri::Manager;
                     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
                     let window = window.clone();
                     let app_handle = window.app_handle().clone();
@@ -229,7 +293,6 @@ pub fn run() {
                     return;
                 }
                 if crate::settings_keys::bool_setting(crate::settings_keys::VACUUM_ON_EXIT, false) {
-                    use tauri::Manager;
                     let state = window.app_handle().state::<QueueState>();
                     let _ = crate::db::db_vacuum_app(&state.db, &state.favorites);
                 }
@@ -237,7 +300,6 @@ pub fn run() {
                     crate::settings_keys::CLEAR_DONE_ON_EXIT,
                     false,
                 ) {
-                    use tauri::Manager;
                     let state = window.app_handle().state::<QueueState>();
                     let _ = crate::db::queue_clear_finished(&state.db);
                 }

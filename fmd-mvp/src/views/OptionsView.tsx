@@ -99,7 +99,6 @@ type OptionsFormState = {
   afterFinish: string;
   trayMinimize: boolean;
   trayStart: boolean;
-  singleInstance: boolean;
   notify: boolean;
   vacuum: boolean;
   clearDoneExit: boolean;
@@ -169,7 +168,6 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   afterFinish: "none",
   trayMinimize: false,
   trayStart: false,
-  singleInstance: true,
   notify: true,
   vacuum: false,
   clearDoneExit: false,
@@ -753,9 +751,6 @@ export function OptionsView() {
     outputDirRef.current = outputDir;
   }, [outputDir]);
 
-  /** Últimos valores de bandeja aplicados (para avisar si cambian y requieren reinicio). */
-  const trayRef = useRef({ trayMinimize: false, trayStart: false });
-
   const clearSaveFlash = useCallback(() => {
     if (saveFlashTimerRef.current != null) {
       window.clearTimeout(saveFlashTimerRef.current);
@@ -924,7 +919,6 @@ export function OptionsView() {
     const logFile = (await get(SK.LOG_FILE)) || "fmd.log";
     const trayMinimize = parseB(await get(SK.TRAY_MINIMIZE), false);
     const trayStart = parseB(await get(SK.TRAY_START), false);
-    const singleInstance = parseB(await get(SK.SINGLE_INSTANCE), true);
     const notify = parseB(await get(SK.NOTIFY), true);
     const vacuum = parseB(await get(SK.VACUUM), false);
     const clearDoneExit = parseB(await get(SK.CLEAR_DONE_EXIT), false);
@@ -997,7 +991,6 @@ export function OptionsView() {
       logFile,
       trayMinimize,
       trayStart,
-      singleInstance,
       notify,
       vacuum,
       clearDoneExit,
@@ -1020,7 +1013,6 @@ export function OptionsView() {
       updateListFullScan,
       updateListThreads,
     }));
-    trayRef.current = { trayMinimize, trayStart };
     setDirty(false);
   }, [modules]);
 
@@ -1031,8 +1023,6 @@ export function OptionsView() {
   const handleSave = useCallback(async () => {
     if (saveFlash === "saving") return;
     setSaveFlash("saving");
-    const trayChanged =
-      s.trayMinimize !== trayRef.current.trayMinimize || s.trayStart !== trayRef.current.trayStart;
     try {
     const uaVal = s.ua.trim();
     await api.settingsSet(SK.UA, uaVal === DEFAULT_USER_AGENT ? "" : uaVal);
@@ -1079,7 +1069,6 @@ export function OptionsView() {
     await api.settingsSet(SK.LOG_FILE, s.logFile || "fmd.log");
     await api.settingsSet(SK.TRAY_MINIMIZE, boolStr(s.trayMinimize));
     await api.settingsSet(SK.TRAY_START, boolStr(s.trayStart));
-    await api.settingsSet(SK.SINGLE_INSTANCE, boolStr(s.singleInstance));
     await api.settingsSet(SK.NOTIFY, boolStr(s.notify));
     await api.settingsSet(SK.VACUUM, boolStr(s.vacuum));
     await api.settingsSet(SK.CLEAR_DONE_EXIT, boolStr(s.clearDoneExit));
@@ -1109,7 +1098,6 @@ export function OptionsView() {
     }
     setTheme(s.theme);
     await refreshEnabledModules();
-    trayRef.current = { trayMinimize: s.trayMinimize, trayStart: s.trayStart };
     setDirty(false);
     setSaveFlash("saved");
     if (saveFlashTimerRef.current != null) window.clearTimeout(saveFlashTimerRef.current);
@@ -1123,9 +1111,6 @@ export function OptionsView() {
         : "Ajustes guardados · ningún sitio activo",
       "ok",
     );
-    if (trayChanged) {
-      log("Algunos ajustes de bandeja requieren reiniciar la aplicación", "");
-    }
     } catch (e) {
       setSaveFlash("error");
       if (saveFlashTimerRef.current != null) window.clearTimeout(saveFlashTimerRef.current);
@@ -1460,16 +1445,9 @@ export function OptionsView() {
                       <SwitchRow
                         id="opt-tray-minimize"
                         label="Minimizar a la bandeja"
-                        desc="Al cerrar, oculta en la bandeja en vez de salir"
+                        desc="Al minimizar, se oculta en la bandeja"
                         checked={s.trayMinimize}
                         onChange={(v) => update("trayMinimize", v)}
-                      />
-                      <SwitchRow
-                        id="opt-single-instance"
-                        label="Permitir solo una instancia"
-                        desc="Evita abrir la app dos veces"
-                        checked={s.singleInstance}
-                        onChange={(v) => update("singleInstance", v)}
                       />
                       <SwitchRow
                         id="opt-live-search"

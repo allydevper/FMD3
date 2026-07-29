@@ -287,7 +287,6 @@ export const SK = {
   CONFIRM_EMPTY_LIST: "dialogs.confirm_empty_list",
   TRAY_MINIMIZE: "shell.tray_minimize",
   TRAY_START: "shell.tray_start_minimized",
-  SINGLE_INSTANCE: "shell.single_instance",
   NOTIFY: "shell.notify_on_done",
   VACUUM: "db.vacuum_on_exit",
   CLEAR_DONE_EXIT: "queue.clear_done_on_exit",

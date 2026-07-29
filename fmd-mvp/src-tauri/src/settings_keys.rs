@@ -62,7 +62,6 @@ pub const CONFIRM_DELETE: &str = "dialogs.confirm_delete";
 
 pub const TRAY_MINIMIZE: &str = "shell.tray_minimize";
 pub const TRAY_START_MINIMIZED: &str = "shell.tray_start_minimized";
-pub const SINGLE_INSTANCE: &str = "shell.single_instance";
 pub const NOTIFY_ON_DONE: &str = "shell.notify_on_done";
 
 pub const VACUUM_ON_EXIT: &str = "db.vacuum_on_exit";
