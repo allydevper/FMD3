@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Clone)]
 pub struct QueueState {
@@ -15,6 +16,8 @@ pub struct QueueState {
     cancels: Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>,
     /// Number of items currently being processed (for parallel workers).
     active: Arc<AtomicUsize>,
+    /// Wake the worker to refill slots (e.g. after queue_add while already running).
+    wake_tx: Arc<Mutex<Option<UnboundedSender<()>>>>,
 }
 
 impl QueueState {
@@ -24,6 +27,7 @@ impl QueueState {
             running: Arc::new(AtomicBool::new(false)),
             cancels: Arc::new(Mutex::new(HashMap::new())),
             active: Arc::new(AtomicUsize::new(0)),
+            wake_tx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -38,6 +42,14 @@ impl QueueState {
     fn unregister_cancel(&self, id: i64) {
         if let Ok(mut map) = self.cancels.lock() {
             map.remove(&id);
+        }
+    }
+
+    fn wake(&self) {
+        if let Ok(guard) = self.wake_tx.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(());
+            }
         }
     }
 }
@@ -108,17 +120,30 @@ fn progress_event(
 /// Start the queue worker. Spawns up to `DOWNLOAD_PARALLEL_TASKS` concurrent
 /// `process_item` jobs (clamped 1–8). Page downloads inside a chapter still use
 /// `settings_keys::max_threads()` for parallel page GETs.
+///
+/// If already running, wakes the loop so newly enqueued items (e.g. second split
+/// batch) can fill free slots without waiting for a job to finish.
 pub fn start_worker(app: AppHandle) {
     let state = app.state::<QueueState>();
     if state.running.swap(true, Ordering::SeqCst) {
-        return; // already running
+        state.wake();
+        return;
     }
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
-        let parallel = crate::settings_keys::parallel_tasks();
         let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        {
+            let state = app2.state::<QueueState>();
+            let wake_slot = state.wake_tx.clone();
+            if let Ok(mut slot) = wake_slot.lock() {
+                // Same channel: job-done and "new work enqueued" both wake the fill loop.
+                *slot = Some(done_tx.clone());
+            };
+        }
 
         loop {
+            // Re-read each iteration so Options changes apply without restart.
+            let parallel = crate::settings_keys::parallel_tasks();
             let state = app2.state::<QueueState>();
             let active = state.active.clone();
             let db = state.db.clone();
@@ -223,13 +248,18 @@ pub fn start_worker(app: AppHandle) {
                 continue;
             }
 
-            // Wait for a slot to free
+            // Job finished or wake from ensure_started / queue_add (e.g. split batch 2)
             let _ = done_rx.recv().await;
         }
 
-        app2.state::<QueueState>()
-            .running
-            .store(false, Ordering::SeqCst);
+        {
+            let state = app2.state::<QueueState>();
+            let wake_slot = state.wake_tx.clone();
+            if let Ok(mut slot) = wake_slot.lock() {
+                *slot = None;
+            };
+            state.running.store(false, Ordering::SeqCst);
+        }
         emit_changed(&app2);
 
         // If new pending arrived while finishing, restart
@@ -288,6 +318,14 @@ fn process_item(
     );
 
     let output = PathBuf::from(&item.output_dir);
+    let chapter_override = {
+        let p = item.chapter_path.trim();
+        if p.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(p))
+        }
+    };
     let item_id = item.id;
     let manga_title = item.manga_title.clone();
     let chapter_name = item.chapter_name.clone();
@@ -320,6 +358,7 @@ fn process_item(
         &item.manga_title,
         item.chapter_index as usize,
         &item.chapter_name,
+        chapter_override.as_deref(),
         Some(&mut on_progress),
         Some(&cancel),
     ) {
@@ -386,6 +425,12 @@ fn process_item(
     }
 
     db::queue_set_status(&app.state::<QueueState>().db, item.id, "done", &err)?;
+    let _ = db::downloaded_chapters_mark(
+        &app.state::<QueueState>().db,
+        &item.module_id,
+        &item.manga_url,
+        &item.chapter_link,
+    );
     let _ = app.emit(
         "queue-progress",
         progress_event(

@@ -39,6 +39,7 @@ pub fn download_chapter_for_test(
         chapter_name,
         None,
         None,
+        None,
     )
 }
 
@@ -275,7 +276,12 @@ pub fn run() {
             commands::queue_cancel,
             commands::queue_retry,
             commands::queue_remove,
+            commands::queue_delete_chapter_files,
             commands::queue_clear_finished,
+            commands::queue_open_item_folder,
+            commands::queue_open_manga_folder,
+            commands::downloaded_chapters_list,
+            commands::queue_active_chapter_links,
             commands::shell_open_external,
             commands::log_open,
             commands::log_clear,

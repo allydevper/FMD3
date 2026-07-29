@@ -59,6 +59,15 @@ pub struct QueueItem {
     pub chapter_name: String,
     pub chapter_link: String,
     pub output_dir: String,
+    /// Manga folder resolved at enqueue time (empty = legacy, resolve live).
+    #[serde(default)]
+    pub manga_path: String,
+    /// Chapter folder resolved at enqueue time (empty = legacy, resolve live).
+    #[serde(default)]
+    pub chapter_path: String,
+    /// Split-download batch id (empty = group by manga only).
+    #[serde(default)]
+    pub batch_id: String,
     pub status: String,
     pub error: String,
     pub created_at: String,
@@ -79,6 +88,9 @@ pub struct NewQueueItem {
     pub chapter_name: String,
     pub chapter_link: String,
     pub output_dir: String,
+    pub manga_path: String,
+    pub chapter_path: String,
+    pub batch_id: String,
 }
 
 fn now() -> String {
@@ -113,12 +125,15 @@ fn map_queue_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
         chapter_name: r.get(6)?,
         chapter_link: r.get(7)?,
         output_dir: r.get(8)?,
-        status: r.get(9)?,
-        error: r.get(10)?,
-        created_at: r.get(11)?,
-        updated_at: r.get(12)?,
-        retry_count: r.get(13)?,
-        position: r.get(14)?,
+        manga_path: r.get(9)?,
+        chapter_path: r.get(10)?,
+        batch_id: r.get(11)?,
+        status: r.get(12)?,
+        error: r.get(13)?,
+        created_at: r.get(14)?,
+        updated_at: r.get(15)?,
+        retry_count: r.get(16)?,
+        position: r.get(17)?,
     })
 }
 
@@ -129,7 +144,8 @@ const FAVORITE_SELECT: &str = "SELECT id, module_id, module_name, root_url, mang
 
 const QUEUE_SELECT: &str = "SELECT id, manga_title, root_url, COALESCE(manga_url,''), COALESCE(module_id,''),
         chapter_index, chapter_name, chapter_link,
-        output_dir, status, error, created_at, updated_at,
+        output_dir, COALESCE(manga_path,''), COALESCE(chapter_path,''), COALESCE(batch_id,''),
+        status, error, created_at, updated_at,
         COALESCE(retry_count, 0), COALESCE(position, 0)
  FROM queue_items";
 
@@ -174,6 +190,9 @@ pub fn open_db() -> Result<Db, String> {
             chapter_name TEXT NOT NULL,
             chapter_link TEXT NOT NULL,
             output_dir TEXT NOT NULL,
+            manga_path TEXT NOT NULL DEFAULT '',
+            chapter_path TEXT NOT NULL DEFAULT '',
+            batch_id TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
             error TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -198,6 +217,15 @@ pub fn open_db() -> Result<Db, String> {
             PRIMARY KEY (module_id, link)
         );
         CREATE INDEX IF NOT EXISTS idx_manga_cache_module ON manga_cache(module_id);
+        CREATE TABLE IF NOT EXISTS downloaded_chapters (
+            module_id TEXT NOT NULL,
+            manga_url TEXT NOT NULL,
+            chapter_link TEXT NOT NULL,
+            downloaded_at TEXT NOT NULL,
+            PRIMARY KEY (module_id, manga_url, chapter_link)
+        );
+        CREATE INDEX IF NOT EXISTS idx_downloaded_chapters_manga
+            ON downloaded_chapters(module_id, manga_url);
         "#,
     )
     .map_err(|e| e.to_string())?;
@@ -226,8 +254,33 @@ pub fn open_db() -> Result<Db, String> {
         "ALTER TABLE queue_items ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN manga_path TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN chapter_path TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN alt_titles TEXT", []);
+    let _ = conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS downloaded_chapters (
+            module_id TEXT NOT NULL,
+            manga_url TEXT NOT NULL,
+            chapter_link TEXT NOT NULL,
+            downloaded_at TEXT NOT NULL,
+            PRIMARY KEY (module_id, manga_url, chapter_link)
+        );
+        CREATE INDEX IF NOT EXISTS idx_downloaded_chapters_manga
+            ON downloaded_chapters(module_id, manga_url);
+        "#,
+    );
     Ok(Arc::new(Mutex::new(conn)))
 }
 
@@ -496,8 +549,8 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
         conn.execute(
             "INSERT INTO queue_items(
                 manga_title, root_url, manga_url, module_id, chapter_index, chapter_name, chapter_link,
-                output_dir, status, error, created_at, updated_at, retry_count, position
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending','',?9,?9,0,?10)",
+                output_dir, manga_path, chapter_path, batch_id, status, error, created_at, updated_at, retry_count, position
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending','',?12,?12,0,?13)",
             params![
                 item.manga_title,
                 item.root_url,
@@ -507,6 +560,9 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
                 item.chapter_name,
                 item.chapter_link,
                 item.output_dir,
+                item.manga_path,
+                item.chapter_path,
+                item.batch_id,
                 ts,
                 max_pos
             ],
@@ -544,17 +600,68 @@ pub fn queue_reorder(db: &Db, ids: &[i64]) -> Result<(), String> {
     Ok(())
 }
 
+/// Pick the next pending job.
+///
+/// Always: at most one `running` item per non-empty `batch_id` (FMD2-style split
+/// tasks — so lote 1/2 cannot fill all parallel slots while 2/2 waits).
+///
+/// If `one_chapter_per_manga`: also block another pending of the same manga when
+/// a running item shares the same `batch_id` (including empty = normal download).
 pub fn queue_take_next_pending(db: &Db) -> Result<Option<QueueItem>, String> {
+    let one_per_manga = crate::settings_keys::one_chapter_per_manga();
     let conn = db.lock();
-    let id: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM queue_items WHERE status = 'pending'
-             ORDER BY position ASC, id ASC LIMIT 1",
+    let id: Option<i64> = if one_per_manga {
+        conn.query_row(
+            "SELECT q.id FROM queue_items q
+             WHERE q.status = 'pending'
+             AND NOT (
+               TRIM(COALESCE(q.batch_id, '')) != ''
+               AND EXISTS (
+                 SELECT 1 FROM queue_items r
+                 WHERE r.status = 'running'
+                   AND COALESCE(r.batch_id, '') = COALESCE(q.batch_id, '')
+               )
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM queue_items r
+               WHERE r.status = 'running'
+                 AND COALESCE(r.module_id, '') = COALESCE(q.module_id, '')
+                 AND COALESCE(r.batch_id, '') = COALESCE(q.batch_id, '')
+                 AND (
+                   (TRIM(COALESCE(q.manga_url, '')) != ''
+                    AND TRIM(COALESCE(r.manga_url, '')) = TRIM(COALESCE(q.manga_url, '')))
+                   OR (TRIM(COALESCE(q.manga_url, '')) = ''
+                    AND r.manga_title = q.manga_title)
+                 )
+             )
+             ORDER BY q.position ASC, q.id ASC
+             LIMIT 1",
             [],
             |r| r.get(0),
         )
         .optional()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+    } else {
+        // Split batches: still at most one running chapter per batch_id.
+        conn.query_row(
+            "SELECT q.id FROM queue_items q
+             WHERE q.status = 'pending'
+             AND NOT (
+               TRIM(COALESCE(q.batch_id, '')) != ''
+               AND EXISTS (
+                 SELECT 1 FROM queue_items r
+                 WHERE r.status = 'running'
+                   AND COALESCE(r.batch_id, '') = COALESCE(q.batch_id, '')
+               )
+             )
+             ORDER BY q.position ASC, q.id ASC
+             LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    };
     let Some(id) = id else {
         return Ok(None);
     };
@@ -675,6 +782,77 @@ pub fn queue_clear_finished(db: &Db) -> Result<usize, String> {
         )
         .map_err(|e| e.to_string())?;
     Ok(n)
+}
+
+/// Record a chapter as downloaded (idempotent upsert).
+pub fn downloaded_chapters_mark(
+    db: &Db,
+    module_id: &str,
+    manga_url: &str,
+    chapter_link: &str,
+) -> Result<(), String> {
+    let mid = module_id.trim();
+    let mu = manga_url.trim();
+    let link = chapter_link.trim();
+    if mid.is_empty() || mu.is_empty() || link.is_empty() {
+        return Ok(());
+    }
+    let conn = db.lock();
+    conn.execute(
+        "INSERT INTO downloaded_chapters(module_id, manga_url, chapter_link, downloaded_at)
+         VALUES(?1,?2,?3,?4)
+         ON CONFLICT(module_id, manga_url, chapter_link) DO UPDATE SET downloaded_at=excluded.downloaded_at",
+        params![mid, mu, link, now()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Chapter links marked downloaded for a manga.
+pub fn downloaded_chapters_list(
+    db: &Db,
+    module_id: &str,
+    manga_url: &str,
+) -> Result<Vec<String>, String> {
+    let conn = db.lock();
+    let mut stmt = conn
+        .prepare(
+            "SELECT chapter_link FROM downloaded_chapters
+             WHERE module_id=?1 AND manga_url=?2
+             ORDER BY downloaded_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![module_id.trim(), manga_url.trim()], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// Chapter links currently pending/running in the queue for a manga.
+pub fn queue_active_chapter_links(
+    db: &Db,
+    module_id: &str,
+    manga_url: &str,
+) -> Result<Vec<String>, String> {
+    let conn = db.lock();
+    let mut stmt = conn
+        .prepare(
+            "SELECT chapter_link FROM queue_items
+             WHERE module_id=?1 AND manga_url=?2 AND status IN ('pending','running')",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![module_id.trim(), manga_url.trim()], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
 }
 
 pub fn queue_reset_running_to_pending(db: &Db) -> Result<usize, String> {

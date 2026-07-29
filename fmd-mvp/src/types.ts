@@ -2,6 +2,9 @@ export type ChapterInfo = {
   index: number;
   name: string;
   link: string;
+  /** Frozen at enqueue; when set on queueAdd, skip live path resolve. */
+  manga_path?: string;
+  chapter_path?: string;
 };
 
 export type MangaInfoResult = {
@@ -29,6 +32,12 @@ export type QueueItem = {
   chapter_name: string;
   chapter_link: string;
   output_dir: string;
+  /** Manga folder frozen at enqueue (empty = legacy). */
+  manga_path?: string;
+  /** Chapter folder frozen at enqueue (empty = legacy). */
+  chapter_path?: string;
+  /** Split-download batch; empty = group by manga only. */
+  batch_id?: string;
   status: string;
   error: string;
   created_at: string;
@@ -46,6 +55,8 @@ export type QueueAddRequest = {
   chapters: ChapterInfo[];
   /** If false, enqueue without starting the worker (tarea detenida). Default true. */
   start?: boolean;
+  /** Split batch id; empty/omit for normal enqueue. */
+  batch_id?: string;
 };
 
 export type ModuleMeta = {

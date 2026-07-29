@@ -1,11 +1,25 @@
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { Icon } from "../components/Icon";
+import { appToastUndo } from "../components/AppToast";
 import { ICO } from "../icons";
-import { DL_HIST, DL_ST } from "../constants";
+import { DL_HIST, DL_ST, SK } from "../constants";
 import * as api from "../api/tauri";
 import { useApp } from "../context/AppContext";
-import { confirmIfEnabled, settingBool, SK } from "../utils/settings";
-import type { LiveProgress, ModuleMeta, QueueItem } from "../types";
+import { confirmIfEnabled, settingBool, settingNumber } from "../utils/settings";
+import type {
+  ChapterInfo,
+  LiveProgress,
+  ModuleMeta,
+  QueueAddRequest,
+  QueueItem,
+} from "../types";
 
 type SortKey = "queue" | "title" | "status" | "pct" | "speed" | "site" | "path" | "added";
 
@@ -18,13 +32,11 @@ const STATUS_NODES: { id: string; label: string; color: string }[] = [
 ];
 
 const SORT_COLUMNS: { key: SortKey; label: string; style?: CSSProperties }[] = [
-  { key: "title", label: "Manga" },
+  { key: "title", label: "Grupo · obra" },
   { key: "status", label: "Estado" },
-  { key: "pct", label: "Progreso" },
+  { key: "pct", label: "Progreso del grupo" },
   { key: "speed", label: "Ratio", style: { justifyContent: "flex-end" } },
-  { key: "site", label: "Sitio" },
-  { key: "path", label: "Guardado en" },
-  { key: "added", label: "Agregado" },
+  { key: "site", label: "Sitio · agregado" },
 ];
 
 function dlStatusMeta(status: string) {
@@ -91,18 +103,34 @@ function dlItemPct(
     };
   }
   if (item.status === "running") return { pct: 8, pages: "", label: "…" };
-  if (item.status === "pending" || item.status === "cancelled") {
-    return { pct: 0, pages: "", label: "—" };
-  }
-  if (item.status === "failed") return { pct: 0, pages: "", label: "—" };
   return { pct: 0, pages: "", label: "—" };
 }
 
-function dlItemSpeed(item: QueueItem, liveProgress: Map<number, LiveProgress>): string {
-  if (item.status !== "running") return "—";
-  const live = liveProgress.get(item.id);
-  return formatBytesPerSec(live?.bytes_per_sec) || "…";
+function mangaGroupKey(it: QueueItem): string {
+  const batch = (it.batch_id || "").trim();
+  if (batch) return `batch:${batch}`;
+  const url = (it.manga_url || "").trim();
+  return `${it.module_id}|${url || it.manga_title}`;
 }
+
+/** Parse `…-kofN` suffix from split batch ids. */
+function batchTaskLabel(batchId: string): string | null {
+  const m = /-(\d+)of(\d+)$/.exec(batchId.trim());
+  if (!m) return null;
+  return `tarea ${m[1]}/${m[2]}`;
+}
+
+type MangaGroup = {
+  key: string;
+  title: string;
+  moduleId: string;
+  mangaUrl: string;
+  rootUrl: string;
+  outputDir: string;
+  site: string;
+  items: QueueItem[];
+  oldest: QueueItem;
+};
 
 function orderedQueueItems(items: QueueItem[], order: number[]): QueueItem[] {
   const map = new Map(items.map((i) => [i.id, i]));
@@ -117,7 +145,118 @@ function orderedQueueItems(items: QueueItem[], order: number[]): QueueItem[] {
   return out;
 }
 
-function filteredQueueItems(
+function groupByManga(list: QueueItem[], modules: ModuleMeta[]): MangaGroup[] {
+  const map = new Map<string, MangaGroup>();
+  const keys: string[] = [];
+  for (const it of list) {
+    const key = mangaGroupKey(it);
+    let g = map.get(key);
+    if (!g) {
+      const batch = (it.batch_id || "").trim();
+      const task = batch ? batchTaskLabel(batch) : null;
+      g = {
+        key,
+        title: task ? `${it.manga_title} · ${task}` : it.manga_title,
+        moduleId: it.module_id,
+        mangaUrl: (it.manga_url || "").trim(),
+        rootUrl: it.root_url,
+        outputDir: it.output_dir,
+        site: dlSiteName(it, modules),
+        items: [],
+        oldest: it,
+      };
+      map.set(key, g);
+      keys.push(key);
+    }
+    g.items.push(it);
+    const tNew = Date.parse(it.created_at || it.updated_at);
+    const tOld = Date.parse(g.oldest.created_at || g.oldest.updated_at);
+    if (Number.isFinite(tNew) && (!Number.isFinite(tOld) || tNew < tOld)) {
+      g.oldest = it;
+    }
+  }
+  return keys.map((k) => map.get(k)!);
+}
+
+type GroupAgg = {
+  status: string;
+  st: ReturnType<typeof dlStatusMeta>;
+  done: number;
+  active: number;
+  queued: number;
+  paused: number;
+  failed: number;
+  pct: number;
+  wDone: number;
+  wActive: number;
+  speed: number;
+  summary: string;
+};
+
+function aggregateGroup(
+  g: MangaGroup,
+  liveProgress: Map<number, LiveProgress>,
+): GroupAgg {
+  const cs = g.items;
+  let done = 0;
+  let active = 0;
+  let queued = 0;
+  let paused = 0;
+  let failed = 0;
+  let pctSum = 0;
+  let speed = 0;
+  for (const it of cs) {
+    const p = dlItemPct(it, liveProgress);
+    pctSum += p.pct;
+    if (it.status === "done") done++;
+    else if (it.status === "running") {
+      active++;
+      speed += liveProgress.get(it.id)?.bytes_per_sec ?? 0;
+    } else if (it.status === "pending") queued++;
+    else if (it.status === "cancelled") paused++;
+    else if (it.status === "failed") failed++;
+  }
+  const n = cs.length || 1;
+  const pct = pctSum / n;
+  const wDone = (done / n) * 100;
+  const wActive = Math.max(0, pct - wDone);
+  let status = "done";
+  if (active > 0) status = "running";
+  else if (failed > 0) status = "failed";
+  else if (paused > 0) status = "cancelled";
+  else if (queued > 0) status = "pending";
+  const parts: string[] = [];
+  if (done) parts.push(`${done} listos`);
+  if (active) parts.push(active === 1 ? "1 descargando" : `${active} descargando`);
+  if (queued) parts.push(`${queued} en cola`);
+  if (paused) parts.push(`${paused} detenidos`);
+  if (failed) parts.push(`${failed} con error`);
+  return {
+    status,
+    st: dlStatusMeta(status),
+    done,
+    active,
+    queued,
+    paused,
+    failed,
+    pct,
+    wDone,
+    wActive,
+    speed,
+    summary: parts.join(" · ") || `${cs.length} cap.`,
+  };
+}
+
+function groupMatchesCat(g: MangaGroup, cat: string): boolean {
+  if (cat === "all") return true;
+  if (cat === "hist") return g.items.some((i) => i.status === "done");
+  if (DL_HIST.some((b) => b.id === cat)) {
+    return g.items.some((i) => i.status === "done" && dlBucketId(i) === cat);
+  }
+  return g.items.some((i) => dlStatusMeta(i.status).id === cat);
+}
+
+function filterAndSortGroups(
   items: QueueItem[],
   order: number[],
   query: string,
@@ -126,91 +265,122 @@ function filteredQueueItems(
   sortDir: 1 | -1,
   modules: ModuleMeta[],
   liveProgress: Map<number, LiveProgress>,
-): QueueItem[] {
+): MangaGroup[] {
+  const ordered = orderedQueueItems(items, order);
+  let groups = groupByManga(ordered, modules);
   const q = query.trim().toLowerCase();
-  let list = orderedQueueItems(items, order).filter((it) => {
-    const site = dlSiteName(it, modules);
+  groups = groups.filter((g) => {
     if (
       q &&
-      !(it.manga_title + " " + it.chapter_name + " " + site).toLowerCase().includes(q)
+      !(
+        g.title +
+        " " +
+        g.site +
+        " " +
+        g.items.map((c) => c.chapter_name).join(" ")
+      )
+        .toLowerCase()
+        .includes(q)
     ) {
       return false;
     }
-    if (cat === "all") return true;
-    if (cat === "hist") return it.status === "done";
-    if (DL_HIST.some((b) => b.id === cat)) return dlBucketId(it) === cat;
-    const meta = dlStatusMeta(it.status);
-    return meta.id === cat;
+    return groupMatchesCat(g, cat);
   });
 
   if (sortKey !== "queue") {
     const dir = sortDir;
-    const val = (it: QueueItem): string | number => {
-      if (sortKey === "title") return it.manga_title.toLowerCase();
-      if (sortKey === "status") return dlStatusMeta(it.status).label;
-      if (sortKey === "pct") return dlItemPct(it, liveProgress).pct;
-      if (sortKey === "speed") return liveProgress.get(it.id)?.bytes_per_sec ?? (it.status === "running" ? 1 : 0);
-      if (sortKey === "site") return dlSiteName(it, modules).toLowerCase();
-      if (sortKey === "path") return it.output_dir.toLowerCase();
-      return Date.parse(it.created_at) || 0;
+    const val = (g: MangaGroup): string | number => {
+      const a = aggregateGroup(g, liveProgress);
+      if (sortKey === "title") return g.title.toLowerCase();
+      if (sortKey === "status") return a.st.label;
+      if (sortKey === "pct") return a.pct;
+      if (sortKey === "speed") return a.speed;
+      if (sortKey === "site") return g.site.toLowerCase();
+      if (sortKey === "path") return (g.outputDir || "").toLowerCase();
+      return Date.parse(g.oldest.created_at || g.oldest.updated_at) || 0;
     };
-    list = [...list].sort((a, b) => {
-      const va = val(a);
-      const vb = val(b);
-      if (va > vb) return dir;
-      if (va < vb) return -dir;
-      return 0;
+    groups = [...groups].sort((x, y) => {
+      const vx = val(x);
+      const vy = val(y);
+      if (vx === vy) return 0;
+      return (vx > vy ? 1 : -1) * dir;
     });
   }
-  return list;
+  return groups;
 }
 
-function mangaGroupKey(it: QueueItem): string {
-  const url = (it.manga_url || "").trim();
-  return `${it.module_id}|${url || it.manga_title}`;
-}
-
-type MangaGroup = { key: string; title: string; items: QueueItem[] };
-
-function groupByManga(list: QueueItem[]): MangaGroup[] {
-  const map = new Map<string, MangaGroup>();
-  const keys: string[] = [];
-  for (const it of list) {
+function snapshotItemsForUndo(removed: QueueItem[]): {
+  reqs: QueueAddRequest[];
+  shouldStart: boolean;
+  expectedChapters: number;
+} {
+  const byGroup = new Map<string, QueueItem[]>();
+  for (const it of removed) {
     const key = mangaGroupKey(it);
-    let g = map.get(key);
-    if (!g) {
-      g = { key, title: it.manga_title, items: [] };
-      map.set(key, g);
-      keys.push(key);
-    }
-    g.items.push(it);
+    const arr = byGroup.get(key) || [];
+    arr.push(it);
+    byGroup.set(key, arr);
   }
-  return keys.map((k) => map.get(k)!);
+  const reqs: QueueAddRequest[] = [];
+  let shouldStart = false;
+  let expectedChapters = 0;
+  for (const arr of byGroup.values()) {
+    const first = arr[0];
+    const chapters: ChapterInfo[] = arr.map((it) => ({
+      index: it.chapter_index,
+      name: it.chapter_name,
+      link: it.chapter_link,
+      manga_path: (it.manga_path || "").trim() || undefined,
+      chapter_path: (it.chapter_path || "").trim() || undefined,
+    }));
+    expectedChapters += chapters.length;
+    if (arr.some((it) => it.status === "pending" || it.status === "running")) {
+      shouldStart = true;
+    }
+    reqs.push({
+      manga_title: first.manga_title,
+      root_url: first.root_url,
+      manga_url: first.manga_url,
+      module_id: first.module_id,
+      output_dir: first.output_dir,
+      chapters,
+      start: false,
+      batch_id: (first.batch_id || "").trim() || undefined,
+    });
+  }
+  return { reqs, shouldStart, expectedChapters };
 }
 
 export function DownloadsView() {
-  const { activeNav, modules, log } = useApp();
+  const { activeNav, modules, log, setActiveNav, setPendingMangaOpen } = useApp();
   const [items, setItems] = useState<QueueItem[]>([]);
   const [liveProgress, setLiveProgress] = useState<Map<number, LiveProgress>>(
     () => new Map(),
   );
   const [cat, setCat] = useState("all");
   const [query, setQuery] = useState("");
-  const [sel, setSel] = useState<Record<number, true>>({});
-  const [sortKey, setSortKey] = useState<SortKey>("added");
-  const [sortDir, setSortDir] = useState<1 | -1>(-1);
+  const [selG, setSelG] = useState<Record<string, true>>({});
+  const [selC, setSelC] = useState<Record<number, true>>({});
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const [panelMin, setPanelMin] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>("queue");
+  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [order, setOrder] = useState<number[]>([]);
   const [showToolbar, setShowToolbar] = useState(true);
-  const [showClearBtn, setShowClearBtn] = useState(true);
   const [showLeftBar, setShowLeftBar] = useState(true);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
-  const collapseInitRef = useRef<Set<string>>(new Set());
+  const [parallelTasks, setParallelTasks] = useState(1);
   const [dlCtxMenu, setDlCtxMenu] = useState<{
     x: number;
     y: number;
     ids: number[];
   } | null>(null);
+  const [removeConfirm, setRemoveConfirm] = useState<{
+    items: QueueItem[];
+    label: string;
+  } | null>(null);
+  const [removeDeleteFiles, setRemoveDeleteFiles] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const lastProgressLogRef = useRef<{ itemId: number; message: string } | null>(null);
 
   async function refreshQueue() {
     try {
@@ -224,8 +394,8 @@ export function DownloadsView() {
   useEffect(() => {
     void (async () => {
       setShowToolbar(await settingBool(SK.UI_DL_TOOLBAR, true));
-      setShowClearBtn(await settingBool(SK.UI_DL_CLEAR_BTN, true));
       setShowLeftBar(await settingBool(SK.UI_DL_LEFT_BAR, true));
+      setParallelTasks(await settingNumber(SK.PARALLEL_TASKS, 1));
     })();
   }, [activeNav]);
 
@@ -236,7 +406,7 @@ export function DownloadsView() {
       const missing = items.filter((it) => !kept.includes(it.id)).map((it) => it.id);
       return kept.concat(missing);
     });
-    setSel((prev) => {
+    setSelC((prev) => {
       let changed = false;
       const next: Record<number, true> = {};
       for (const k of Object.keys(prev)) {
@@ -254,7 +424,10 @@ export function DownloadsView() {
   }, []);
 
   useEffect(() => {
-    if (activeNav === "downloads") void refreshQueue();
+    if (activeNav === "downloads") {
+      void refreshQueue();
+      void settingNumber(SK.PARALLEL_TASKS, 1).then(setParallelTasks);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNav]);
 
@@ -265,8 +438,11 @@ export function DownloadsView() {
     void api.onQueueChanged(() => {
       void refreshQueue();
     }).then((u) => {
-      if (cancelled) u();
-      else unChanged = u;
+      if (cancelled) {
+        u();
+        return;
+      }
+      unChanged = u;
     });
     void api
       .onQueueProgress((p) => {
@@ -281,31 +457,39 @@ export function DownloadsView() {
           });
           return next;
         });
-        /* Skip noisy per-page ticks in the log; keep phase lines. */
         if (
           p.message.startsWith("Obteniendo") ||
           p.message.startsWith("Downloading") ||
           p.message.startsWith("Completed") ||
           p.message.startsWith("[")
         ) {
-          /* Still log [n/m] sparsely: only first, every 5th, and last */
           const m = /^\[(\d+)\/(\d+)\]/.exec(p.message);
           if (m) {
             const cur = Number(m[1]);
             const tot = Number(m[2]);
             if (cur !== 0 && cur !== tot && cur % 5 !== 0) return;
           }
+          const prev = lastProgressLogRef.current;
+          if (prev && prev.itemId === p.item_id && prev.message === p.message) {
+            return;
+          }
+          lastProgressLogRef.current = { itemId: p.item_id, message: p.message };
           log(p.message);
         }
       })
       .then((u) => {
-        if (cancelled) u();
-        else unProgress = u;
+        if (cancelled) {
+          u();
+          return;
+        }
+        unProgress = u;
       });
     return () => {
       cancelled = true;
       unChanged?.();
       unProgress?.();
+      unChanged = undefined;
+      unProgress = undefined;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -324,38 +508,66 @@ export function DownloadsView() {
     };
   }, [dlCtxMenu]);
 
+  const allGroups = useMemo(
+    () => groupByManga(orderedQueueItems(items, order), modules),
+    [items, order, modules],
+  );
+
+  const groups = useMemo(
+    () =>
+      filterAndSortGroups(
+        items,
+        order,
+        query,
+        cat,
+        sortKey,
+        sortDir,
+        modules,
+        liveProgress,
+      ),
+    [items, order, query, cat, sortKey, sortDir, modules, liveProgress],
+  );
+
   useEffect(() => {
-    const listNow = filteredQueueItems(
-      items,
-      order,
-      query,
-      cat,
-      sortKey,
-      sortDir,
-      modules,
-      liveProgress,
-    );
-    const groupsNow = groupByManga(listNow);
-    setCollapsedGroups((prev) => {
+    const keys = new Set(allGroups.map((g) => g.key));
+    setSelG((prev) => {
       let changed = false;
-      const next = new Set(prev);
-      for (const g of groupsNow) {
-        if (collapseInitRef.current.has(g.key)) continue;
-        collapseInitRef.current.add(g.key);
-        const hasRunning = g.items.some((i) => i.status === "running");
-        if (!hasRunning && g.items.length > 3) {
-          next.add(g.key);
-          changed = true;
-        }
+      const next: Record<string, true> = {};
+      for (const k of Object.keys(prev)) {
+        if (keys.has(k)) next[k] = true;
+        else changed = true;
       }
       return changed ? next : prev;
     });
-  }, [items, order, query, cat, sortKey, sortDir, modules, liveProgress]);
+    if (focusKey && !keys.has(focusKey)) setFocusKey(null);
+  }, [allGroups, focusKey]);
+
+  const focusGroup = focusKey
+    ? allGroups.find((g) => g.key === focusKey) || null
+    : null;
+
+  function titleTwinHint(g: MangaGroup): string | null {
+    const twins = allGroups.filter(
+      (x) => x.title === g.title && x.key !== g.key,
+    ).length;
+    if (!twins) return null;
+    return "Existe otro grupo de la misma obra en distinto sitio: corren por separado y guardan en carpetas distintas.";
+  }
+
+  function chapterIdsOfGroups(keys: string[]): number[] {
+    return allGroups
+      .filter((g) => keys.includes(g.key))
+      .flatMap((g) => g.items.map((i) => i.id));
+  }
+
+  function selectedGroupKeys(): string[] {
+    return Object.keys(selG).filter((k) => selG[k]);
+  }
 
   function dlMoveSelected(dir: -1 | 1, edge: boolean) {
-    const ids = Object.keys(sel)
-      .filter((k) => sel[Number(k)])
-      .map(Number);
+    const keys = selectedGroupKeys();
+    if (!keys.length) return;
+    const ids = chapterIdsOfGroups(keys);
     if (!ids.length) return;
     setOrder((prev) => {
       const ord = [...prev];
@@ -383,24 +595,33 @@ export function DownloadsView() {
     setSortKey("queue");
   }
 
-  function toggleSel(id: number) {
-    setSel((prev) => {
+  function toggleSelG(key: string) {
+    setSelG((prev) => {
       const next = { ...prev };
-      if (next[id]) delete next[id];
-      else next[id] = true;
+      if (next[key]) delete next[key];
+      else next[key] = true;
       return next;
     });
   }
 
-  function toggleSelectAll(list: QueueItem[]) {
-    const allSelected = list.length > 0 && list.every((it) => sel[it.id]);
-    setSel((prev) => {
+  function toggleSelectAllGroups() {
+    const allSelected = groups.length > 0 && groups.every((g) => selG[g.key]);
+    setSelG((prev) => {
       const next = { ...prev };
       if (allSelected) {
-        for (const it of list) delete next[it.id];
+        for (const g of groups) delete next[g.key];
       } else {
-        for (const it of list) next[it.id] = true;
+        for (const g of groups) next[g.key] = true;
       }
+      return next;
+    });
+  }
+
+  function toggleSelC(id: number) {
+    setSelC((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = true;
       return next;
     });
   }
@@ -414,58 +635,10 @@ export function DownloadsView() {
     }
   }
 
-  async function handleRowToggle(it: QueueItem) {
-    if (it.status === "running" || it.status === "pending") {
-      await api.queueCancel(it.id);
-    } else if (it.status === "cancelled" || it.status === "failed") {
-      await api.queueRetry(it.id);
-      await api.queueStart();
-    }
-    await refreshQueue();
-  }
-
-  async function handleRowRemove(id: number) {
-    await api.queueRemove(id);
-    await refreshQueue();
-  }
-
-  async function handleOpenFolder(it: QueueItem) {
-    const dir = (it.output_dir || "").trim();
-    if (!dir) {
-      log("Sin carpeta de salida.", "err");
-      return;
-    }
-    try {
-      await api.openExternal(dir);
-    } catch (e) {
-      log(String(e), "err");
-    }
-  }
-
-  function handleRowContextMenu(ev: ReactMouseEvent, it: QueueItem) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    let ids = Object.keys(sel)
-      .filter((k) => sel[Number(k)])
-      .map(Number);
-    if (!ids.includes(it.id)) {
-      setSel({ [it.id]: true });
-      ids = [it.id];
-    }
-    const pad = 8;
-    const menuW = 220;
-    const menuH = 180;
-    const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
-    const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
-    setDlCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), ids });
-  }
-
-  async function handleSelResume() {
-    const ids = Object.keys(sel).map(Number);
+  async function resumeIds(ids: number[]) {
     for (const id of ids) {
       const it = items.find((x) => x.id === id);
-      if (!it) continue;
-      if (it.status === "cancelled" || it.status === "failed") {
+      if (it && (it.status === "cancelled" || it.status === "failed")) {
         await api.queueRetry(id);
       }
     }
@@ -473,8 +646,7 @@ export function DownloadsView() {
     await refreshQueue();
   }
 
-  async function handleSelPause() {
-    const ids = Object.keys(sel).map(Number);
+  async function pauseIds(ids: number[]) {
     for (const id of ids) {
       const it = items.find((x) => x.id === id);
       if (it && (it.status === "running" || it.status === "pending")) {
@@ -484,40 +656,112 @@ export function DownloadsView() {
     await refreshQueue();
   }
 
-  async function handleSelDelete() {
-    const ids = Object.keys(sel).map(Number);
-    if (!ids.length) return;
-    const ok = await confirmIfEnabled(
-      SK.CONFIRM_DELETE,
-      `¿Eliminar ${ids.length} elemento(s) de la cola?`,
-    );
-    if (!ok) return;
+  async function retryFailedIds(ids: number[]) {
+    let n = 0;
     for (const id of ids) {
       const it = items.find((x) => x.id === id);
-      if (it?.status === "running") await api.queueCancel(id);
-      await api.queueRemove(id);
+      if (it?.status === "failed") {
+        await api.queueRetry(id);
+        n++;
+      }
+    }
+    if (n) await api.queueStart();
+    await refreshQueue();
+  }
+
+  async function removeItemsWithUndo(
+    toRemove: QueueItem[],
+    label: string,
+    deleteFiles: boolean,
+  ) {
+    for (const it of toRemove) {
+      if (it.status === "running") await api.queueCancel(it.id);
+    }
+    const { reqs: snapshots, shouldStart, expectedChapters } =
+      snapshotItemsForUndo(toRemove);
+    for (const it of toRemove) {
+      if (deleteFiles) {
+        try {
+          await api.queueDeleteChapterFiles(it.id, dlSiteName(it, modules));
+        } catch (e) {
+          log(String(e), "err");
+        }
+      }
+      try {
+        await api.queueRemove(it.id);
+      } catch {
+        /* running may still block; ignore */
+      }
     }
     await refreshQueue();
+    if (!snapshots.length) return;
+    const toastMsg = deleteFiles
+      ? `${label} (archivos borrados; Deshacer solo re-encola)`
+      : label;
+    appToastUndo({
+      message: toastMsg,
+      durationMs: 6000,
+      onUndo: async () => {
+        try {
+          let inserted = 0;
+          for (const req of snapshots) {
+            inserted += await api.queueAdd({
+              ...req,
+              start: false,
+            });
+          }
+          if (shouldStart) {
+            await api.queueStart();
+          }
+          setCat("all");
+          await refreshQueue();
+          if (inserted < expectedChapters) {
+            log(
+              `Restaurados ${inserted}/${expectedChapters} (algunos ya estaban en cola)`,
+              inserted ? "ok" : "err",
+            );
+          } else {
+            log("Elementos restaurados en la cola", "ok");
+          }
+        } catch (e) {
+          log(String(e), "err");
+        }
+      },
+    });
+  }
+
+  function askRemoveItems(toRemove: QueueItem[], label: string) {
+    if (!toRemove.length) return;
+    setRemoveDeleteFiles(false);
+    setRemoveConfirm({ items: toRemove, label });
+  }
+
+  async function handleOpenFolder(itemId: number) {
+    try {
+      await api.queueOpenItemFolder(itemId);
+    } catch (e) {
+      log(String(e), "err");
+    }
+  }
+
+  function openCtx(ev: ReactMouseEvent, ids: number[]) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const pad = 8;
+    const menuW = 220;
+    const menuH = 180;
+    const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
+    const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
+    setDlCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), ids });
   }
 
   async function handleResumeAll() {
-    for (const it of items) {
-      if (it.status === "cancelled" || it.status === "failed") {
-        await api.queueRetry(it.id);
-      }
-    }
-    await api.queueStart();
+    await resumeIds(items.map((i) => i.id));
     log("Cola reanudada", "ok");
-    await refreshQueue();
   }
 
   async function handleStopAll() {
-    for (const it of items) {
-      if (it.status === "running" || it.status === "pending") {
-        await api.queueCancel(it.id);
-      }
-    }
-    await refreshQueue();
+    await pauseIds(items.map((i) => i.id));
   }
 
   async function handleClearDone() {
@@ -531,25 +775,14 @@ export function DownloadsView() {
     await refreshQueue();
   }
 
-  const list = filteredQueueItems(
-    items,
-    order,
-    query,
-    cat,
-    sortKey,
-    sortDir,
-    modules,
-    liveProgress,
-  );
-  const groups = groupByManga(list);
-
-  function toggleGroupCollapsed(key: string) {
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+  function handleAddMore(g: MangaGroup) {
+    const url = (g.mangaUrl || g.rootUrl || "").trim();
+    if (!url) {
+      log("Este grupo no tiene URL de manga para abrir en Información.", "err");
+      return;
+    }
+    setPendingMangaOpen({ mangaUrl: url, moduleId: g.moduleId });
+    setActiveNav("info");
   }
 
   const activeN = items.filter((i) => i.status === "running").length;
@@ -558,37 +791,74 @@ export function DownloadsView() {
   const clearableN = items.filter(
     (i) => i.status === "done" || i.status === "failed" || i.status === "cancelled",
   ).length;
-  const canResumeAll = items.some((i) => i.status === "cancelled" || i.status === "failed");
-  const canStopAll = items.some((i) => i.status === "running" || i.status === "pending");
+  const canResumeAll = items.some(
+    (i) => i.status === "cancelled" || i.status === "failed",
+  );
+  const canStopAll = items.some(
+    (i) => i.status === "running" || i.status === "pending",
+  );
   const totalBps = items
     .filter((i) => i.status === "running")
     .reduce((sum, i) => sum + (liveProgress.get(i.id)?.bytes_per_sec ?? 0), 0);
-  const transferLabel = activeN
-    ? formatBytesPerSec(totalBps) || "…"
-    : "0 KB/s";
-  const selIds = Object.keys(sel)
-    .filter((k) => sel[Number(k)])
-    .map(Number);
-  const hasSel = selIds.length > 0;
-  const selItems = selIds
+  const transferLabel = activeN ? formatBytesPerSec(totalBps) || "…" : "0 KB/s";
+
+  const selKeys = selectedGroupKeys();
+  const hasSel = selKeys.length > 0;
+  const selChapterIds = chapterIdsOfGroups(selKeys);
+  const selItems = selChapterIds
     .map((id) => items.find((x) => x.id === id))
     .filter((x): x is QueueItem => !!x);
-  const canResumeSel = selItems.some((i) => i.status === "cancelled" || i.status === "failed");
-  const canStopSel = selItems.some((i) => i.status === "running" || i.status === "pending");
+  const canResumeSel = selItems.some(
+    (i) => i.status === "cancelled" || i.status === "failed",
+  );
+  const canStopSel = selItems.some(
+    (i) => i.status === "running" || i.status === "pending",
+  );
   const canDeleteSel = selItems.some((i) => i.status !== "running");
-  const allOn = list.length > 0 && list.every((it) => sel[it.id]);
-  const someOn = list.some((it) => sel[it.id]);
+  const canRetrySel = selItems.some((i) => i.status === "failed");
+  const canFolderSel = selItems.some((i) => !!(i.output_dir || "").trim());
+  const allOn = groups.length > 0 && groups.every((g) => selG[g.key]);
+  const someOn = groups.some((g) => selG[g.key]);
   const count = (f: (i: QueueItem) => boolean) => items.filter(f).length;
+  const countGroupsMatching = (pred: (g: MangaGroup) => boolean) =>
+    allGroups.filter(pred).length;
 
   const ctxItems = dlCtxMenu
     ? dlCtxMenu.ids
         .map((id) => items.find((x) => x.id === id))
         .filter((x): x is QueueItem => !!x)
     : [];
-  const ctxCanResume = ctxItems.some((i) => i.status === "cancelled" || i.status === "failed");
-  const ctxCanStop = ctxItems.some((i) => i.status === "running" || i.status === "pending");
+  const ctxCanResume = ctxItems.some(
+    (i) => i.status === "cancelled" || i.status === "failed",
+  );
+  const ctxCanStop = ctxItems.some(
+    (i) => i.status === "running" || i.status === "pending",
+  );
   const ctxCanDelete = ctxItems.some((i) => i.status !== "running");
   const ctxOpenTarget = ctxItems[0];
+
+  const selLabel = hasSel
+    ? `${selKeys.length} ${selKeys.length === 1 ? "grupo" : "grupos"} · ${selChapterIds.length} cap.`
+    : `${groups.length} ${groups.length === 1 ? "grupo" : "grupos"} · ${groups.reduce((a, g) => a + g.items.length, 0)} capítulos`;
+
+  const focusAgg = focusGroup
+    ? aggregateGroup(focusGroup, liveProgress)
+    : null;
+  const fSelIds = focusGroup
+    ? focusGroup.items.filter((c) => selC[c.id]).map((c) => c.id)
+    : [];
+  const fAll =
+    !!focusGroup &&
+    focusGroup.items.length > 0 &&
+    focusGroup.items.every((c) => selC[c.id]);
+  const fSome = !!focusGroup && focusGroup.items.some((c) => selC[c.id]);
+  const fRunning = (focusAgg?.active ?? 0) > 0;
+  const fCanResume =
+    !!focusGroup &&
+    focusGroup.items.some(
+      (i) => i.status === "cancelled" || i.status === "failed" || i.status === "pending",
+    );
+  const concurrencyLabel = `${Math.min(activeN || 0, parallelTasks)}/${parallelTasks} tareas en paralelo`;
 
   return (
     <section id="view-downloads" className="view" hidden={activeNav !== "downloads"}>
@@ -610,7 +880,8 @@ export function DownloadsView() {
               disabled={!canResumeAll}
               onClick={() => void handleResumeAll()}
             >
-              <Icon ico={ICO.play} className="ico ico-sm" />Reanudar todo
+              <Icon ico={ICO.play} className="ico ico-sm" />
+              Reanudar todo
             </button>
             <button
               type="button"
@@ -618,21 +889,12 @@ export function DownloadsView() {
               disabled={!canStopAll}
               onClick={() => void handleStopAll()}
             >
-              <Icon ico={ICO.pause} className="ico ico-sm" />Detener todo
+              <Icon ico={ICO.pause} className="ico ico-sm" />
+              Detener todo
             </button>
-            {showClearBtn ? (
-              <button
-                type="button"
-                className="dl-btn-ghost"
-                disabled={clearableN === 0}
-                title="Quitar completadas, detenidas y fallidas"
-                onClick={() => void handleClearDone()}
-              >
-                <Icon ico={ICO.broom} className="ico ico-sm" />Limpiar completadas
-              </button>
-            ) : null}
           </div>
         </header>
+
         <div className="dl-body">
           <aside className="dl-tree" aria-label="Filtros de descargas" hidden={!showLeftBar}>
             <button
@@ -650,12 +912,14 @@ export function DownloadsView() {
               </span>
               <div className="dl-toolbar-spacer" />
               <span className="mono" style={{ fontSize: "11px", color: "var(--muted)" }}>
-                {items.length}
+                {allGroups.length}
               </span>
             </button>
             {STATUS_NODES.map((s) => {
               const on = cat === s.id;
-              const n = count((i) => dlStatusMeta(i.status).id === s.id);
+              const n = countGroupsMatching((g) =>
+                g.items.some((i) => dlStatusMeta(i.status).id === s.id),
+              );
               return (
                 <button
                   key={s.id}
@@ -702,7 +966,7 @@ export function DownloadsView() {
             </button>
             {DL_HIST.map((b) => {
               const on = cat === b.id;
-              const n = count((i) => dlBucketId(i) === b.id);
+              const n = count((i) => i.status === "done" && dlBucketId(i) === b.id);
               return (
                 <button
                   key={b.id}
@@ -730,6 +994,7 @@ export function DownloadsView() {
               );
             })}
           </aside>
+
           <div className="dl-main">
             <div className="dl-toolbar" hidden={!showToolbar}>
               <div className="dl-search-wrap">
@@ -738,7 +1003,7 @@ export function DownloadsView() {
                   ref={searchInputRef}
                   className="st-field"
                   type="text"
-                  placeholder="Buscar descargas..."
+                  placeholder="Buscar obra o sitio..."
                   autoComplete="off"
                   spellCheck={false}
                   value={query}
@@ -801,40 +1066,76 @@ export function DownloadsView() {
                   type="button"
                   className={`dl-tbtn${canResumeSel ? "" : " off"}`}
                   disabled={!canResumeSel}
-                  onClick={() => void handleSelResume()}
+                  onClick={() => void resumeIds(selChapterIds)}
                 >
-                  <Icon ico={ICO.play} className="ico ico-sm" />Reanudar
+                  <Icon ico={ICO.play} className="ico ico-sm" />
+                  Reanudar
                 </button>
                 <button
                   type="button"
                   className={`dl-tbtn${canStopSel ? "" : " off"}`}
                   disabled={!canStopSel}
-                  onClick={() => void handleSelPause()}
+                  onClick={() => void pauseIds(selChapterIds)}
                 >
-                  <Icon ico={ICO.pause} className="ico ico-sm" />Detener
+                  <Icon ico={ICO.pause} className="ico ico-sm" />
+                  Detener
                 </button>
                 <button
                   type="button"
-                  className={`dl-tbtn${hasSel && canDeleteSel ? "" : " off"}`}
-                  disabled={!hasSel || !canDeleteSel}
-                  onClick={() => void handleSelDelete()}
+                  className={`dl-tbtn${canDeleteSel ? "" : " off"}`}
+                  disabled={!canDeleteSel}
+                  onClick={() =>
+                    askRemoveItems(
+                      selItems,
+                      selItems.length === 1
+                        ? "Se quitó de la cola"
+                        : `Se quitaron ${selItems.length} de la cola`,
+                    )
+                  }
                 >
-                  <Icon ico={ICO.trash} className="ico ico-sm" />Quitar
+                  <Icon ico={ICO.trash} className="ico ico-sm" />
+                  Quitar
+                </button>
+                <button
+                  type="button"
+                  className={`dl-ibtn${canRetrySel ? "" : " off"}`}
+                  style={{ borderColor: "transparent" }}
+                  title="Reintentar fallidos"
+                  disabled={!canRetrySel}
+                  onClick={() => void retryFailedIds(selChapterIds)}
+                >
+                  <Icon ico={ICO.retry} className="ico ico-sm" />
+                </button>
+                <button
+                  type="button"
+                  className={`dl-ibtn${canFolderSel ? "" : " off"}`}
+                  style={{ borderColor: "transparent" }}
+                  title="Abrir carpeta"
+                  disabled={!canFolderSel}
+                  onClick={() => {
+                    const it = selItems.find((i) => (i.output_dir || "").trim()) ?? selItems[0];
+                    if (!it) return;
+                    void handleOpenFolder(it.id);
+                  }}
+                >
+                  <Icon ico={ICO.folderOpen} className="ico ico-sm" />
                 </button>
               </div>
               <div className="dl-toolbar-spacer" />
-              <span className="dl-sel-label">
-                {hasSel ? `${selIds.length} seleccionadas` : `${list.length} de ${items.length} tareas`}
-              </span>
+              <span className="ell dl-sel-label">{selLabel}</span>
             </div>
+
             <div className="dl-scroll">
               <div className="dl-grid dl-head">
                 <button
                   type="button"
                   className={`sites-cb${allOn ? " on" : ""}${someOn && !allOn ? " some" : ""}`}
-                  style={{ ["--ico" as string]: allOn || someOn ? (allOn ? ICO.check : ICO.dash) : ICO.check }}
+                  style={{
+                    ["--ico" as string]:
+                      allOn || someOn ? (allOn ? ICO.check : ICO.dash) : ICO.check,
+                  }}
                   aria-label="Seleccionar todo"
-                  onClick={() => toggleSelectAll(list)}
+                  onClick={() => toggleSelectAllGroups()}
                 >
                   <span className="sites-cb-mk" />
                 </button>
@@ -862,183 +1163,568 @@ export function DownloadsView() {
                 })}
                 <div />
               </div>
-              {list.length ? (
-                <div>
-                  {groups.map((g) => {
-                    const collapsed = collapsedGroups.has(g.key);
-                    const doneG = g.items.filter((i) => i.status === "done").length;
-                    const runG = g.items.filter((i) => i.status === "running").length;
-                    const stopG = g.items.filter((i) => i.status === "cancelled").length;
-                    const metaBits = [
-                      `${doneG}/${g.items.length} listos`,
-                      runG ? `${runG} activos` : "",
-                      stopG ? `${stopG} detenidos` : "",
-                    ].filter(Boolean);
-                    return (
-                      <div key={g.key} className="dl-group">
+
+              {groups.length ? (
+                groups.map((g) => {
+                  const a = aggregateGroup(g, liveProgress);
+                  const on = !!selG[g.key];
+                  const focused = focusKey === g.key;
+                  const running = a.active > 0;
+                  return (
+                    <div
+                      key={g.key}
+                      className={`dl-grid dl-row${on ? " sel" : ""}${focused ? " focus" : ""}`}
+                      onClick={() => {
+                        setFocusKey(g.key);
+                        setPanelMin(false);
+                      }}
+                      onContextMenu={(ev) => {
+                        if (!selG[g.key]) setSelG({ [g.key]: true });
+                        openCtx(ev, g.items.map((i) => i.id));
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className={`sites-cb${on ? " on" : ""}`}
+                        style={{ ["--ico" as string]: ICO.check }}
+                        aria-label="Seleccionar grupo"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelG(g.key);
+                        }}
+                      >
+                        <span className="sites-cb-mk" />
+                      </button>
+                      <div className="dl-cell-title">
+                        <div className="dl-cell-title-text">
+                          <span className="ell dl-manga">{g.title}</span>
+                          <span className="ell dl-chapter">{a.summary}</span>
+                        </div>
+                        <span className="mono dl-tag">{g.items.length} cap.</span>
+                      </div>
+                      <span
+                        className="dl-badge"
+                        style={{ color: a.st.color, background: a.st.bg }}
+                      >
+                        {a.st.label}
+                      </span>
+                      <div className="dl-prog">
+                        <div className="dl-seg">
+                          <i
+                            style={{
+                              width: `${a.wDone.toFixed(1)}%`,
+                              background: "var(--ok)",
+                            }}
+                          />
+                          <i
+                            style={{
+                              width: `${a.wActive.toFixed(1)}%`,
+                              background: a.st.bar,
+                            }}
+                          />
+                        </div>
+                        <div className="dl-prog-meta">
+                          <span className="mono">{Math.round(a.pct)}%</span>
+                          <span className="mono">
+                            {a.done}/{g.items.length} cap
+                          </span>
+                        </div>
+                      </div>
+                      <span
+                        className="mono dl-ratio"
+                        style={{
+                          color: a.speed ? "var(--text)" : "var(--muted)",
+                        }}
+                      >
+                        {formatBytesPerSec(a.speed) || "—"}
+                      </span>
+                      <div className="dl-site-added" title={g.outputDir}>
+                        <span className="ell dl-site">{g.site}</span>
+                        <span className="ell mono dl-added">{dlFmtAdded(g.oldest)}</span>
+                      </div>
+                      <div className="dl-act">
                         <button
                           type="button"
-                          className={`dl-group-head${collapsed ? " is-collapsed" : ""}`}
-                          onClick={() => toggleGroupCollapsed(g.key)}
+                          className="dl-ibtn"
+                          title={running ? "Detener grupo" : "Reanudar grupo"}
+                          style={{
+                            borderColor: "transparent",
+                            width: "24px",
+                            height: "24px",
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (running) void pauseIds(g.items.map((i) => i.id));
+                            else {
+                              const ids = g.items
+                                .filter((i) => i.status !== "done")
+                                .map((i) => i.id);
+                              void resumeIds(ids);
+                            }
+                          }}
                         >
                           <Icon
-                            ico={ICO.chevron}
-                            className="ico ico-sm dl-group-chevron"
+                            ico={running ? ICO.pause : ICO.play}
+                            className="ico ico-sm"
                           />
-                          <span className="ell dl-group-title">{g.title}</span>
-                          <span className="mono dl-group-meta">{metaBits.join(" · ")}</span>
                         </button>
-                        {collapsed
-                          ? null
-                          : g.items.map((it) => {
-                              const st = dlStatusMeta(it.status);
-                              const on = !!sel[it.id];
-                              const prog = dlItemPct(it, liveProgress);
-                              const canStop =
-                                it.status === "running" || it.status === "pending";
-                              const canResume =
-                                it.status === "cancelled" || it.status === "failed";
-                              const site = dlSiteName(it, modules);
-                              return (
-                                <div
-                                  key={it.id}
-                                  className={`dl-grid dl-row${on ? " sel" : ""}`}
-                                  style={{ height: "46px" }}
-                                  onClick={() => toggleSel(it.id)}
-                                  onContextMenu={(ev) => handleRowContextMenu(ev, it)}
-                                >
-                                  <button
-                                    type="button"
-                                    className={`sites-cb${on ? " on" : ""}`}
-                                    style={{ ["--ico" as string]: ICO.check }}
-                                    aria-label="Seleccionar"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      toggleSel(it.id);
-                                    }}
-                                  >
-                                    <span className="sites-cb-mk" />
-                                  </button>
-                                  <div className="dl-cell-title">
-                                    <span className="ell dl-manga">{it.manga_title}</span>
-                                    <span className="ell dl-chapter">
-                                      {it.chapter_name || it.error || ""}
-                                    </span>
-                                  </div>
-                                  <span
-                                    className="dl-badge"
-                                    style={{ color: st.color, background: st.bg }}
-                                  >
-                                    {st.label}
-                                  </span>
-                                  <div className="dl-prog">
-                                    <div className="dl-bar">
-                                      <i
-                                        style={{
-                                          width: `${prog.pct}%`,
-                                          background: st.bar,
-                                        }}
-                                      />
-                                    </div>
-                                    <div className="dl-prog-meta">
-                                      <span className="mono">{prog.label}</span>
-                                      <span className="mono">{prog.pages}</span>
-                                    </div>
-                                  </div>
-                                  <span
-                                    className="mono dl-ratio"
-                                    style={{
-                                      color:
-                                        it.status === "running"
-                                          ? "var(--text)"
-                                          : "var(--muted)",
-                                    }}
-                                  >
-                                    {dlItemSpeed(it, liveProgress)}
-                                  </span>
-                                  <span className="ell dl-site">{site}</span>
-                                  <span className="ell mono dl-path" title={it.output_dir}>
-                                    {it.output_dir}
-                                  </span>
-                                  <span className="mono dl-added">{dlFmtAdded(it)}</span>
-                                  <div className="dl-act">
-                                    {canStop || canResume ? (
-                                      <button
-                                        type="button"
-                                        className="dl-ibtn dl-row-toggle"
-                                        title={canStop ? "Detener" : "Reanudar"}
-                                        style={{
-                                          borderColor: "transparent",
-                                          width: "24px",
-                                          height: "24px",
-                                        }}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          void handleRowToggle(it);
-                                        }}
-                                      >
-                                        <Icon
-                                          ico={canStop ? ICO.pause : ICO.play}
-                                          className="ico ico-sm"
-                                        />
-                                      </button>
-                                    ) : (
-                                      <span style={{ width: "24px" }} />
-                                    )}
-                                    <button
-                                      type="button"
-                                      className="dl-ibtn dl-row-remove"
-                                      title="Quitar"
-                                      style={{
-                                        borderColor: "transparent",
-                                        width: "24px",
-                                        height: "24px",
-                                      }}
-                                      disabled={it.status === "running"}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        void handleRowRemove(it.id);
-                                      }}
-                                    >
-                                      <Icon ico={ICO.trash} className="ico ico-sm" />
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
+                        <button
+                          type="button"
+                          className="dl-ibtn"
+                          title="Quitar grupo"
+                          style={{
+                            borderColor: "transparent",
+                            width: "24px",
+                            height: "24px",
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            askRemoveItems(
+                              g.items,
+                              `Se quitó «${g.title}» de la cola`,
+                            );
+                          }}
+                        >
+                          <Icon ico={ICO.trash} className="ico ico-sm" />
+                        </button>
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+                  );
+                })
               ) : (
                 <div className="dl-empty">
                   <Icon
                     ico={ICO.download}
                     className="ico"
-                    style={{ width: "26px", height: "26px", color: "var(--muted)", opacity: 0.55 }}
+                    style={{
+                      width: "26px",
+                      height: "26px",
+                      color: "var(--muted)",
+                      opacity: 0.55,
+                    }}
                   />
                   <div className="dl-empty-title">
                     {query.trim() ? "Sin coincidencias" : "Nada por aquí"}
                   </div>
                   <div className="dl-empty-desc">
                     {query.trim()
-                      ? `Ninguna tarea coincide con “${query.trim()}”.`
+                      ? `Ningún grupo coincide con “${query.trim()}”.`
                       : "Esta vista no tiene descargas en este momento."}
                   </div>
                 </div>
               )}
             </div>
+
+            {focusGroup && focusAgg && !panelMin ? (
+              <div className="dl-panel">
+                <div className="dl-panel-side">
+                  <div className="dl-panel-side-inner">
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: "10px",
+                        marginBottom: "5px",
+                      }}
+                    >
+                      <div className="dl-panel-label">Grupo</div>
+                      <div style={{ display: "flex", gap: "2px" }}>
+                        <button
+                          type="button"
+                          className="dl-ibtn"
+                          title="Minimizar panel"
+                          style={{
+                            width: "22px",
+                            height: "22px",
+                            borderColor: "transparent",
+                          }}
+                          onClick={() => setPanelMin(true)}
+                        >
+                          <Icon ico={ICO.minimize} className="ico ico-sm" />
+                        </button>
+                        <button
+                          type="button"
+                          className="dl-ibtn"
+                          title="Cerrar panel"
+                          style={{
+                            width: "22px",
+                            height: "22px",
+                            borderColor: "transparent",
+                          }}
+                          onClick={() => setFocusKey(null)}
+                        >
+                          <Icon ico={ICO.x} className="ico ico-sm" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="dl-panel-title">{focusGroup.title}</div>
+                    <div className="dl-panel-meta">
+                      <span
+                        className="dl-badge"
+                        style={{
+                          color: focusAgg.st.color,
+                          background: focusAgg.st.bg,
+                        }}
+                      >
+                        {focusAgg.st.label}
+                      </span>
+                      <span style={{ fontSize: "11.5px", color: "var(--muted)" }}>
+                        {focusGroup.site}
+                      </span>
+                    </div>
+                    <div className="ell mono dl-panel-path" title={focusGroup.outputDir}>
+                      {focusGroup.outputDir || "—"}
+                    </div>
+                    {titleTwinHint(focusGroup) ? (
+                      <div className="dl-panel-hint">{titleTwinHint(focusGroup)}</div>
+                    ) : null}
+                    <div className="dl-panel-actions">
+                      <button
+                        type="button"
+                        className="dl-gbtn"
+                        style={{ flex: "1 1 auto" }}
+                        disabled={fRunning ? false : !fCanResume}
+                        onClick={() => {
+                          if (fRunning) {
+                            void pauseIds(focusGroup.items.map((i) => i.id));
+                          } else {
+                            void resumeIds(
+                              focusGroup.items
+                                .filter((i) => i.status !== "done")
+                                .map((i) => i.id),
+                            );
+                          }
+                        }}
+                      >
+                        <Icon
+                          ico={fRunning ? ICO.pause : ICO.play}
+                          className="ico ico-sm"
+                        />
+                        {fRunning ? "Detener" : "Reanudar"}
+                      </button>
+                      <button
+                        type="button"
+                        className="dl-gbtn is-icon"
+                        title="Reintentar fallidos"
+                        disabled={!focusGroup.items.some((i) => i.status === "failed")}
+                        onClick={() =>
+                          void retryFailedIds(focusGroup.items.map((i) => i.id))
+                        }
+                      >
+                        <Icon ico={ICO.retry} className="ico ico-sm" />
+                      </button>
+                      <button
+                        type="button"
+                        className="dl-gbtn is-icon"
+                        title="Abrir carpeta"
+                        onClick={() => {
+                          const id = focusGroup.items[0]?.id;
+                          if (id != null) void handleOpenFolder(id);
+                        }}
+                      >
+                        <Icon ico={ICO.folderOpen} className="ico ico-sm" />
+                      </button>
+                      <button
+                        type="button"
+                        className="dl-gbtn is-icon"
+                        title="Agregar más capítulos"
+                        onClick={() => handleAddMore(focusGroup)}
+                      >
+                        <Icon ico={ICO.plus} className="ico ico-sm" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="dl-panel-list">
+                  <div className="dl-panel-list-bar">
+                    <button
+                      type="button"
+                      className={`sites-cb${fAll ? " on" : ""}${fSome && !fAll ? " some" : ""}`}
+                      style={{
+                        ["--ico" as string]:
+                          fAll || fSome ? (fAll ? ICO.check : ICO.dash) : ICO.check,
+                      }}
+                      aria-label="Seleccionar capítulos"
+                      onClick={() => {
+                        if (!focusGroup) return;
+                        setSelC((prev) => {
+                          const next = { ...prev };
+                          if (fAll) {
+                            for (const c of focusGroup.items) delete next[c.id];
+                          } else {
+                            for (const c of focusGroup.items) next[c.id] = true;
+                          }
+                          return next;
+                        });
+                      }}
+                    >
+                      <span className="sites-cb-mk" />
+                    </button>
+                    <span style={{ fontSize: "11.5px", color: "var(--muted)" }}>
+                      {fSelIds.length
+                        ? `${fSelIds.length} de ${focusGroup.items.length} capítulos`
+                        : `${focusGroup.items.length} capítulos · ${focusAgg.done} listos`}
+                    </span>
+                    <div className="dl-toolbar-spacer" />
+                    <button
+                      type="button"
+                      className={`dl-ibtn${fSelIds.length ? "" : " off"}`}
+                      style={{ width: "24px", height: "24px" }}
+                      title="Reanudar seleccionados"
+                      disabled={!fSelIds.length}
+                      onClick={() => void resumeIds(fSelIds)}
+                    >
+                      <Icon ico={ICO.play} className="ico ico-sm" />
+                    </button>
+                    <button
+                      type="button"
+                      className={`dl-ibtn${fSelIds.length ? "" : " off"}`}
+                      style={{ width: "24px", height: "24px" }}
+                      title="Detener seleccionados"
+                      disabled={!fSelIds.length}
+                      onClick={() => void pauseIds(fSelIds)}
+                    >
+                      <Icon ico={ICO.pause} className="ico ico-sm" />
+                    </button>
+                    <button
+                      type="button"
+                      className={`dl-ibtn${fSelIds.length ? "" : " off"}`}
+                      style={{ width: "24px", height: "24px" }}
+                      title="Quitar seleccionados"
+                      disabled={!fSelIds.length}
+                      onClick={() => {
+                        const list = focusGroup.items.filter((c) => selC[c.id]);
+                        askRemoveItems(
+                          list,
+                          list.length === 1
+                            ? "Se quitó de la cola"
+                            : `Se quitaron ${list.length} de la cola`,
+                        );
+                      }}
+                    >
+                      <Icon ico={ICO.trash} className="ico ico-sm" />
+                    </button>
+                  </div>
+                  <div className="dl-panel-list-scroll">
+                    {focusGroup.items.map((c) => {
+                      const st = dlStatusMeta(c.status);
+                      const prog = dlItemPct(c, liveProgress);
+                      const on = !!selC[c.id];
+                      const canStop =
+                        c.status === "running" || c.status === "pending";
+                      const canResume =
+                        c.status === "cancelled" || c.status === "failed";
+                      const meta =
+                        c.status === "running"
+                          ? formatBytesPerSec(
+                              liveProgress.get(c.id)?.bytes_per_sec,
+                            ) || "…"
+                          : prog.pages || "—";
+                      return (
+                        <div
+                          key={c.id}
+                          className={`dl-crow${on ? " sel" : ""}`}
+                          onClick={() => toggleSelC(c.id)}
+                          onContextMenu={(ev) => {
+                            if (!selC[c.id]) setSelC({ [c.id]: true });
+                            openCtx(ev, [c.id]);
+                          }}
+                        >
+                          <button
+                            type="button"
+                            className={`sites-cb${on ? " on" : ""}`}
+                            style={{
+                              ["--ico" as string]: ICO.check,
+                              marginTop: "2px",
+                            }}
+                            aria-label="Seleccionar capítulo"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleSelC(c.id);
+                            }}
+                          >
+                            <span className="sites-cb-mk" />
+                          </button>
+                          <div className="dl-crow-body">
+                            <span className="ell dl-crow-label">
+                              {c.chapter_name || `Capítulo ${c.chapter_index + 1}`}
+                            </span>
+                            <div className="dl-seg" style={{ height: "3px" }}>
+                              <i
+                                style={{
+                                  width: `${prog.pct}%`,
+                                  background: st.bar,
+                                }}
+                              />
+                            </div>
+                            <div className="dl-crow-meta">
+                              <span
+                                className="dl-badge"
+                                style={{
+                                  padding: "1px 6px",
+                                  color: st.color,
+                                  background: st.bg,
+                                }}
+                              >
+                                {st.label}
+                              </span>
+                              <span className="mono" style={{ fontSize: "10.5px", color: "var(--muted)" }}>
+                                {meta}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="dl-cact">
+                            {canStop || canResume ? (
+                              <button
+                                type="button"
+                                className="dl-ibtn"
+                                title={canStop ? "Detener" : "Reanudar"}
+                                style={{
+                                  width: "22px",
+                                  height: "22px",
+                                  borderColor: "transparent",
+                                }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (canStop) void pauseIds([c.id]);
+                                  else void resumeIds([c.id]);
+                                }}
+                              >
+                                <Icon
+                                  ico={canStop ? ICO.pause : ICO.play}
+                                  className="ico ico-sm"
+                                />
+                              </button>
+                            ) : (
+                              <span style={{ width: "22px" }} />
+                            )}
+                            <button
+                              type="button"
+                              className="dl-ibtn"
+                              title="Quitar"
+                              style={{
+                                width: "22px",
+                                height: "22px",
+                                borderColor: "transparent",
+                              }}
+                              disabled={c.status === "running"}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                askRemoveItems([c], "Se quitó de la cola");
+                              }}
+                            >
+                              <Icon ico={ICO.trash} className="ico ico-sm" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {focusGroup && focusAgg && panelMin ? (
+              <button
+                type="button"
+                className="dl-panel-mini"
+                title="Expandir panel"
+                onClick={() => setPanelMin(false)}
+              >
+                <Icon
+                  ico={ICO.layers}
+                  className="ico ico-sm"
+                  style={{ color: "var(--muted)" }}
+                />
+                <span className="ell" style={{ fontSize: "12.5px", fontWeight: 600 }}>
+                  {focusGroup.title}
+                </span>
+                <span
+                  className="dl-badge"
+                  style={{
+                    color: focusAgg.st.color,
+                    background: focusAgg.st.bg,
+                  }}
+                >
+                  {focusAgg.st.label}
+                </span>
+                <span className="ell" style={{ minWidth: 0, fontSize: "11.5px", color: "var(--muted)" }}>
+                  {`${focusGroup.items.length} cap · ${focusAgg.done} listos${
+                    focusAgg.active ? " · 1 descargando" : ""
+                  }${focusAgg.queued ? ` · ${focusAgg.queued} en cola` : ""}`}
+                </span>
+                <div className="dl-toolbar-spacer" />
+                <button
+                  type="button"
+                  className="dl-ibtn"
+                  style={{ width: "24px", height: "24px", borderColor: "transparent" }}
+                  title={fRunning ? "Detener" : "Reanudar"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (fRunning) void pauseIds(focusGroup.items.map((i) => i.id));
+                    else {
+                      void resumeIds(
+                        focusGroup.items
+                          .filter((i) => i.status !== "done")
+                          .map((i) => i.id),
+                      );
+                    }
+                  }}
+                >
+                  <Icon ico={fRunning ? ICO.pause : ICO.play} className="ico ico-sm" />
+                </button>
+                <button
+                  type="button"
+                  className="dl-ibtn"
+                  style={{ width: "24px", height: "24px", borderColor: "transparent" }}
+                  title="Expandir panel"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPanelMin(false);
+                  }}
+                >
+                  <Icon ico={ICO.maximize} className="ico ico-sm" />
+                </button>
+                <button
+                  type="button"
+                  className="dl-ibtn"
+                  style={{ width: "24px", height: "24px", borderColor: "transparent" }}
+                  title="Cerrar panel"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFocusKey(null);
+                  }}
+                >
+                  <Icon ico={ICO.x} className="ico ico-sm" />
+                </button>
+              </button>
+            ) : null}
+
             <footer className="dl-footer">
               <span className="dl-footer-stat">
                 <span className="dl-dot" style={{ background: "var(--accent)" }} />
-                <span>{activeN === 1 ? "1 descarga activa" : `${activeN} descargas activas`}</span>
+                {activeN === 1 ? "1 descarga activa" : `${activeN} descargas activas`}
               </span>
               <span className="dl-footer-muted">{`${queuedN} en cola`}</span>
-              <span className="dl-footer-muted">{`${doneN} completadas`}</span>
+              <span className="ell dl-footer-muted" style={{ flex: "0 1 auto" }}>
+                {`${doneN} completados`}
+              </span>
+              <div className="dl-footer-spacer" />
+              <span className="mono ell dl-footer-conc">{concurrencyLabel}</span>
+              <button
+                type="button"
+                className="dl-lnk"
+                disabled={clearableN === 0}
+                onClick={() => void handleClearDone()}
+              >
+                Limpiar completadas
+              </button>
             </footer>
           </div>
         </div>
       </div>
+
       {dlCtxMenu ? (
         <div className="dl-ctx-layer">
           <div
@@ -1062,16 +1748,7 @@ export function DownloadsView() {
               onClick={() => {
                 const ids = dlCtxMenu.ids;
                 setDlCtxMenu(null);
-                void (async () => {
-                  for (const id of ids) {
-                    const it = items.find((x) => x.id === id);
-                    if (it && (it.status === "cancelled" || it.status === "failed")) {
-                      await api.queueRetry(id);
-                    }
-                  }
-                  await api.queueStart();
-                  await refreshQueue();
-                })();
+                void resumeIds(ids);
               }}
             >
               <Icon ico={ICO.play} className="ico ico-sm" />
@@ -1085,15 +1762,7 @@ export function DownloadsView() {
               onClick={() => {
                 const ids = dlCtxMenu.ids;
                 setDlCtxMenu(null);
-                void (async () => {
-                  for (const id of ids) {
-                    const it = items.find((x) => x.id === id);
-                    if (it && (it.status === "running" || it.status === "pending")) {
-                      await api.queueCancel(id);
-                    }
-                  }
-                  await refreshQueue();
-                })();
+                void pauseIds(ids);
               }}
             >
               <Icon ico={ICO.pause} className="ico ico-sm" />
@@ -1105,39 +1774,93 @@ export function DownloadsView() {
               className="dl-ctx-item"
               disabled={!ctxOpenTarget?.output_dir}
               onClick={() => {
+                const it = ctxOpenTarget;
                 setDlCtxMenu(null);
-                if (ctxOpenTarget) void handleOpenFolder(ctxOpenTarget);
+                if (!it) return;
+                void handleOpenFolder(it.id);
               }}
             >
-              <Icon ico={ICO.folder} className="ico ico-sm" />
+              <Icon ico={ICO.folderOpen} className="ico ico-sm" />
               <span>Abrir ubicación</span>
             </button>
             <button
               type="button"
               role="menuitem"
-              className="dl-ctx-item is-danger is-sep"
+              className="dl-ctx-item is-sep is-danger"
               disabled={!ctxCanDelete}
               onClick={() => {
-                const ids = dlCtxMenu.ids;
+                const list = ctxItems;
                 setDlCtxMenu(null);
-                void (async () => {
-                  const ok = await confirmIfEnabled(
-                    SK.CONFIRM_DELETE,
-                    `¿Eliminar ${ids.length} elemento(s) de la cola?`,
-                  );
-                  if (!ok) return;
-                  for (const id of ids) {
-                    const it = items.find((x) => x.id === id);
-                    if (it?.status === "running") await api.queueCancel(id);
-                    await api.queueRemove(id);
-                  }
-                  await refreshQueue();
-                })();
+                askRemoveItems(
+                  list,
+                  list.length === 1
+                    ? "Se quitó de la cola"
+                    : `Se quitaron ${list.length} de la cola`,
+                );
               }}
             >
               <Icon ico={ICO.trash} className="ico ico-sm" />
               <span>Eliminar</span>
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {removeConfirm ? (
+        <div
+          className="info-modal-backdrop info-modal-backdrop-confirm"
+          role="presentation"
+          onClick={() => setRemoveConfirm(null)}
+        >
+          <div
+            className="info-modal info-modal-confirm"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="dl-remove-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="info-modal-head">
+              <h2 id="dl-remove-title" className="info-modal-title">
+                Quitar de la cola
+              </h2>
+            </header>
+            <div className="info-modal-body">
+              <p className="info-modal-confirm-msg">
+                {removeConfirm.items.length === 1
+                  ? "¿Quitar este ítem de la cola?"
+                  : `¿Quitar ${removeConfirm.items.length} ítems de la cola?`}
+              </p>
+              <label className="action-check" style={{ marginTop: 14, color: "var(--text)" }}>
+                <input
+                  type="checkbox"
+                  checked={removeDeleteFiles}
+                  onChange={(e) => setRemoveDeleteFiles(e.target.checked)}
+                />
+                <span>Borrar también los archivos del disco</span>
+              </label>
+            </div>
+            <footer className="info-modal-foot">
+              <button
+                type="button"
+                className="info-modal-btn"
+                onClick={() => setRemoveConfirm(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="info-modal-btn info-modal-btn-primary"
+                autoFocus
+                onClick={() => {
+                  const { items, label } = removeConfirm;
+                  const deleteFiles = removeDeleteFiles;
+                  setRemoveConfirm(null);
+                  void removeItemsWithUndo(items, label, deleteFiles);
+                }}
+              >
+                Quitar
+              </button>
+            </footer>
           </div>
         </div>
       ) : null}

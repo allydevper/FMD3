@@ -66,6 +66,7 @@ body {
   --danger: #9b2c2c;
   --ok: #2c6e52;
   --ok-bg: #dce8e0;
+  --ok-fg: #fdfbf2;
   --bad: #a8432c;
   --bad-bg: #f2e0da;
   --bad-line: rgba(168, 67, 44, 0.45);
@@ -131,6 +132,7 @@ body {
   --danger: #e07070;
   --ok: #7fc0a0;
   --ok-bg: #16261f;
+  --ok-fg: #0c1a13;
   --bad: #e09480;
   --bad-bg: #2a1815;
   --bad-line: rgba(224, 148, 128, 0.42);

@@ -1520,7 +1520,36 @@ fn find_existing_image(base_no_ext: &Path) -> Option<PathBuf> {
     None
 }
 
-fn chapter_output_dir(
+/// Manga-level output folder (base + optional manga pattern). No chapter segment.
+pub fn manga_output_dir(
+    output_dir: &Path,
+    manga_title: &str,
+    website: &str,
+    authors: &str,
+    artists: &str,
+) -> PathBuf {
+    use crate::rename_patterns::apply_pattern;
+    use crate::settings_keys::{manga_folder_on, manga_folder_pattern};
+    let tokens = [
+        ("%MANGA%", manga_title),
+        ("%Manga%", manga_title),
+        ("%WEBSITE%", website),
+        ("%Website%", website),
+        ("%CHAPTER%", ""),
+        ("%Chapter%", ""),
+        ("%AUTHOR%", authors),
+        ("%ARTIST%", artists),
+        ("%NUMBERING%", ""),
+        ("%ChapterIndex%", ""),
+    ];
+    let mut path = output_dir.to_path_buf();
+    if manga_folder_on() {
+        path = path.join(apply_pattern(&manga_folder_pattern(), &tokens));
+    }
+    path
+}
+
+pub fn chapter_output_dir(
     output_dir: &Path,
     manga_title: &str,
     chapter_index: usize,
@@ -1531,8 +1560,7 @@ fn chapter_output_dir(
 ) -> PathBuf {
     use crate::rename_patterns::{apply_pattern, format_chapter_index, strip_manga_from_chapter};
     use crate::settings_keys::{
-        chapter_folder_on, chapter_folder_pattern, manga_folder_on, manga_folder_pattern,
-        remove_manga_from_chapter,
+        chapter_folder_on, chapter_folder_pattern, remove_manga_from_chapter,
     };
     let idx = format_chapter_index(chapter_index + 1);
     let chapter_display = if remove_manga_from_chapter() {
@@ -1540,7 +1568,6 @@ fn chapter_output_dir(
     } else {
         chapter_name.to_string()
     };
-    // FMD2 tokens are uppercase (%MANGA%, %CHAPTER%, …); keep TitleCase aliases for older MVP settings.
     let tokens = [
         ("%MANGA%", manga_title),
         ("%Manga%", manga_title),
@@ -1553,14 +1580,49 @@ fn chapter_output_dir(
         ("%NUMBERING%", &idx),
         ("%ChapterIndex%", &idx),
     ];
-    let mut path = output_dir.to_path_buf();
-    if manga_folder_on() {
-        path = path.join(apply_pattern(&manga_folder_pattern(), &tokens));
-    }
+    let mut path = manga_output_dir(output_dir, manga_title, website, authors, artists);
     if chapter_folder_on() {
         path = path.join(apply_pattern(&chapter_folder_pattern(), &tokens));
     }
     path
+}
+
+/// Resolve manga + chapter folders with **current** settings (call at enqueue to freeze).
+pub fn resolve_queue_item_paths(
+    output_dir: &Path,
+    manga_title: &str,
+    chapter_index: usize,
+    chapter_name: &str,
+    module_id: &str,
+    manga_url: &str,
+) -> (PathBuf, PathBuf) {
+    let website = if module_id.trim().is_empty() {
+        String::new()
+    } else {
+        crate::lua_host::find_by_id(module_id)
+            .map(|m| m.name)
+            .unwrap_or_default()
+    };
+    let (authors, artists) = if !module_id.trim().is_empty() && !manga_url.trim().is_empty() {
+        crate::catalog::manga_cache_get(module_id, manga_url)
+            .ok()
+            .flatten()
+            .map(|row| (row.authors, row.artists))
+            .unwrap_or_default()
+    } else {
+        (String::new(), String::new())
+    };
+    let manga = manga_output_dir(output_dir, manga_title, &website, &authors, &artists);
+    let chapter = chapter_output_dir(
+        output_dir,
+        manga_title,
+        chapter_index,
+        chapter_name,
+        &website,
+        &authors,
+        &artists,
+    );
+    (manga, chapter)
 }
 
 fn work_basename(file_names: &LuaStringList, work_id: usize, page_count: usize) -> String {
@@ -1608,6 +1670,10 @@ fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {
 }
 
 /// Full FMD2 chapter download pipeline in one Lua/HTTP session.
+///
+/// When `chapter_dir_override` is `Some`, that folder is used as the download
+/// destination (frozen at enqueue). Otherwise paths are resolved from
+/// `output_dir` + current rename settings.
 pub fn download_chapter(
     chapter_url: &str,
     module_id: Option<&str>,
@@ -1616,6 +1682,7 @@ pub fn download_chapter(
     manga_title: &str,
     chapter_index: usize,
     chapter_name: &str,
+    chapter_dir_override: Option<&Path>,
     mut on_progress: Option<&mut dyn FnMut(usize, usize, u64)>,
     cancel: Option<&AtomicBool>,
 ) -> Result<crate::download::DownloadResult, String> {
@@ -1745,15 +1812,19 @@ pub fn download_chapter(
         .and_then(|mu| crate::catalog::manga_cache_get(&meta.id, mu).ok().flatten())
         .map(|row| (row.authors, row.artists))
         .unwrap_or_default();
-    let chapter_dir = chapter_output_dir(
-        output_dir,
-        manga_title,
-        chapter_index,
-        chapter_name,
-        &website_name,
-        &authors,
-        &artists,
-    );
+    let chapter_dir = if let Some(p) = chapter_dir_override.filter(|p| !p.as_os_str().is_empty()) {
+        p.to_path_buf()
+    } else {
+        chapter_output_dir(
+            output_dir,
+            manga_title,
+            chapter_index,
+            chapter_name,
+            &website_name,
+            &authors,
+            &artists,
+        )
+    };
     let max_threads = {
         let mod_lim = module.inner.lock().max_thread_per_task_limit;
         let global = crate::settings_keys::max_threads();

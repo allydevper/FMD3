@@ -18,6 +18,7 @@ pub use registry::{
     refresh as modules_refresh, ModuleMeta,
 };
 pub use runtime::{
-    download_chapter, get_info, get_page_links, get_page_links_warmed, update_list, ChapterInfo,
-    MangaInfoResult, PageLinksResult, UpdateListProgress, UpdateListStats, DOWNLOAD_CANCELLED,
+    chapter_output_dir, download_chapter, get_info, get_page_links, get_page_links_warmed,
+    manga_output_dir, resolve_queue_item_paths, update_list, ChapterInfo, MangaInfoResult,
+    PageLinksResult, UpdateListProgress, UpdateListStats, DOWNLOAD_CANCELLED,
 };

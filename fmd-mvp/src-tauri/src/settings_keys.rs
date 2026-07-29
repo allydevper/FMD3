@@ -23,6 +23,7 @@ pub const DOWNLOAD_VOL_DIGITS: &str = "download.vol_digits";
 pub const DOWNLOAD_CHAP_DIGITS: &str = "download.chap_digits";
 pub const DOWNLOAD_TASK_RETRIES: &str = "download.task_retries";
 pub const DOWNLOAD_PARALLEL_TASKS: &str = "download.parallel_tasks";
+pub const DOWNLOAD_ONE_CHAPTER_PER_MANGA: &str = "download.one_chapter_per_manga";
 pub const DOWNLOAD_REMOVE_MANGA_FROM_CHAPTER: &str = "download.remove_manga_from_chapter";
 pub const DOWNLOAD_PDF_QUALITY: &str = "download.pdf_quality";
 
@@ -111,6 +112,11 @@ pub fn update_list_threads() -> usize {
 
 pub fn parallel_tasks() -> usize {
     usize_setting(DOWNLOAD_PARALLEL_TASKS, 1).clamp(1, 8)
+}
+
+/// When true, at most one chapter of the same manga may be `running` at a time.
+pub fn one_chapter_per_manga() -> bool {
+    bool_setting(DOWNLOAD_ONE_CHAPTER_PER_MANGA, false)
 }
 
 pub fn task_retries() -> usize {

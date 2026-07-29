@@ -194,8 +194,24 @@ export function queueRemove(id: number) {
   return invoke("queue_remove", { id });
 }
 
+/** Delete on-disk chapter folder for a queue item (under output_dir). */
+export function queueDeleteChapterFiles(id: number, website?: string) {
+  return invoke<string>("queue_delete_chapter_files", {
+    id,
+    website: website ?? null,
+  });
+}
+
 export function queueClearFinished() {
   return invoke<number>("queue_clear_finished");
+}
+
+export function downloadedChaptersList(moduleId: string, mangaUrl: string) {
+  return invoke<string[]>("downloaded_chapters_list", { moduleId, mangaUrl });
+}
+
+export function queueActiveChapterLinks(moduleId: string, mangaUrl: string) {
+  return invoke<string[]>("queue_active_chapter_links", { moduleId, mangaUrl });
 }
 
 export function queueReorder(ids: number[]) {
@@ -232,6 +248,28 @@ export function favoritesImportList(json: string) {
 
 export function openExternal(path: string, args?: string) {
   return invoke("shell_open_external", { path, args: args ?? null });
+}
+
+/** Open the frozen manga folder for a queue item (falls back to live resolve). */
+export function queueOpenItemFolder(id: number) {
+  return invoke<string>("queue_open_item_folder", { id });
+}
+
+/** Open the manga work folder (base + rename pattern), not just the download root. */
+export function queueOpenMangaFolder(req: {
+  outputDir: string;
+  mangaTitle: string;
+  website: string;
+  mangaUrl?: string;
+  moduleId?: string;
+}) {
+  return invoke<string>("queue_open_manga_folder", {
+    outputDir: req.outputDir,
+    mangaTitle: req.mangaTitle,
+    website: req.website,
+    mangaUrl: req.mangaUrl ?? null,
+    moduleId: req.moduleId ?? null,
+  });
 }
 
 export function openLogFile() {

@@ -254,6 +254,11 @@ pub struct DownloadChapterInput {
     pub index: usize,
     pub name: String,
     pub link: String,
+    /// When set (e.g. undo), use instead of resolving with current settings.
+    #[serde(default)]
+    pub manga_path: Option<String>,
+    #[serde(default)]
+    pub chapter_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -268,6 +273,9 @@ pub struct QueueAddRequest {
     /// If false, enqueue as pending without starting the worker ("tarea detenida").
     #[serde(default = "default_true")]
     pub start: bool,
+    /// Split-download batch; empty = normal enqueue.
+    #[serde(default)]
+    pub batch_id: String,
 }
 
 fn default_true() -> bool {
@@ -443,15 +451,29 @@ async fn check_favorite_inner(
         }
         let items: Vec<NewQueueItem> = new_chapters
             .iter()
-            .map(|c| NewQueueItem {
-                manga_title: info.title.clone(),
-                root_url: info.root_url.clone(),
-                manga_url: manga_url_for_queue.clone(),
-                module_id: info.module_id.clone(),
-                chapter_index: c.index as i64,
-                chapter_name: c.name.clone(),
-                chapter_link: c.link.clone(),
-                output_dir: output.clone(),
+            .map(|c| {
+                let base = std::path::Path::new(&output);
+                let (manga_path, chapter_path) = crate::lua_host::resolve_queue_item_paths(
+                    base,
+                    &info.title,
+                    c.index as usize,
+                    &c.name,
+                    &info.module_id,
+                    &manga_url_for_queue,
+                );
+                NewQueueItem {
+                    manga_title: info.title.clone(),
+                    root_url: info.root_url.clone(),
+                    manga_url: manga_url_for_queue.clone(),
+                    module_id: info.module_id.clone(),
+                    chapter_index: c.index as i64,
+                    chapter_name: c.name.clone(),
+                    chapter_link: c.link.clone(),
+                    output_dir: output.clone(),
+                    manga_path: manga_path.display().to_string(),
+                    chapter_path: chapter_path.display().to_string(),
+                    batch_id: String::new(),
+                }
             })
             .collect();
         let ids = db::queue_add_many(&db, &items)?;
@@ -497,24 +519,63 @@ pub fn queue_add(
         );
     }
     let _ = db::settings_set(&state.db, "default_output_dir", &req.output_dir);
+    let batch_id = req.batch_id.trim().to_string();
     let items: Vec<NewQueueItem> = req
         .chapters
         .iter()
-        .map(|c| NewQueueItem {
-            manga_title: req.manga_title.clone(),
-            root_url: req.root_url.clone(),
-            manga_url: req.manga_url.clone(),
-            module_id: req.module_id.clone(),
-            chapter_index: c.index as i64,
-            chapter_name: c.name.clone(),
-            chapter_link: c.link.clone(),
-            output_dir: req.output_dir.clone(),
+        .map(|c| {
+            let base = std::path::Path::new(req.output_dir.trim());
+            let frozen_manga = c
+                .manga_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let frozen_chapter = c
+                .chapter_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let (manga_path, chapter_path) = match (frozen_manga, frozen_chapter) {
+                (Some(mp), Some(cp)) => (mp.to_string(), cp.to_string()),
+                _ => {
+                    let (m, ch) = crate::lua_host::resolve_queue_item_paths(
+                        base,
+                        &req.manga_title,
+                        c.index as usize,
+                        &c.name,
+                        &req.module_id,
+                        &req.manga_url,
+                    );
+                    (
+                        frozen_manga
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| m.display().to_string()),
+                        frozen_chapter
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| ch.display().to_string()),
+                    )
+                }
+            };
+            NewQueueItem {
+                manga_title: req.manga_title.clone(),
+                root_url: req.root_url.clone(),
+                manga_url: req.manga_url.clone(),
+                module_id: req.module_id.clone(),
+                chapter_index: c.index as i64,
+                chapter_name: c.name.clone(),
+                chapter_link: c.link.clone(),
+                output_dir: req.output_dir.clone(),
+                manga_path,
+                chapter_path,
+                batch_id: batch_id.clone(),
+            }
         })
         .collect();
     let ids = db::queue_add_many(&state.db, &items)?;
     if crate::settings_keys::sort_on_add() {
         let _ = db::queue_sort_by_title(&state.db);
     }
+    let _ = app.emit("queue-changed", ());
     if req.start {
         queue::ensure_started(&app);
     }
@@ -553,9 +614,180 @@ pub fn queue_remove(state: State<QueueState>, id: i64) -> Result<(), String> {
     db::queue_remove(&state.db, id)
 }
 
+/// Delete the on-disk chapter folder for a queue item (safe path under output_dir).
+/// Does not remove the queue row — call `queue_remove` after.
+#[tauri::command]
+pub fn queue_delete_chapter_files(
+    state: State<QueueState>,
+    id: i64,
+    website: Option<String>,
+) -> Result<String, String> {
+    let item = db::queue_get(&state.db, id)?;
+    let base = std::path::PathBuf::from(item.output_dir.trim());
+    if item.output_dir.trim().is_empty() {
+        return Err("carpeta de salida vacía".into());
+    }
+    let chapter_dir = if !item.chapter_path.trim().is_empty() {
+        std::path::PathBuf::from(item.chapter_path.trim())
+    } else {
+        let site = website
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if item.module_id.trim().is_empty() {
+                    None
+                } else {
+                    crate::lua_host::find_by_id(&item.module_id).map(|m| m.name)
+                }
+            })
+            .unwrap_or_default();
+        let (authors, artists) = if !item.module_id.trim().is_empty()
+            && !item.manga_url.trim().is_empty()
+        {
+            crate::catalog::manga_cache_get(&item.module_id, &item.manga_url)
+                .ok()
+                .flatten()
+                .map(|row| (row.authors, row.artists))
+                .unwrap_or_default()
+        } else {
+            (String::new(), String::new())
+        };
+        crate::lua_host::chapter_output_dir(
+            &base,
+            &item.manga_title,
+            item.chapter_index as usize,
+            &item.chapter_name,
+            &site,
+            &authors,
+            &artists,
+        )
+    };
+    let base_canon = base
+        .canonicalize()
+        .unwrap_or_else(|_| base.clone());
+    // If chapter dir doesn't exist yet, nothing to delete.
+    if !chapter_dir.exists() {
+        return Ok(chapter_dir.display().to_string());
+    }
+    let chap_canon = chapter_dir
+        .canonicalize()
+        .map_err(|e| format!("ruta inválida {}: {e}", chapter_dir.display()))?;
+    if !chap_canon.starts_with(&base_canon) {
+        return Err(format!(
+            "ruta fuera de la carpeta de salida: {}",
+            chap_canon.display()
+        ));
+    }
+    // Never delete the base output root itself.
+    if chap_canon == base_canon {
+        return Err("no se borra la carpeta raíz de descargas".into());
+    }
+    std::fs::remove_dir_all(&chap_canon)
+        .map_err(|e| format!("no se pudo borrar {}: {e}", chap_canon.display()))?;
+    Ok(chap_canon.display().to_string())
+}
+
 #[tauri::command]
 pub fn queue_clear_finished(state: State<QueueState>) -> Result<usize, String> {
     db::queue_clear_finished(&state.db)
+}
+
+/// Open the frozen manga folder for a queue item (fallback: resolve live).
+#[tauri::command]
+pub fn queue_open_item_folder(state: State<QueueState>, id: i64) -> Result<String, String> {
+    let item = db::queue_get(&state.db, id)?;
+    let path = if !item.manga_path.trim().is_empty() {
+        std::path::PathBuf::from(item.manga_path.trim())
+    } else {
+        let base = item.output_dir.trim();
+        let title = item.manga_title.trim();
+        if base.is_empty() {
+            return Err("carpeta de salida vacía".into());
+        }
+        if title.is_empty() {
+            return Err("título vacío".into());
+        }
+        let site = if item.module_id.trim().is_empty() {
+            String::new()
+        } else {
+            crate::lua_host::find_by_id(&item.module_id)
+                .map(|m| m.name)
+                .unwrap_or_default()
+        };
+        let (authors, artists) = if !item.module_id.trim().is_empty()
+            && !item.manga_url.trim().is_empty()
+        {
+            crate::catalog::manga_cache_get(&item.module_id, &item.manga_url)
+                .ok()
+                .flatten()
+                .map(|row| (row.authors, row.artists))
+                .unwrap_or_default()
+        } else {
+            (String::new(), String::new())
+        };
+        crate::lua_host::manga_output_dir(
+            std::path::Path::new(base),
+            title,
+            &site,
+            &authors,
+            &artists,
+        )
+    };
+    if !path.exists() {
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("no se pudo crear {}: {e}", path.display()))?;
+    }
+    let path_str = path.display().to_string();
+    shell_open_external(path_str.clone(), None)?;
+    Ok(path_str)
+}
+
+/// Resolve and open the manga work folder (base + manga pattern), not just `output_dir`.
+/// Prefer [`queue_open_item_folder`] when a queue id is available (uses frozen path).
+#[tauri::command]
+pub fn queue_open_manga_folder(
+    output_dir: String,
+    manga_title: String,
+    website: String,
+    manga_url: Option<String>,
+    module_id: Option<String>,
+) -> Result<String, String> {
+    let base = output_dir.trim();
+    let title = manga_title.trim();
+    if base.is_empty() {
+        return Err("carpeta de salida vacía".into());
+    }
+    if title.is_empty() {
+        return Err("título vacío".into());
+    }
+    let site = website.trim();
+    let (authors, artists) = match (
+        module_id.as_deref().filter(|s| !s.trim().is_empty()),
+        manga_url.as_deref().filter(|s| !s.trim().is_empty()),
+    ) {
+        (Some(mid), Some(mu)) => crate::catalog::manga_cache_get(mid, mu)
+            .ok()
+            .flatten()
+            .map(|row| (row.authors, row.artists))
+            .unwrap_or_default(),
+        _ => (String::new(), String::new()),
+    };
+    let path = crate::lua_host::manga_output_dir(
+        std::path::Path::new(base),
+        title,
+        site,
+        &authors,
+        &artists,
+    );
+    if !path.exists() {
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("no se pudo crear {}: {e}", path.display()))?;
+    }
+    let path_str = path.display().to_string();
+    shell_open_external(path_str.clone(), None)?;
+    Ok(path_str)
 }
 
 /// Atajo: encola y arranca (misma ruta que la cola).
@@ -602,6 +834,24 @@ pub fn favorites_import_list(
         }
     }
     Ok(n)
+}
+
+#[tauri::command]
+pub fn downloaded_chapters_list(
+    state: State<QueueState>,
+    module_id: String,
+    manga_url: String,
+) -> Result<Vec<String>, String> {
+    db::downloaded_chapters_list(&state.db, &module_id, &manga_url)
+}
+
+#[tauri::command]
+pub fn queue_active_chapter_links(
+    state: State<QueueState>,
+    module_id: String,
+    manga_url: String,
+) -> Result<Vec<String>, String> {
+    db::queue_active_chapter_links(&state.db, &module_id, &manga_url)
 }
 
 fn log_file_path(db: &db::Db) -> Result<std::path::PathBuf, String> {

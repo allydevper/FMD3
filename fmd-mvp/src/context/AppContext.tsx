@@ -28,6 +28,11 @@ export type StartCatalogJobArgs = {
   moduleId?: string | null;
 };
 
+export type PendingMangaOpen = {
+  mangaUrl: string;
+  moduleId: string | null;
+};
+
 type AppContextValue = {
   activeNav: NavId;
   setActiveNav: (nav: NavId) => void;
@@ -68,6 +73,9 @@ type AppContextValue = {
   lastCatalogJobModuleIds: string[];
   startCatalogJob: (args: StartCatalogJobArgs) => Promise<void>;
   cancelCatalogJob: () => Promise<void>;
+  /** Deep-link from Downloads «Agregar más» → Info load. */
+  pendingMangaOpen: PendingMangaOpen | null;
+  setPendingMangaOpen: (v: PendingMangaOpen | null) => void;
 };
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -118,6 +126,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [catalogJob, setCatalogJob] = useState<CatalogJobState | null>(null);
   const [catalogJobDoneSeq, setCatalogJobDoneSeq] = useState(0);
   const [lastCatalogJobModuleIds, setLastCatalogJobModuleIds] = useState<string[]>([]);
+  const [pendingMangaOpen, setPendingMangaOpen] = useState<PendingMangaOpen | null>(null);
   const catalogJobRunningRef = useRef(false);
   const catalogCancelRequestedRef = useRef(false);
   const catalogJobRef = useRef<CatalogJobState | null>(null);
@@ -552,6 +561,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     lastCatalogJobModuleIds,
     startCatalogJob,
     cancelCatalogJob,
+    pendingMangaOpen,
+    setPendingMangaOpen,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

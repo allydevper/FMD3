@@ -33,7 +33,7 @@ import {
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
-import { catalogLinkKey, maybeFillHost, normalizeMangaUrl, resolveCover, urlsReferToSameManga } from "../../utils/url";
+import { catalogLinkKey, maybeFillHost, mangaPathKey, normalizeMangaUrl, resolveCover, urlsReferToSameManga } from "../../utils/url";
 import coverDefaultUrl from "../../assets/cover-default.svg";
 import chaptersEmptyUrl from "../../assets/chapters-empty.png";
 import type {
@@ -110,6 +110,12 @@ function isNaTitle(title: string | undefined | null): boolean {
   return !t || t.toUpperCase() === "N/A";
 }
 
+function chapterMarkKey(link: string): string {
+  const raw = (link || "").trim();
+  if (!raw) return "";
+  return catalogLinkKey(raw) || mangaPathKey(raw) || raw.toLowerCase();
+}
+
 function inaccessibleInfoMessage(moduleName: string): string {
   const mod = moduleName.trim() || "módulo";
   return `✗ Info inaccesible (${mod}). Título N/A — ¿URL o scrape?`;
@@ -141,6 +147,8 @@ export function InfoView() {
     catalogJobDoneSeq,
     lastCatalogJobModuleIds,
     startCatalogJob,
+    pendingMangaOpen,
+    setPendingMangaOpen,
   } = useApp();
 
   /* ---------------------------------------------------------------------
@@ -293,6 +301,8 @@ export function InfoView() {
   const [chaptersLoading, setChaptersLoading] = useState(false);
   const [chaptersResetSeq, setChaptersResetSeq] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
+  const [chDownloaded, setChDownloaded] = useState<Set<string>>(() => new Set());
+  const [chQueued, setChQueued] = useState<Set<string>>(() => new Set());
   const [infoPanelOpen, setInfoPanelOpen] = useState(false);
   const [infoSidebarCollapsed, setInfoSidebarCollapsed] = useState(false);
   const [sourceToolsOpen, setSourceToolsOpen] = useState(false);
@@ -306,6 +316,10 @@ export function InfoView() {
   /** Stable catalog row key for the title open in the sidebar (`module:link`). */
   const sidebarCatalogRowKeyRef = useRef("");
   const [taskStopped, setTaskStopped] = useState(false);
+  const [splitPrompt, setSplitPrompt] = useState<{
+    chapters: { index: number; name: string; link: string }[];
+    count: number;
+  } | null>(null);
   const [loadCovers, setLoadCovers] = useState(true);
 
   const [sidebarRows, setSidebarRows] = useState<SidebarRows>(EMPTY_SIDEBAR_ROWS);
@@ -417,6 +431,46 @@ export function InfoView() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const refreshChapterMarks = useCallback(async () => {
+    const m = mangaRef.current;
+    const url = (mangaUrl || "").trim();
+    const mid = (m?.module_id || sidebarModuleIdRef.current || "").trim();
+    if (!m || !url || !mid) {
+      setChDownloaded(new Set());
+      setChQueued(new Set());
+      return;
+    }
+    try {
+      const [done, active] = await Promise.all([
+        api.downloadedChaptersList(mid, url),
+        api.queueActiveChapterLinks(mid, url),
+      ]);
+      setChDownloaded(new Set(done.map(chapterMarkKey).filter(Boolean)));
+      setChQueued(new Set(active.map(chapterMarkKey).filter(Boolean)));
+    } catch {
+      /* ignore mark refresh errors */
+    }
+  }, [mangaUrl]);
+
+  useEffect(() => {
+    void refreshChapterMarks();
+  }, [manga, mangaUrl, refreshChapterMarks]);
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    let cancelled = false;
+    void api.onQueueChanged(() => {
+      void refreshChapterMarks();
+    }).then((u) => {
+      if (cancelled) u();
+      else un = u;
+    });
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, [refreshChapterMarks]);
 
   const enabledModules = useMemo(
     () => modules.filter((m) => enabledModuleIds.has(m.id)),
@@ -1554,6 +1608,16 @@ export function InfoView() {
     }
   }
 
+  useEffect(() => {
+    if (activeNav !== "info" || !pendingMangaOpen) return;
+    const { mangaUrl, moduleId } = pendingMangaOpen;
+    setPendingMangaOpen(null);
+    setUrlInput(mangaUrl);
+    if (moduleId) setSelectedModuleId(moduleId);
+    void loadMangaInfo(mangaUrl, moduleId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeNav, pendingMangaOpen]);
+
   async function openCatalogEntry(e: CatalogEntry) {
     const moduleId = e.module_id || selectedModuleId || undefined;
     const mod =
@@ -2151,16 +2215,48 @@ export function InfoView() {
       log("Selecciona al menos 2 capítulos para dividir.", "err");
       return;
     }
+    setSplitPrompt({
+      chapters: chapters.map((c) => ({
+        index: c.index,
+        name: c.name,
+        link: c.link,
+      })),
+      count: 2,
+    });
+  }
+
+  async function confirmSplitDownload() {
+    if (!manga || !splitPrompt) return;
+    const chapters = splitPrompt.chapters;
+    let n = Math.floor(splitPrompt.count);
+    if (!Number.isFinite(n) || n < 2) {
+      log("La cuenta de descarga debe ser al menos 2.", "err");
+      return;
+    }
+    n = Math.min(n, chapters.length);
     const dir = await ensureOutputDir();
     if (!dir) {
       log("Elige una carpeta de salida.", "err");
       return;
     }
-    const mid = Math.ceil(chapters.length / 2);
-    const batches = [chapters.slice(0, mid), chapters.slice(mid)];
+    // FMD2: base = len div N, remainder get +1 (first rem batches).
+    const base = Math.floor(chapters.length / n);
+    const rem = chapters.length % n;
+    const batches: (typeof chapters)[] = [];
+    let offset = 0;
+    for (let i = 0; i < n; i++) {
+      const size = base + (i < rem ? 1 : 0);
+      batches.push(chapters.slice(offset, offset + size));
+      offset += size;
+    }
+    const stamp = Date.now().toString(36);
+    setSplitPrompt(null);
     try {
       let total = 0;
-      for (const batch of batches) {
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        if (!batch.length) continue;
+        const batchId = `split-${stamp}-${i + 1}of${batches.length}`;
         total += await api.queueAdd({
           manga_title: manga.title || "manga",
           root_url: manga.root_url,
@@ -2169,9 +2265,17 @@ export function InfoView() {
           output_dir: dir,
           chapters: batch,
           start: !taskStopped,
+          batch_id: batchId,
         });
       }
-      log(`Dividido en ${batches.length} tareas (${total} caps).`, "ok");
+      const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
+      if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
+      log(
+        taskStopped
+          ? `Dividido en ${batches.length} tareas (${total} caps, detenidos).`
+          : `Dividido en ${batches.length} tareas (${total} caps).`,
+        "ok",
+      );
     } catch (e) {
       log(String(e), "err");
     }
@@ -2420,12 +2524,19 @@ export function InfoView() {
         getKey={(c) => c.index}
         renderItem={(c, _i, style: CSSProperties) => {
           const on = selected.has(c.index);
+          const mark = chapterMarkKey(c.link);
+          const isDl = mark ? chDownloaded.has(mark) : false;
+          const isQ = mark ? chQueued.has(mark) : false;
+          const markCls = isDl ? " is-downloaded" : isQ ? " is-queued" : "";
           return (
             <button
               type="button"
-              className={`ch-card${on ? " is-on" : ""}`}
+              className={`ch-card${on ? " is-on" : ""}${markCls}`}
               style={style}
               onClick={() => toggleChapterSelected(c.index)}
+              title={
+                isDl ? "Descargado" : isQ ? "En cola / descargando" : undefined
+              }
             >
               <div className="ch-box">
                 {on && <Icon name="check" className="ico ico-sm" style={{ color: "var(--on-accent)" }} />}
@@ -3191,7 +3302,7 @@ export function InfoView() {
               className="btn-split"
               id="btn-split"
               disabled={!manga || selected.size < 2}
-              title="Partir la selección en dos tareas de cola"
+              title="Partir la selección en N tareas de cola"
               onClick={() => void handleSplitDownload()}
             >
               <Icon name="split" className="ico ico-sm" /> Dividir descarga
@@ -3464,6 +3575,128 @@ export function InfoView() {
                 ) : null}
               </button>
             ))}
+          </div>
+        </div>
+      ) : null}
+
+      {splitPrompt ? (
+        <div
+          className="info-modal-backdrop info-modal-backdrop-confirm"
+          role="presentation"
+          onClick={() => setSplitPrompt(null)}
+        >
+          <div
+            className="info-modal info-modal-confirm info-split-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="split-dl-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="info-split-head">
+              <h2 id="split-dl-title" className="info-modal-title">
+                Dividir en varias descargas
+              </h2>
+              <p className="info-split-sub">
+                {splitPrompt.chapters.length} capítulos seleccionados
+                {manga?.title ? ` de ${manga.title}` : ""}
+              </p>
+            </header>
+            <div className="info-modal-body info-split-body">
+              <div className="info-split-row">
+                <label className="info-split-label" htmlFor="split-dl-count">
+                  Número de tareas
+                </label>
+                <div className="info-split-stepper st-num-wrap">
+                  <div className="st-stepper">
+                    <button
+                      type="button"
+                      className="st-stepper-btn"
+                      aria-label="Menos"
+                      disabled={splitPrompt.count <= 2}
+                      onClick={() =>
+                        setSplitPrompt((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                count: Math.max(2, prev.count - 1),
+                              }
+                            : prev,
+                        )
+                      }
+                    >
+                      −
+                    </button>
+                    <input
+                      id="split-dl-count"
+                      className="st-stepper-input"
+                      type="number"
+                      min={2}
+                      max={splitPrompt.chapters.length}
+                      value={splitPrompt.count}
+                      autoFocus
+                      autoComplete="off"
+                      onChange={(e) => {
+                        const max = splitPrompt.chapters.length;
+                        const raw = Number(e.target.value);
+                        const v = Number.isFinite(raw)
+                          ? Math.min(max, Math.max(2, Math.floor(raw)))
+                          : 2;
+                        setSplitPrompt((prev) =>
+                          prev ? { ...prev, count: v } : prev,
+                        );
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void confirmSplitDownload();
+                        if (e.key === "Escape") setSplitPrompt(null);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="st-stepper-btn"
+                      aria-label="Más"
+                      disabled={
+                        splitPrompt.count >= splitPrompt.chapters.length
+                      }
+                      onClick={() =>
+                        setSplitPrompt((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                count: Math.min(
+                                  prev.chapters.length,
+                                  prev.count + 1,
+                                ),
+                              }
+                            : prev,
+                        )
+                      }
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <p className="info-split-hint">
+                Cada tarea se descarga por separado y aparece como un grupo
+                propio en Descargas.
+              </p>
+            </div>
+            <footer className="info-modal-foot">
+              <button
+                type="button"
+                className="info-modal-btn"
+                onClick={() => setSplitPrompt(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="info-modal-btn info-modal-btn-primary"
+                onClick={() => void confirmSplitDownload()}
+              >
+                Dividir
+              </button>
+            </footer>
           </div>
         </div>
       ) : null}

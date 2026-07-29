@@ -63,6 +63,7 @@ type OptionsFormState = {
   proxyPass: string;
   threads: number;
   parallelTasks: number;
+  oneChapterPerManga: boolean;
   taskRetries: number;
   httpTimeout: number;
   httpRetries: number;
@@ -135,6 +136,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   proxyPass: "",
   threads: 1,
   parallelTasks: 1,
+  oneChapterPerManga: false,
   taskRetries: 1,
   httpTimeout: 30,
   httpRetries: 5,
@@ -189,7 +191,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   removeMangaFromChapter: false,
   sortOnAdd: false,
   dlToolbar: true,
-  dlClearBtn: false,
+  dlClearBtn: true,
   dlLeftBar: true,
   checkUpdateStart: true,
   updateListNoInfo: false,
@@ -855,6 +857,7 @@ export function OptionsView() {
 
     const maxThreads = Number((await get(SK.MAX_THREADS)) ?? "1") || 1;
     const parallelTasks = Number((await get(SK.PARALLEL_TASKS)) ?? "1") || 1;
+    const oneChapterPerManga = parseB(await get(SK.ONE_CHAPTER_PER_MANGA), false);
     const taskRetries = Number((await get(SK.TASK_RETRIES)) ?? "1") || 0;
     const httpTimeout = Number((await get(SK.TIMEOUT)) ?? "30") || 30;
     const httpRetries = Number((await get(SK.HTTP_RETRIES)) ?? "5") || 0;
@@ -918,7 +921,7 @@ export function OptionsView() {
     const removeMangaFromChapter = parseB(await get(SK.REMOVE_MANGA_FROM_CHAPTER), false);
     const sortOnAdd = parseB(await get(SK.SORT_ON_ADD), false);
     const dlToolbar = parseB(await get(SK.UI_DL_TOOLBAR), true);
-    const dlClearBtn = parseB(await get(SK.UI_DL_CLEAR_BTN), false);
+    const dlClearBtn = parseB(await get(SK.UI_DL_CLEAR_BTN), true);
     const dlLeftBar = parseB(await get(SK.UI_DL_LEFT_BAR), true);
     const checkUpdateStart = parseB(await get(SK.CHECK_UPDATE_START), true);
     const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
@@ -939,6 +942,7 @@ export function OptionsView() {
       proxyPass: parsed.pass,
       threads: maxThreads,
       parallelTasks,
+      oneChapterPerManga,
       taskRetries,
       httpTimeout,
       httpRetries,
@@ -1023,6 +1027,7 @@ export function OptionsView() {
     await api.settingsSet(SK.MAX_THREADS, String(s.threads));
     await api.settingsSet(SK.UPDATE_LIST_THREADS, String(s.updateListThreads));
     await api.settingsSet(SK.PARALLEL_TASKS, String(s.parallelTasks));
+    await api.settingsSet(SK.ONE_CHAPTER_PER_MANGA, boolStr(s.oneChapterPerManga));
     await api.settingsSet(SK.TASK_RETRIES, String(s.taskRetries));
     await api.settingsSet(SK.TIMEOUT, String(s.httpTimeout));
     await api.settingsSet(SK.HTTP_RETRIES, String(s.httpRetries));
@@ -1621,7 +1626,7 @@ export function OptionsView() {
                     </div>
                     <div className="st-card">
                       <SwitchRow id="opt-dl-toolbar" label="Mostrar barra de descargas" desc="Toolbar superior en la cola" checked={s.dlToolbar} onChange={(v) => update("dlToolbar", v)} />
-                      <SwitchRow id="opt-dl-clear" label="Botón borrar completadas" desc="Mostrar «Borrar todas las tareas completadas»" checked={s.dlClearBtn} onChange={(v) => update("dlClearBtn", v)} />
+                      <SwitchRow id="opt-dl-clear" label="Botón borrar completadas" desc="Preferencia legacy; «Limpiar completadas» en Descargas siempre está visible en el pie" checked={s.dlClearBtn} onChange={(v) => update("dlClearBtn", v)} />
                       <SwitchRow id="opt-dl-left" label="Barra izquierda de descargas" desc="Controles adicionales a la izquierda" checked={s.dlLeftBar} onChange={(v) => update("dlLeftBar", v)} />
                       <SwitchRow id="opt-load-covers" label="Cargar portada del manga" desc="Descarga y muestra la imagen de portada" checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
                       <div className="st-row st-row-actions">
@@ -1676,6 +1681,13 @@ export function OptionsView() {
                     </div>
                     <div className="st-card">
                       <BoundStepperRow label="Tareas en paralelo" desc="Mangas descargando a la vez" value={s.parallelTasks} min={1} max={8} onChange={(v) => update("parallelTasks", v)} />
+                      <SwitchRow
+                        id="opt-one-chapter-per-manga"
+                        label="Un capítulo a la vez por obra"
+                        desc="No inicia otro capítulo del mismo manga mientras uno está en progreso; otras obras sí usan los slots libres"
+                        checked={s.oneChapterPerManga}
+                        onChange={(v) => update("oneChapterPerManga", v)}
+                      />
                       <OptRow label="Archivos por tarea" desc="Hilos de descarga dentro de un capítulo">
                         <div className="st-num-wrap">
                           <Stepper

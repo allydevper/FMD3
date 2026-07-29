@@ -260,6 +260,7 @@ export const SK = {
   CHAP_DIGITS: "download.chap_digits",
   TASK_RETRIES: "download.task_retries",
   PARALLEL_TASKS: "download.parallel_tasks",
+  ONE_CHAPTER_PER_MANGA: "download.one_chapter_per_manga",
   OUTPUT_DIR: "default_output_dir",
   MODULES_ENABLED: "modules.enabled",
   CATALOG_DB_URL: "catalog.db_url",

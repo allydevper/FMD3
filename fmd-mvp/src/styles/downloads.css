@@ -1,9 +1,10 @@
-﻿/* ---- Descargas (OmniManga) ---- */
+﻿/* ---- Descargas (OmniManga v2) ---- */
 .dl-shell {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .dl-header {
@@ -73,23 +74,24 @@
   align-items: center;
   gap: 8px;
   height: 34px;
-  padding: 0 15px;
+  padding: 0 14px;
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--on-accent);
-  background: var(--accent);
+  color: var(--ok-fg, var(--on-accent));
+  background: var(--ok);
   border: none;
   cursor: pointer;
   font-family: inherit;
   white-space: nowrap;
 }
 
-.dl-btn-p:hover {
-  background: var(--accent-hover);
+.dl-btn-p:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 
 .dl-btn-p:disabled,
-.dl-btn-ghost:disabled {
+.dl-btn-ghost:disabled,
+.dl-gbtn:disabled {
   opacity: 0.4;
   cursor: default;
   pointer-events: none;
@@ -98,10 +100,11 @@
 .dl-btn-ghost {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
   height: 34px;
-  padding: 0 15px;
-  font-size: 12.5px;
+  padding: 0 14px;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--text);
   background: transparent;
@@ -209,6 +212,8 @@
 .dl-sel-actions {
   display: flex;
   gap: 3px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .dl-sel-actions {
@@ -217,9 +222,11 @@
 
 .dl-toolbar-spacer {
   flex: 1 1 auto;
+  min-width: 8px;
 }
 
 .dl-sel-label {
+  flex: 0 1 auto;
   font-size: 11.5px;
   color: var(--muted);
 }
@@ -278,15 +285,15 @@
 .dl-scroll {
   flex: 1 1 auto;
   overflow: auto;
-  min-height: 0;
+  min-height: 104px;
 }
 
 .dl-grid {
   display: grid;
-  grid-template-columns: 26px minmax(210px, 1.7fr) 108px 152px 84px 112px minmax(150px, 1fr) 88px 60px;
+  grid-template-columns: 26px minmax(200px, 1.6fr) 112px minmax(140px, 176px) 84px minmax(88px, 110px) 60px;
   align-items: center;
-  column-gap: 14px;
-  min-width: 1120px;
+  column-gap: 13px;
+  min-width: 760px;
 }
 
 .dl-head {
@@ -327,13 +334,14 @@
   width: 10px;
   height: 10px;
   flex: 0 0 10px;
-  opacity: 0;
 }
 
 .dl-row {
   padding: 0 16px;
   border-top: 1px solid var(--row-line);
   box-sizing: border-box;
+  cursor: pointer;
+  height: 54px;
 }
 
 .dl-row:hover {
@@ -344,15 +352,26 @@
   background: var(--sel);
 }
 
+.dl-row.focus {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .dl-cell-title {
   min-width: 0;
   display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.dl-cell-title-text {
+  min-width: 0;
+  display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 
 .dl-manga {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
@@ -360,6 +379,15 @@
 .dl-chapter {
   font-size: 11px;
   color: var(--muted);
+}
+
+.dl-tag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
 }
 
 .dl-badge {
@@ -379,19 +407,17 @@
   min-width: 0;
 }
 
-.dl-bar {
-  position: relative;
+.dl-seg {
+  display: flex;
   height: 5px;
   background: var(--track);
   overflow: hidden;
 }
 
-.dl-bar i {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
+.dl-seg i {
   display: block;
+  height: 100%;
+  flex: 0 0 auto;
 }
 
 .dl-prog-meta {
@@ -408,15 +434,21 @@
   text-align: right;
 }
 
+.dl-site-added {
+  min-width: 0;
+}
+
 .dl-site {
+  display: block;
   font-size: 11.5px;
   color: var(--muted);
 }
 
-.dl-path,
 .dl-added {
-  font-size: 11px;
+  display: block;
+  font-size: 10.5px;
   color: var(--muted);
+  opacity: 0.85;
 }
 
 .dl-act {
@@ -448,77 +480,274 @@
   margin-top: 4px;
 }
 
-.dl-footer {
-  flex: 0 0 auto;
+/* Focus panel */
+.dl-panel {
+  flex: 0 0 258px;
+  min-height: 148px;
+  max-height: 38%;
+  overflow: hidden;
   border-top: 1px solid var(--border);
   background: var(--bg);
+  display: flex;
+}
+
+.dl-panel-side {
+  flex: 0 0 268px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+}
+
+.dl-panel-side-inner {
+  flex: 1 1 auto;
+  padding: 13px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.dl-panel-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dl-panel-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text);
+  text-wrap: pretty;
+}
+
+.dl-panel-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.dl-panel-path {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.dl-panel-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
+.dl-panel-actions {
+  display: flex;
+  gap: 5px;
+  margin-top: auto;
+  min-width: 0;
+  padding-top: 10px;
+}
+
+.dl-gbtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  cursor: pointer;
+  background: transparent;
+  font-family: inherit;
+}
+
+.dl-gbtn:hover:not(:disabled) {
+  background: var(--hover-tint);
+}
+
+.dl-gbtn.is-icon {
+  flex: 0 0 30px;
+  padding: 0;
+}
+
+.dl-panel-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dl-panel-list-bar {
+  flex: 0 0 auto;
   padding: 10px 16px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 9px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.dl-panel-list-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 96px;
+}
+
+.dl-crow {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr) 50px;
+  align-items: start;
+  column-gap: 10px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--row-line);
+  cursor: pointer;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  width: 100%;
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+}
+
+.dl-crow:hover {
+  background: var(--hover-tint);
+}
+
+.dl-crow.sel {
+  background: var(--sel);
+}
+
+.dl-crow-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dl-crow-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.dl-crow-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dl-cact {
+  opacity: 0;
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+}
+
+.dl-crow:hover .dl-cact {
+  opacity: 1;
+}
+
+.dl-panel-mini {
+  flex: 0 0 auto;
+  height: 38px;
+  padding: 0 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  cursor: pointer;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  width: 100%;
+  font-family: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.dl-panel-mini:hover {
+  background: var(--hover-tint);
+}
+
+.dl-footer {
+  flex: 0 0 auto;
+  height: 38px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 0 16px;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 14px;
+  overflow: hidden;
 }
 
 .dl-footer-stat {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 7px;
   font-size: 12px;
   color: var(--text);
+  white-space: nowrap;
 }
 
 .dl-footer-muted {
+  flex: 0 0 auto;
   font-size: 12px;
   color: var(--muted);
+  white-space: nowrap;
 }
 
-.dl-group {
-  display: flex;
-  flex-direction: column;
-}
-
-.dl-group-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  margin: 0;
-  padding: 7px 12px 7px 10px;
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
-  background: color-mix(in srgb, var(--hover-tint) 65%, transparent);
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.dl-group-head:hover {
-  background: var(--hover-tint);
-}
-
-.dl-group-chevron {
-  flex: 0 0 auto;
-  transition: transform 0.12s ease;
-  transform: rotate(0deg);
-  color: var(--muted);
-}
-
-.dl-group-head.is-collapsed .dl-group-chevron {
-  transform: rotate(-90deg);
-}
-
-.dl-group-title {
+.dl-footer-spacer {
   flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12.5px;
-  font-weight: 600;
+  min-width: 6px;
 }
 
-.dl-group-meta {
-  flex: 0 0 auto;
+.dl-footer-conc {
+  flex: 0 1 auto;
   font-size: 11px;
   color: var(--muted);
+}
+
+.dl-lnk {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  border: none;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.dl-lnk:hover:not(:disabled) {
+  color: var(--text);
+  border-bottom-color: var(--border-2);
+}
+
+.dl-lnk:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .dl-ctx-layer {
@@ -585,5 +814,3 @@
   flex: 0 0 auto;
   color: currentColor;
 }
-
-/* Favoritos â€” OmniManga layout */
