@@ -125,12 +125,76 @@
 }
 
 .dl-tree {
+  position: relative;
   flex: 0 0 218px;
   display: flex;
   flex-direction: column;
-  padding: 12px 0;
   border-right: 1px solid var(--border);
+  overflow: hidden;
+  transition: flex-basis 0.18s ease, max-width 0.18s ease, width 0.18s ease;
+}
+
+.dl-tree.is-collapsed {
+  flex-basis: 16px;
+  width: 16px;
+  max-width: 16px;
+  border-right-color: var(--border);
+}
+
+.dl-tree-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  padding: 12px 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  opacity: 1;
+  transition: opacity 0.18s ease;
+}
+
+.dl-tree.is-collapsed .dl-tree-body {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dl-tree-notch {
+  position: absolute;
+  right: 0;
+  bottom: 10px;
+  top: auto;
+  z-index: 6;
+  width: 16px;
+  height: 48px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-radius: 6px 0 0 6px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.92;
+}
+
+.dl-tree-notch:hover {
+  opacity: 1;
+  color: var(--text);
+  background: var(--hover-tint);
+}
+
+.dl-tree-notch-ico {
+  transform: rotate(90deg);
+  transition: transform 0.22s ease;
+}
+
+.dl-tree-notch-ico.is-collapsed {
+  transform: rotate(-90deg);
 }
 
 .dl-trow {

@@ -113,9 +113,6 @@ type OptionsFormState = {
   pdfQuality: number;
   removeMangaFromChapter: boolean;
   sortOnAdd: boolean;
-  dlToolbar: boolean;
-  dlClearBtn: boolean;
-  dlLeftBar: boolean;
   checkUpdateStart: boolean;
   updateListNoInfo: boolean;
   updateListFullScan: boolean;
@@ -182,9 +179,6 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   pdfQuality: 85,
   removeMangaFromChapter: false,
   sortOnAdd: false,
-  dlToolbar: true,
-  dlClearBtn: true,
-  dlLeftBar: true,
   checkUpdateStart: true,
   updateListNoInfo: false,
   updateListFullScan: false,
@@ -903,9 +897,6 @@ export function OptionsView() {
     const pdfQuality = Number((await get(SK.PDF_QUALITY)) ?? "85") || 85;
     const removeMangaFromChapter = parseB(await get(SK.REMOVE_MANGA_FROM_CHAPTER), false);
     const sortOnAdd = parseB(await get(SK.SORT_ON_ADD), false);
-    const dlToolbar = parseB(await get(SK.UI_DL_TOOLBAR), true);
-    const dlClearBtn = parseB(await get(SK.UI_DL_CLEAR_BTN), true);
-    const dlLeftBar = parseB(await get(SK.UI_DL_LEFT_BAR), true);
     const checkUpdateStart = parseB(await get(SK.CHECK_UPDATE_START), true);
     const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
     const updateListFullScan = parseB(await get(SK.UPDATE_LIST_FULL_SCAN), false);
@@ -975,9 +966,6 @@ export function OptionsView() {
       pdfQuality,
       removeMangaFromChapter,
       sortOnAdd,
-      dlToolbar,
-      dlClearBtn,
-      dlLeftBar,
       checkUpdateStart,
       updateListNoInfo,
       updateListFullScan,
@@ -1052,9 +1040,6 @@ export function OptionsView() {
     await api.settingsSet(SK.JPEG_QUALITY, String(s.jpegQuality));
     await api.settingsSet(SK.REMOVE_MANGA_FROM_CHAPTER, boolStr(s.removeMangaFromChapter));
     await api.settingsSet(SK.SORT_ON_ADD, boolStr(s.sortOnAdd));
-    await api.settingsSet(SK.UI_DL_TOOLBAR, boolStr(s.dlToolbar));
-    await api.settingsSet(SK.UI_DL_CLEAR_BTN, boolStr(s.dlClearBtn));
-    await api.settingsSet(SK.UI_DL_LEFT_BAR, boolStr(s.dlLeftBar));
     await api.settingsSet(SK.CHECK_UPDATE_START, boolStr(s.checkUpdateStart));
     await api.settingsSet(SK.UPDATE_LIST_NO_INFO, boolStr(s.updateListNoInfo));
     await api.settingsSet(SK.UPDATE_LIST_FULL_SCAN, boolStr(s.updateListFullScan));
@@ -1542,9 +1527,6 @@ export function OptionsView() {
                       <h2>Interfaz</h2>
                     </div>
                     <div className="st-card">
-                      <SwitchRow id="opt-dl-toolbar" label="Mostrar barra de descargas" desc="Toolbar superior en la cola" checked={s.dlToolbar} onChange={(v) => update("dlToolbar", v)} />
-                      <SwitchRow id="opt-dl-clear" label="Botón borrar completadas" desc="Preferencia legacy; «Limpiar completadas» en Descargas siempre está visible en el pie" checked={s.dlClearBtn} onChange={(v) => update("dlClearBtn", v)} />
-                      <SwitchRow id="opt-dl-left" label="Barra izquierda de descargas" desc="Controles adicionales a la izquierda" checked={s.dlLeftBar} onChange={(v) => update("dlLeftBar", v)} />
                       <SwitchRow id="opt-load-covers" label="Cargar portada del manga" desc="Descarga portadas; si está apagado solo usa las ya en caché" checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
                       <div className="st-row st-row-actions">
                         <div className="st-meta">

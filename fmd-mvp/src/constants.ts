@@ -275,8 +275,6 @@ export const SK = {
   UI_GOTO_DL: "ui.goto_downloads_on_add",
   UI_GOTO_FAV: "ui.goto_favorites_on_add",
   UI_NEW_DAYS: "ui.new_days",
-  UI_DL_TOOLBAR: "ui.dl_show_toolbar",
-  UI_DL_CLEAR_BTN: "ui.dl_show_clear_btn",
   UI_DL_LEFT_BAR: "ui.dl_show_left_bar",
   APP_THEME: "app.theme",
   AFTER_FINISH: "app.after_finish",

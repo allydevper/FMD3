@@ -366,8 +366,7 @@ export function DownloadsView() {
   const [sortKey, setSortKey] = useState<SortKey>("queue");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [order, setOrder] = useState<number[]>([]);
-  const [showToolbar, setShowToolbar] = useState(true);
-  const [showLeftBar, setShowLeftBar] = useState(true);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [parallelTasks, setParallelTasks] = useState(1);
   const [dlCtxMenu, setDlCtxMenu] = useState<{
     x: number;
@@ -393,11 +392,19 @@ export function DownloadsView() {
 
   useEffect(() => {
     void (async () => {
-      setShowToolbar(await settingBool(SK.UI_DL_TOOLBAR, true));
-      setShowLeftBar(await settingBool(SK.UI_DL_LEFT_BAR, true));
+      // Reuse legacy key: true = panel visible (expanded).
+      setLeftCollapsed(!(await settingBool(SK.UI_DL_LEFT_BAR, true)));
       setParallelTasks(await settingNumber(SK.PARALLEL_TASKS, 1));
     })();
   }, [activeNav]);
+
+  function toggleLeftCollapsed() {
+    setLeftCollapsed((c) => {
+      const next = !c;
+      void api.settingsSet(SK.UI_DL_LEFT_BAR, next ? "0" : "1");
+      return next;
+    });
+  }
 
   useEffect(() => {
     const ids = new Set(items.map((i) => i.id));
@@ -894,7 +901,23 @@ export function DownloadsView() {
         </header>
 
         <div className="dl-body">
-          <aside className="dl-tree" aria-label="Filtros de descargas" hidden={!showLeftBar}>
+          <aside
+            className={`dl-tree${leftCollapsed ? " is-collapsed" : ""}`}
+            aria-label="Filtros de descargas"
+          >
+            <button
+              type="button"
+              className="dl-tree-notch"
+              title={leftCollapsed ? "Mostrar filtros" : "Ocultar filtros"}
+              aria-expanded={!leftCollapsed}
+              onClick={toggleLeftCollapsed}
+            >
+              <Icon
+                ico={ICO.chevron}
+                className={`ico ico-sm dl-tree-notch-ico${leftCollapsed ? " is-collapsed" : ""}`}
+              />
+            </button>
+            <div className="dl-tree-body">
             <button
               type="button"
               className={`dl-trow${cat === "all" ? " on" : ""}`}
@@ -991,10 +1014,11 @@ export function DownloadsView() {
                 </button>
               );
             })}
+            </div>
           </aside>
 
           <div className="dl-main">
-            <div className="dl-toolbar" hidden={!showToolbar}>
+            <div className="dl-toolbar">
               <div className="dl-search-wrap">
                 <Icon ico={ICO.search} className="ico ico-sm dl-search-ico" />
                 <input
