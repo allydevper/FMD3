@@ -30,36 +30,29 @@ fn cache_path() -> PathBuf {
     crate::db::db_path().join("modules_cache.json")
 }
 
-/// Feeds `name \0 len \0 mtime` of every `.lua` under `dir` into the hasher.
+/// Feeds `name \0 len \0 <contents>` of every file under `dir` into the hasher.
+///
+/// Content, not `(size, mtime)`: the whole tree is ~3.5 MB, so hashing it costs
+/// a few ms, and it removes two blind spots that metadata has — an edit that
+/// preserves size within the same second, and files a `require` pulls in but an
+/// extension filter would skip (`utils/*.js`, `websitebypass/*.py`).
 /// Entries are sorted so the digest does not depend on directory order.
 fn hash_dir(hasher: &mut Sha256, label: &str, dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         hasher.update(format!("{label}\0missing\n"));
         return;
     };
-    let mut rows: Vec<String> = entries
+    let mut files: Vec<(String, PathBuf)> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("lua"))
-        .map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            let (len, mtime) = e
-                .metadata()
-                .map(|m| {
-                    let mtime = m
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    (m.len(), mtime)
-                })
-                .unwrap_or((0, 0));
-            format!("{label}/{name}\0{len}\0{mtime}\n")
-        })
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
         .collect();
-    rows.sort();
-    for row in rows {
-        hasher.update(row);
+    files.sort();
+    for (name, path) in files {
+        let body = std::fs::read(&path).unwrap_or_default();
+        hasher.update(format!("{label}/{name}\0{}\0", body.len()));
+        hasher.update(&body);
+        hasher.update(b"\n");
     }
 }
 

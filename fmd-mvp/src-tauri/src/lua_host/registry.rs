@@ -186,8 +186,11 @@ fn with_registry<R>(f: impl FnOnce(&RegistryInner) -> R) -> R {
 /// hatch behind the "check modules" button in Options.
 pub fn refresh() -> usize {
     let mut guard = REGISTRY.lock();
+    // Fingerprint before scanning, like `load_or_build`: a file edited mid-scan
+    // must leave the cache marked stale, not stored under the post-edit digest.
+    let fp = registry_cache::fingerprint();
     let list = scan_all();
-    registry_cache::store(&registry_cache::fingerprint(), &list);
+    registry_cache::store(&fp, &list);
     let inner = hydrate(list);
     let n = inner.list.len();
     *guard = Some(inner);

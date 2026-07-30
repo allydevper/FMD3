@@ -40,6 +40,10 @@ struct HttpInner {
     enabled_cookies: bool,
     /// >0 while inside WebsiteBypass (avoid recursive antibot).
     bypass_depth: u32,
+    /// Set when the configured client (proxy/timeout) could not be built. The
+    /// client field then holds a degraded fallback, so requests must refuse to
+    /// run rather than silently bypass the user's proxy.
+    init_err: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -95,21 +99,24 @@ fn build_client(ua: &str) -> Result<reqwest::blocking::Client, String> {
     b.build().map_err(|e| e.to_string())
 }
 
-/// Same as `build_client` but infallible: on failure (bad proxy URL, TLS
-/// backend) it falls back to a client with the same FMD2-compatible semantics
-/// (HTTP/1.1 only, manual redirects) minus the configured proxy/timeout.
-fn build_client_or_default(ua: &str) -> reqwest::blocking::Client {
+/// Infallible variant of `build_client`, needed because the client is now built
+/// lazily from a context that cannot return an error. On failure (bad proxy URL,
+/// TLS backend) it returns a degraded fallback *plus* the error, which the
+/// caller stores in `init_err` so requests fail loudly instead of quietly going
+/// direct when a proxy was configured.
+fn build_client_or_default(ua: &str) -> (reqwest::blocking::Client, Option<String>) {
     match build_client(ua) {
-        Ok(c) => c,
+        Ok(c) => (c, None),
         Err(e) => {
-            eprintln!("http: no se pudo construir el cliente ({e}); usando configuración básica");
-            reqwest::blocking::Client::builder()
+            eprintln!("http: no se pudo construir el cliente: {e}");
+            let fallback = reqwest::blocking::Client::builder()
                 .user_agent(ua)
                 .cookie_store(true)
                 .http1_only()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
+                .unwrap_or_else(|_| reqwest::blocking::Client::new());
+            (fallback, Some(e))
         }
     }
 }
@@ -220,7 +227,7 @@ impl HttpInner {
     fn build() -> Self {
         let saved = load_cf_session();
         let ua = configured_user_agent(&saved.user_agent);
-        let client = build_client_or_default(&ua);
+        let (client, init_err) = build_client_or_default(&ua);
         let mut headers = default_browser_headers();
         let cookies = saved.cookies;
         if !cookies.is_empty() {
@@ -246,6 +253,7 @@ impl HttpInner {
             terminated: false,
             enabled_cookies: true,
             bypass_depth: 0,
+            init_err,
         }
     }
 }
@@ -283,7 +291,10 @@ impl HttpClient {
     /// Clone cookies/headers/UA into a new client with its own document buffer (parallel GETs).
     pub fn fork(&self) -> Result<Self, String> {
         let inner = self.inner().lock();
-        let client = build_client(&inner.user_agent)?;
+        // Same fallback as `HttpInner::build`, so a broken proxy config fails at
+        // the request for forked clients too, not at fork time for some callers
+        // and at request time for others.
+        let (client, init_err) = build_client_or_default(&inner.user_agent);
         let forked = HttpInner {
             client,
             document: Vec::new(),
@@ -299,6 +310,10 @@ impl HttpClient {
             terminated: inner.terminated,
             enabled_cookies: inner.enabled_cookies,
             bypass_depth: 0,
+            // Only the fork's own build result: it re-reads the proxy/timeout
+            // settings, so it is fresher than the parent's. Carrying the
+            // parent's error over would reject requests on a working client.
+            init_err,
         };
         let cell = once_cell::sync::OnceCell::new();
         let _ = cell.set(Mutex::new(forked));
@@ -351,9 +366,9 @@ impl HttpClient {
     }
 
     fn rebuild_client_locked(inner: &mut HttpInner) {
-        if let Ok(c) = build_client(&inner.user_agent) {
-            inner.client = c;
-        }
+        let (client, err) = build_client_or_default(&inner.user_agent);
+        inner.client = client;
+        inner.init_err = err;
     }
 
     fn sync_cookie_header(inner: &mut HttpInner) {
@@ -416,6 +431,13 @@ impl HttpClient {
         let (mut headers, mime, follow, max_retries) = {
             let inner = self.inner().lock();
             if inner.terminated {
+                return false;
+            }
+            // The configured client could not be built (e.g. invalid proxy).
+            // Refuse the request: going out with the fallback client would
+            // bypass a proxy the user explicitly set.
+            if let Some(err) = &inner.init_err {
+                eprintln!("http: petición cancelada, cliente mal configurado: {err}");
                 return false;
             }
             let retries = if inner.retry_count > 0 {
