@@ -55,6 +55,8 @@ pub const UI_LIVE_SEARCH: &str = "ui.live_search";
 pub const UI_GOTO_DOWNLOADS_ON_ADD: &str = "ui.goto_downloads_on_add";
 pub const UI_GOTO_FAVORITES_ON_ADD: &str = "ui.goto_favorites_on_add";
 pub const UI_NEW_DAYS: &str = "ui.new_days";
+/// Last selected website/source in the Info «Fuente» combo.
+pub const UI_SELECTED_MODULE: &str = "ui.selected_module";
 
 pub const APP_THEME: &str = "app.theme";
 pub const AFTER_FINISH: &str = "app.after_finish";

@@ -255,7 +255,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ids = [];
     }
     const next = new Set(ids);
-    setEnabledModuleIds(next);
+    setEnabledModuleIds((prev) => {
+      if (prev.size === next.size && ids.every((id) => prev.has(id))) return prev;
+      return next;
+    });
     return next;
   }, []);
 

@@ -31,6 +31,7 @@ import {
   cloneAdvFilter,
   advFilterToPayload,
   isCatalogEntryNew,
+  SK,
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
@@ -206,6 +207,8 @@ export function InfoView() {
 
   const catalogQueryRef = useRef("");
   const catalogLoadedKeyRef = useRef("");
+  /** Dedupes auto-load effect when deps churn with the same module id. */
+  const catalogAutoLoadKeyRef = useRef("");
   const catalogSearchTimerRef = useRef<number | undefined>(undefined);
   const catalogLoadGenRef = useRef(0);
   const loadedPagesRef = useRef<Set<number>>(new Set());
@@ -444,7 +447,19 @@ export function InfoView() {
     let cancelled = false;
     void (async () => {
       try {
-        await Promise.all([refreshModules(), refreshEnabledModules()]);
+        const [mods, enabled, savedRaw] = await Promise.all([
+          refreshModules(),
+          refreshEnabledModules(),
+          api.settingsGet(SK.UI_SELECTED_MODULE),
+        ]);
+        if (cancelled) return;
+        const enabledList = mods.filter((m) => enabled.has(m.id));
+        const saved = (savedRaw ?? "").trim();
+        const pick =
+          (saved && enabledList.some((m) => m.id === saved) ? saved : null) ??
+          enabledList[0]?.id ??
+          null;
+        setSelectedModuleId(pick);
       } catch {
         /* ignore boot errors; UI falls back to empty/error states */
       } finally {
@@ -774,14 +789,27 @@ export function InfoView() {
 
   /** Keep combo on an enabled source; empty list → no selection. */
   useEffect(() => {
+    if (!sourcesBooted) return;
     if (!enabledModules.length) {
       if (selectedModuleId) setSelectedModuleId(null);
       return;
     }
     if (selectedModuleId && enabledModules.some((m) => m.id === selectedModuleId)) return;
-    setSelectedModuleId(enabledModules[0].id);
+    let cancelled = false;
+    void (async () => {
+      const saved = ((await api.settingsGet(SK.UI_SELECTED_MODULE)) ?? "").trim();
+      if (cancelled) return;
+      if (saved && enabledModules.some((m) => m.id === saved)) {
+        setSelectedModuleId(saved);
+        return;
+      }
+      setSelectedModuleId(enabledModules[0].id);
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabledModules]);
+  }, [sourcesBooted, enabledModules, selectedModuleId]);
 
   async function refreshCatalogStats() {
     const id = selectedModuleId;
@@ -1096,6 +1124,9 @@ export function InfoView() {
   useEffect(() => {
     if (advFilterAppliedRef.current && appliedAdvFilterRef.current.allSites) return;
     if (!selectedModuleId || !enabledModuleIds.has(selectedModuleId)) return;
+    const key = selectedModuleId;
+    if (catalogAutoLoadKeyRef.current === key) return;
+    catalogAutoLoadKeyRef.current = key;
     void refreshCatalogStats();
     void loadCatalog(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1112,6 +1143,7 @@ export function InfoView() {
     setCatalogFetched(false);
     setCatalogStatsText("0");
     catalogLoadedKeyRef.current = "";
+    catalogAutoLoadKeyRef.current = "";
   }, [enabledModules.length]);
 
   useEffect(() => {
@@ -1187,6 +1219,7 @@ export function InfoView() {
 
   function handleSelectSource(m: ModuleMeta) {
     setSelectedModuleId(m.id);
+    void api.settingsSet(SK.UI_SELECTED_MODULE, m.id);
     setSourceOpen(false);
     setSourceFilter("");
   }
@@ -1710,7 +1743,10 @@ export function InfoView() {
     const { mangaUrl, moduleId } = pendingMangaOpen;
     setPendingMangaOpen(null);
     setUrlInput(mangaUrl);
-    if (moduleId) setSelectedModuleId(moduleId);
+    if (moduleId) {
+      setSelectedModuleId(moduleId);
+      void api.settingsSet(SK.UI_SELECTED_MODULE, moduleId);
+    }
     void loadMangaInfo(mangaUrl, moduleId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNav, pendingMangaOpen]);

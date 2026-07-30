@@ -49,7 +49,6 @@ function Shell() {
     toggleLog,
     log,
     setModules,
-    setSelectedModuleId,
     setOutputDir,
     narrow,
     hideInfo,
@@ -68,7 +67,7 @@ function Shell() {
         const mods = await api.modulesList();
         if (cancelled) return;
         setModules(mods);
-        if (mods.length) setSelectedModuleId(mods[0]!.id);
+        // Fuente/módulo: InfoView restaura ui.selected_module; no pisar aquí.
         log("DB lista (favoritos/cola en AppData/fmd-mvp).", "ok");
       } catch (e) {
         log(String(e), "err");
@@ -77,7 +76,7 @@ function Shell() {
     return () => {
       cancelled = true;
     };
-  }, [log, setModules, setOutputDir, setSelectedModuleId]);
+  }, [log, setModules, setOutputDir]);
 
   const appClass = [
     "app",
