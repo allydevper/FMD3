@@ -14,6 +14,9 @@ use zip::ZipWriter;
 /// Same token as download cancel so the queue worker treats it uniformly.
 pub const PACK_CANCELLED: &str = "cancelado";
 
+/// FMD2 threshold: JPG with quality ≥ 75 is embedded as-is (no re-encode).
+const PDF_JPEG_EMBED_MIN_QUALITY: u8 = 75;
+
 fn list_image_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let dir = crate::paths::fs_path(dir);
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -119,10 +122,45 @@ fn pack_zip_like(
     result
 }
 
-/// Minimal PDF: one JPEG image per page (non-JPEG re-encoded via `image`).
-fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> {
-    use image::ImageEncoder;
+fn is_jpeg_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("jpg") | Some("jpeg")
+    )
+}
 
+fn reencode_as_jpeg(path: &Path, quality: u8) -> Result<(u32, u32, Vec<u8>), String> {
+    use image::ImageEncoder;
+    let img = image::open(path).map_err(|e| e.to_string())?;
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality);
+    enc.write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+        .map_err(|e| e.to_string())?;
+    Ok((w, h, cursor.into_inner()))
+}
+
+/// Build one PDF page image: embed JPEG bytes when quality ≥ 75 (FMD2 parity);
+/// otherwise decode and re-encode. Non-JPEG always re-encodes to JPEG.
+fn jpeg_page_from_path(path: &Path, quality: u8) -> Result<(u32, u32, Vec<u8>), String> {
+    if is_jpeg_path(path) && quality >= PDF_JPEG_EMBED_MIN_QUALITY {
+        if let (Ok(bytes), Ok((w, h))) = (std::fs::read(path), image::image_dimensions(path)) {
+            if w > 0 && h > 0 && !bytes.is_empty() {
+                return Ok((w, h, bytes));
+            }
+        }
+        // Corrupt / unreadable header: fall through to re-encode.
+    }
+    reencode_as_jpeg(path, quality)
+}
+
+/// Minimal PDF: one JPEG image per page.
+/// JPG with quality ≥ 75 is embedded as-is; other formats / low quality are re-encoded.
+fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> {
     abort_if_cancelled(cancel)?;
     let dir = crate::paths::fs_path(dir);
     let images = list_image_files(&dir)?;
@@ -139,14 +177,7 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
         let mut jpeg_pages: Vec<(u32, u32, Vec<u8>)> = Vec::new();
         for path in &images {
             abort_if_cancelled(cancel)?;
-            let img = image::open(path).map_err(|e| e.to_string())?;
-            let rgb = img.to_rgb8();
-            let (w, h) = (rgb.width(), rgb.height());
-            let mut cursor = std::io::Cursor::new(Vec::new());
-            let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality);
-            enc.write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
-                .map_err(|e| e.to_string())?;
-            jpeg_pages.push((w, h, cursor.into_inner()));
+            jpeg_pages.push(jpeg_page_from_path(path, quality)?);
         }
 
         abort_if_cancelled(cancel)?;
@@ -406,6 +437,19 @@ mod tests {
     use std::io::Write;
     use std::sync::Arc;
 
+    fn write_tiny_jpeg(path: &Path) -> Vec<u8> {
+        use image::{ImageBuffer, ImageEncoder, Rgb};
+        let img: ImageBuffer<Rgb<u8>, _> =
+            ImageBuffer::from_pixel(8, 8, Rgb([200u8, 100, 50]));
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
+        enc.write_image(img.as_raw(), 8, 8, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let bytes = cursor.into_inner();
+        std::fs::write(path, &bytes).unwrap();
+        bytes
+    }
+
     #[test]
     fn packs_cbz() {
         let dir = std::env::temp_dir().join(format!("fmd_pack_{}", std::process::id()));
@@ -438,6 +482,56 @@ mod tests {
         let out = dir.with_extension("zip");
         assert!(!out.exists());
         assert!(!PathBuf::from(format!("{}.partial", out.display())).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pack_pdf_embeds_jpeg_when_quality_high() {
+        let dir = std::env::temp_dir().join(format!("fmd_pack_pdf_hi_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpg_path = dir.join("001.jpg");
+        let original = write_tiny_jpeg(&jpg_path);
+
+        let (w, h, bytes) = jpeg_page_from_path(&jpg_path, 85).unwrap();
+        assert_eq!((w, h), (8, 8));
+        assert_eq!(bytes, original, "quality ≥ 75 must embed JPEG bytes as-is");
+
+        let out = pack_chapter_dir(&dir, "pdf", None).unwrap();
+        assert!(out.exists());
+        let pdf = std::fs::read(&out).unwrap();
+        assert!(
+            pdf.windows(original.len()).any(|w| w == original.as_slice()),
+            "PDF must contain the original JPEG payload"
+        );
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pack_pdf_reencodes_when_quality_low() {
+        let dir = std::env::temp_dir().join(format!("fmd_pack_pdf_lo_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpg_path = dir.join("001.jpg");
+        let original = write_tiny_jpeg(&jpg_path);
+
+        let (w, h, bytes) = jpeg_page_from_path(&jpg_path, 50).unwrap();
+        assert_eq!((w, h), (8, 8));
+        assert_ne!(
+            bytes, original,
+            "quality < 75 must re-encode (bytes should differ)"
+        );
+        assert!(
+            bytes.starts_with(&[0xFF, 0xD8]),
+            "re-encoded output must still be JPEG"
+        );
+
+        // Smoke: pack still produces a valid PDF file (uses settings quality, usually ≥ 75).
+        let out = pack_chapter_dir(&dir, "pdf", None).unwrap();
+        assert!(out.exists());
+        assert_eq!(out.extension().unwrap(), "pdf");
+        let _ = std::fs::remove_file(&out);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
