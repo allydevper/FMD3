@@ -1,7 +1,22 @@
+use once_cell::sync::Lazy;
 use std::path::PathBuf;
+
+// Resolved once: `compute_lua_root` probes up to nine candidate directories and
+// `setup_package_path` runs per scanned module file (~600 of them).
+static LUA_ROOT: Lazy<PathBuf> = Lazy::new(compute_lua_root);
+static PACKAGE_PATH: Lazy<String> = Lazy::new(compute_package_path);
 
 /// Root of the Lua tree (`…/lua` containing `modules/` and `templates/`).
 pub fn lua_root() -> PathBuf {
+    LUA_ROOT.clone()
+}
+
+/// `package.path` entries so `require 'templates.NiAdd'` and `require 'fmd.crypto'` resolve.
+pub fn package_path() -> String {
+    PACKAGE_PATH.clone()
+}
+
+fn compute_lua_root() -> PathBuf {
     if let Ok(p) = std::env::var("FMD_LUA_ROOT") {
         let p = PathBuf::from(p);
         if p.is_dir() {
@@ -62,8 +77,7 @@ pub fn templates_dir() -> PathBuf {
     lua_root().join("templates")
 }
 
-/// `package.path` entries so `require 'templates.NiAdd'` and `require 'fmd.crypto'` resolve.
-pub fn package_path() -> String {
+fn compute_package_path() -> String {
     let root = lua_root();
     let tpl = templates_dir();
     let root_s = root.to_string_lossy().replace('\\', "/");
@@ -79,4 +93,8 @@ pub fn package_path() -> String {
 
 pub fn websitebypass_dir() -> PathBuf {
     lua_root().join("websitebypass")
+}
+
+pub fn utils_dir() -> PathBuf {
+    lua_root().join("utils")
 }

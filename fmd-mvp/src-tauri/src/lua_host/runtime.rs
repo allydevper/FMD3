@@ -1020,7 +1020,37 @@ fn register_create_txquery(lua: &Lua) -> mlua::Result<()> {
 }
 
 /// Load module file, run Init, return all ModuleStates created via NewWebsiteModule.
+/// Per-stage timings for the registry scan, enabled with `FMD_SCAN_PROFILE=1`.
+/// Only written from `prepare_lua_scan`; dumped by `registry::scan_all`.
+pub mod scan_profile {
+    use once_cell::sync::Lazy;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    pub static ENABLED: Lazy<bool> = Lazy::new(|| std::env::var("FMD_SCAN_PROFILE").is_ok());
+
+    pub static SETUP_NS: AtomicU64 = AtomicU64::new(0);
+    pub static EXEC_NS: AtomicU64 = AtomicU64::new(0);
+    pub static INIT_NS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn add(counter: &AtomicU64, since: Instant) {
+        counter.fetch_add(since.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    pub fn take_summary() -> String {
+        let ms = |c: &AtomicU64| c.swap(0, Ordering::Relaxed) as f64 / 1e6;
+        format!(
+            "setup {:.0}ms, exec {:.0}ms, Init {:.0}ms",
+            ms(&SETUP_NS),
+            ms(&EXEC_NS),
+            ms(&INIT_NS)
+        )
+    }
+}
+
 pub fn prepare_lua_scan(module_file: &Path) -> mlua::Result<(Lua, Vec<ModuleState>)> {
+    let profile = *scan_profile::ENABLED;
+    let t_setup = std::time::Instant::now();
     let lua = Lua::new();
     register_helpers(&lua)?;
     register_fmd_crypto(&lua)?;
@@ -1057,16 +1087,27 @@ pub fn prepare_lua_scan(module_file: &Path) -> mlua::Result<(Lua, Vec<ModuleStat
     )?;
 
     register_create_txquery(&lua)?;
+    if profile {
+        scan_profile::add(&scan_profile::SETUP_NS, t_setup);
+    }
 
+    let t_exec = std::time::Instant::now();
     let source = read_lua_source(module_file).map_err(mlua::Error::external)?;
     lua.load(&source)
         .set_name(module_file.to_string_lossy())
         .exec()?;
+    if profile {
+        scan_profile::add(&scan_profile::EXEC_NS, t_exec);
+    }
 
+    let t_init = std::time::Instant::now();
     if let Ok(init) = globals.get::<mlua::Function>("Init") {
         if let Err(e) = init.call::<()>(()) {
             eprintln!("registry Init {}: {e}", module_file.display());
         }
+    }
+    if profile {
+        scan_profile::add(&scan_profile::INIT_NS, t_init);
     }
 
     let states: Vec<ModuleState> = created2

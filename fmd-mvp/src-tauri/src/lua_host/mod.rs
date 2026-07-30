@@ -8,6 +8,7 @@ mod lua_log;
 mod mangafox_watermark;
 mod paths;
 mod registry;
+mod registry_cache;
 mod runtime;
 mod strings;
 mod website_bypass_host;

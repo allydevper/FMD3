@@ -11,9 +11,13 @@ const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 const CF_SESSION_KEY: &str = "http_cf_session";
 const MAX_REDIRECTS: u32 = 5;
 
+/// The inner state is built lazily: constructing it opens several SQLite
+/// connections and a `reqwest` client (own tokio thread + TLS init). The
+/// registry scan creates one `HttpClient` per module file and never issues a
+/// request, so paying that up front cost ~600 times was pure waste.
 #[derive(Clone)]
 pub struct HttpClient {
-    inner: Arc<Mutex<HttpInner>>,
+    cell: Arc<once_cell::sync::OnceCell<Mutex<HttpInner>>>,
 }
 
 struct HttpInner {
@@ -89,6 +93,25 @@ fn build_client(ua: &str) -> Result<reqwest::blocking::Client, String> {
         }
     }
     b.build().map_err(|e| e.to_string())
+}
+
+/// Same as `build_client` but infallible: on failure (bad proxy URL, TLS
+/// backend) it falls back to a client with the same FMD2-compatible semantics
+/// (HTTP/1.1 only, manual redirects) minus the configured proxy/timeout.
+fn build_client_or_default(ua: &str) -> reqwest::blocking::Client {
+    match build_client(ua) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("http: no se pudo construir el cliente ({e}); usando configuración básica");
+            reqwest::blocking::Client::builder()
+                .user_agent(ua)
+                .cookie_store(true)
+                .http1_only()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_else(|_| reqwest::blocking::Client::new())
+        }
+    }
 }
 
 fn configured_user_agent(session_ua: &str) -> String {
@@ -191,11 +214,13 @@ fn header_get_ci(map: &HashMap<String, String>, key: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
-impl HttpClient {
-    pub fn new() -> mlua::Result<Self> {
+impl HttpInner {
+    /// Reads settings from SQLite and builds the reqwest client. Only called on
+    /// first actual use of an `HttpClient`.
+    fn build() -> Self {
         let saved = load_cf_session();
         let ua = configured_user_agent(&saved.user_agent);
-        let client = build_client(&ua).map_err(mlua::Error::external)?;
+        let client = build_client_or_default(&ua);
         let mut headers = default_browser_headers();
         let cookies = saved.cookies;
         if !cookies.is_empty() {
@@ -206,74 +231,88 @@ impl HttpClient {
                 .join("; ");
             headers.insert("Cookie".into(), cookie_hdr);
         }
+        HttpInner {
+            client,
+            document: Vec::new(),
+            pending_body: String::new(),
+            headers,
+            response_headers: HashMap::new(),
+            cookies,
+            result_code: 0,
+            user_agent: ua,
+            mime_type: String::new(),
+            follow_redirection: true,
+            retry_count: 0,
+            terminated: false,
+            enabled_cookies: true,
+            bypass_depth: 0,
+        }
+    }
+}
+
+impl HttpClient {
+    pub fn new() -> mlua::Result<Self> {
         Ok(Self {
-            inner: Arc::new(Mutex::new(HttpInner {
-                client,
-                document: Vec::new(),
-                pending_body: String::new(),
-                headers,
-                response_headers: HashMap::new(),
-                cookies,
-                result_code: 0,
-                user_agent: ua,
-                mime_type: String::new(),
-                follow_redirection: true,
-                retry_count: 0,
-                terminated: false,
-                enabled_cookies: true,
-                bypass_depth: 0,
-            })),
+            cell: Arc::new(once_cell::sync::OnceCell::new()),
         })
+    }
+
+    /// Materializes the inner state on first access.
+    fn inner(&self) -> &Mutex<HttpInner> {
+        self.cell.get_or_init(|| Mutex::new(HttpInner::build()))
     }
 
     /// UTF-8 lossy view of Document (HTML/XPath).
     pub fn document(&self) -> String {
-        String::from_utf8_lossy(&self.inner.lock().document).into_owned()
+        String::from_utf8_lossy(&self.inner().lock().document).into_owned()
     }
 
     /// Raw Document bytes (image download / save).
     pub fn document_bytes(&self) -> Vec<u8> {
-        self.inner.lock().document.clone()
+        self.inner().lock().document.clone()
     }
 
     pub fn set_document_bytes(&self, bytes: Vec<u8>) {
-        self.inner.lock().document = bytes;
+        self.inner().lock().document = bytes;
     }
 
     pub fn set_terminated(&self, terminated: bool) {
-        self.inner.lock().terminated = terminated;
+        self.inner().lock().terminated = terminated;
     }
 
     /// Clone cookies/headers/UA into a new client with its own document buffer (parallel GETs).
     pub fn fork(&self) -> Result<Self, String> {
-        let inner = self.inner.lock();
+        let inner = self.inner().lock();
         let client = build_client(&inner.user_agent)?;
+        let forked = HttpInner {
+            client,
+            document: Vec::new(),
+            pending_body: String::new(),
+            headers: inner.headers.clone(),
+            response_headers: HashMap::new(),
+            cookies: inner.cookies.clone(),
+            result_code: 0,
+            user_agent: inner.user_agent.clone(),
+            mime_type: String::new(),
+            follow_redirection: inner.follow_redirection,
+            retry_count: inner.retry_count,
+            terminated: inner.terminated,
+            enabled_cookies: inner.enabled_cookies,
+            bypass_depth: 0,
+        };
+        let cell = once_cell::sync::OnceCell::new();
+        let _ = cell.set(Mutex::new(forked));
         Ok(Self {
-            inner: Arc::new(Mutex::new(HttpInner {
-                client,
-                document: Vec::new(),
-                pending_body: String::new(),
-                headers: inner.headers.clone(),
-                response_headers: HashMap::new(),
-                cookies: inner.cookies.clone(),
-                result_code: 0,
-                user_agent: inner.user_agent.clone(),
-                mime_type: String::new(),
-                follow_redirection: inner.follow_redirection,
-                retry_count: inner.retry_count,
-                terminated: inner.terminated,
-                enabled_cookies: inner.enabled_cookies,
-                bypass_depth: 0,
-            })),
+            cell: Arc::new(cell),
         })
     }
 
     pub fn headers_map(&self) -> HashMap<String, String> {
-        self.inner.lock().headers.clone()
+        self.inner().lock().headers.clone()
     }
 
     pub fn set_header(&self, key: &str, value: &str) {
-        self.inner
+        self.inner()
             .lock()
             .headers
             .insert(key.to_string(), value.to_string());
@@ -281,7 +320,7 @@ impl HttpClient {
 
     /// FMD2 THTTPSendThread.AcceptImage
     pub fn accept_image(&self) {
-        self.inner
+        self.inner()
             .lock()
             .headers
             .insert("Accept".into(), "image/webp,*/*".into());
@@ -296,18 +335,18 @@ impl HttpClient {
     }
 
     pub fn begin_bypass(&self) {
-        self.inner.lock().bypass_depth += 1;
+        self.inner().lock().bypass_depth += 1;
     }
 
     pub fn end_bypass(&self) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner().lock();
         if inner.bypass_depth > 0 {
             inner.bypass_depth -= 1;
         }
     }
 
     pub fn persist_session(&self) {
-        let inner = self.inner.lock();
+        let inner = self.inner().lock();
         save_cf_session(&inner.user_agent, &inner.cookies);
     }
 
@@ -375,7 +414,7 @@ impl HttpClient {
 
     fn send_raw(&self, method: &str, url: &str, body: Option<&str>) -> bool {
         let (mut headers, mime, follow, max_retries) = {
-            let inner = self.inner.lock();
+            let inner = self.inner().lock();
             if inner.terminated {
                 return false;
             }
@@ -392,7 +431,7 @@ impl HttpClient {
             )
         };
 
-        let client = self.inner.lock().client.clone();
+        let client = self.inner().lock().client.clone();
         let mut method_u = method.to_ascii_uppercase();
         let mut current_url = url.to_string();
         let mut body_owned = body.map(|s| s.to_string());
@@ -401,7 +440,7 @@ impl HttpClient {
 
         loop {
             let cookie = {
-                let inner = self.inner.lock();
+                let inner = self.inner().lock();
                 Self::cookie_header(&inner)
             };
 
@@ -442,7 +481,7 @@ impl HttpClient {
                         ));
                         continue;
                     }
-                    let mut inner = self.inner.lock();
+                    let mut inner = self.inner().lock();
                     inner.result_code = 0;
                     inner.document.clear();
                     inner.response_headers.clear();
@@ -468,13 +507,13 @@ impl HttpClient {
                     .to_string();
                 if loc.is_empty() {
                     let bytes = resp.bytes().map(|b| b.to_vec()).unwrap_or_default();
-                    let mut inner = self.inner.lock();
+                    let mut inner = self.inner().lock();
                     Self::apply_response(&mut inner, status, rh, bytes, &raw_headers);
                     return status > 0;
                 }
                 // Merge cookies from redirect response before following
                 {
-                    let mut inner = self.inner.lock();
+                    let mut inner = self.inner().lock();
                     if inner.enabled_cookies {
                         merge_set_cookie(&mut inner.cookies, &raw_headers);
                         Self::sync_cookie_header(&mut inner);
@@ -500,7 +539,7 @@ impl HttpClient {
             }
 
             let bytes = resp.bytes().map(|b| b.to_vec()).unwrap_or_default();
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner().lock();
             Self::apply_response(&mut inner, status, rh, bytes, &raw_headers);
             return status > 0;
         }
@@ -509,7 +548,7 @@ impl HttpClient {
     /// Low-level request used by WebsiteBypass (no antibot recursion).
     pub fn request_nobypass(&self, method: &str, url: &str) -> bool {
         let body = {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner().lock();
             let b = inner.pending_body.clone();
             inner.pending_body.clear();
             b
@@ -523,12 +562,12 @@ impl HttpClient {
     }
 
     fn after_request(&self, method: &str, url: &str) {
-        let depth = self.inner.lock().bypass_depth;
+        let depth = self.inner().lock().bypass_depth;
         if depth > 0 {
             return;
         }
         let (status, server, body_preview) = {
-            let inner = self.inner.lock();
+            let inner = self.inner().lock();
             let server = header_get_ci(&inner.response_headers, "Server").unwrap_or_default();
             let lossy = String::from_utf8_lossy(&inner.document);
             let preview: String = lossy.chars().take(800).collect();
@@ -546,22 +585,22 @@ impl HttpClient {
     fn get(&self, url: &str) -> bool {
         let ok = self.request_nobypass("GET", url);
         self.after_request("GET", url);
-        let inner = self.inner.lock();
+        let inner = self.inner().lock();
         ok || !inner.document.is_empty()
     }
 
     fn post(&self, url: &str, body: Option<&str>) -> bool {
         if let Some(b) = body {
-            self.inner.lock().pending_body = b.to_string();
+            self.inner().lock().pending_body = b.to_string();
         }
         let ok = self.request_nobypass("POST", url);
         self.after_request("POST", url);
-        let inner = self.inner.lock();
+        let inner = self.inner().lock();
         ok || !inner.document.is_empty()
     }
 
     fn reset(&self) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner().lock();
         inner.document.clear();
         inner.pending_body.clear();
         let cookie_hdr = header_get_ci(&inner.headers, "Cookie");
@@ -575,7 +614,7 @@ impl HttpClient {
     }
 
     fn clear_cookies(&self) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner().lock();
         inner.cookies.clear();
         inner.headers.remove("Cookie");
         // rebuild client to drop jar
@@ -595,7 +634,7 @@ impl UserData for DocumentHandle {
                 "WriteString" => {
                     let this = this.clone();
                     let f = lua.create_function(move |_, s: String| {
-                        this.client.inner.lock().pending_body.push_str(&s);
+                        this.client.inner().lock().pending_body.push_str(&s);
                         Ok(())
                     })?;
                     Ok(Value::Function(f))
@@ -612,7 +651,7 @@ impl UserData for DocumentHandle {
 impl UserData for HeaderValuesHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
-            let inner = this.client.inner.lock();
+            let inner = this.client.inner().lock();
             // Response first (Server/Content-Type), then request headers
             let v = header_get_ci(&inner.response_headers, &key)
                 .or_else(|| header_get_ci(&inner.headers, &key))
@@ -629,7 +668,7 @@ impl UserData for HeaderValuesHandle {
                     Value::Boolean(b) => b.to_string(),
                     _ => String::new(),
                 };
-                this.client.inner.lock().headers.insert(key, s);
+                this.client.inner().lock().headers.insert(key, s);
                 Ok(())
             },
         );
@@ -655,7 +694,7 @@ impl UserData for CookieValuesHandle {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
             let v = this
                 .client
-                .inner
+                .inner()
                 .lock()
                 .cookies
                 .get(&key)
@@ -670,7 +709,7 @@ impl UserData for CookieValuesHandle {
                     Value::String(s) => s.to_string_lossy(),
                     _ => String::new(),
                 };
-                let mut inner = this.client.inner.lock();
+                let mut inner = this.client.inner().lock();
                 inner.cookies.insert(key, s);
                 HttpClient::sync_cookie_header(&mut inner);
                 Ok(())
@@ -706,19 +745,19 @@ impl UserData for HttpClient {
                 "Cookies" => Ok(Value::UserData(lua.create_userdata(CookiesHandle {
                     client: this.clone(),
                 })?)),
-                "ResultCode" => Ok(Value::Integer(this.inner.lock().result_code as i64)),
+                "ResultCode" => Ok(Value::Integer(this.inner().lock().result_code as i64)),
                 "UserAgent" => {
-                    Ok(Value::String(lua.create_string(&this.inner.lock().user_agent)?))
+                    Ok(Value::String(lua.create_string(&this.inner().lock().user_agent)?))
                 }
                 "MimeType" => {
-                    Ok(Value::String(lua.create_string(&this.inner.lock().mime_type)?))
+                    Ok(Value::String(lua.create_string(&this.inner().lock().mime_type)?))
                 }
                 "FollowRedirection" => {
-                    Ok(Value::Boolean(this.inner.lock().follow_redirection))
+                    Ok(Value::Boolean(this.inner().lock().follow_redirection))
                 }
-                "RetryCount" => Ok(Value::Integer(this.inner.lock().retry_count)),
-                "Terminated" => Ok(Value::Boolean(this.inner.lock().terminated)),
-                "EnabledCookies" => Ok(Value::Boolean(this.inner.lock().enabled_cookies)),
+                "RetryCount" => Ok(Value::Integer(this.inner().lock().retry_count)),
+                "Terminated" => Ok(Value::Boolean(this.inner().lock().terminated)),
+                "EnabledCookies" => Ok(Value::Boolean(this.inner().lock().enabled_cookies)),
                 "GET" => {
                     let this = this.clone();
                     let f = lua.create_function(move |_, url: String| Ok(this.get(&url)))?;
@@ -784,7 +823,7 @@ impl UserData for HttpClient {
         methods.add_meta_method_mut(
             mlua::MetaMethod::NewIndex,
             |_, this, (key, value): (String, Value)| {
-                let mut inner = this.inner.lock();
+                let mut inner = this.inner().lock();
                 match key.as_str() {
                     "UserAgent" => {
                         if let Value::String(s) = value {

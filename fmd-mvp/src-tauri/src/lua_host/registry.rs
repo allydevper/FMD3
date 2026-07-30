@@ -1,12 +1,13 @@
 use super::paths::{modules_dir, package_path};
-use super::runtime::{prepare_lua_scan, ModuleState};
+use super::registry_cache;
+use super::runtime::{prepare_lua_scan, scan_profile, ModuleState};
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use url::Url;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleMeta {
     pub id: String,
     pub name: String,
@@ -88,12 +89,13 @@ fn scan_file(path: &PathBuf) -> Vec<ModuleMeta> {
         .collect()
 }
 
-fn build_registry() -> RegistryInner {
+/// Runs every `lua/modules/*.lua` through a Lua VM. This is the expensive path
+/// (seconds); prefer `load_or_build`, which reuses the on-disk cache.
+fn scan_all() -> Vec<ModuleMeta> {
     let dir = modules_dir();
-    let mut inner = RegistryInner::default();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         eprintln!("registry: no se pudo leer {}", dir.display());
-        return inner;
+        return Vec::new();
     };
 
     let _ = package_path();
@@ -105,21 +107,41 @@ fn build_registry() -> RegistryInner {
         .collect();
     files.sort();
 
+    let started = std::time::Instant::now();
+    let mut out = Vec::new();
     for path in files {
-        for meta in scan_file(&path) {
-            if inner.by_id.contains_key(&meta.id) {
-                continue;
-            }
-            if let Some(host) = host_from_url(&meta.root_url) {
-                inner
-                    .by_host
-                    .entry(host)
-                    .or_default()
-                    .push(meta.id.clone());
-            }
-            inner.by_id.insert(meta.id.clone(), meta.clone());
-            inner.list.push(meta);
+        out.extend(scan_file(&path));
+    }
+    eprintln!(
+        "registry: escaneados {} módulos desde {} en {} ms",
+        out.len(),
+        dir.display(),
+        started.elapsed().as_millis()
+    );
+    if *scan_profile::ENABLED {
+        eprintln!("registry: perfil — {}", scan_profile::take_summary());
+    }
+    out
+}
+
+/// Builds the lookup indexes from a module list. Shared by the scan path and
+/// the cache path so both produce an identical registry.
+fn hydrate(list: Vec<ModuleMeta>) -> RegistryInner {
+    let mut inner = RegistryInner::default();
+    for meta in list {
+        // First occurrence wins; `scan_all` sorts files by name so this is stable.
+        if inner.by_id.contains_key(&meta.id) {
+            continue;
         }
+        if let Some(host) = host_from_url(&meta.root_url) {
+            inner
+                .by_host
+                .entry(host)
+                .or_default()
+                .push(meta.id.clone());
+        }
+        inner.by_id.insert(meta.id.clone(), meta.clone());
+        inner.list.push(meta);
     }
 
     for ids in inner.by_host.values_mut() {
@@ -137,26 +159,36 @@ fn build_registry() -> RegistryInner {
             lb.cmp(&la)
         });
     }
-
-    eprintln!(
-        "registry: {} módulos desde {}",
-        inner.list.len(),
-        dir.display()
-    );
     inner
+}
+
+/// Cache hit → hydrate from disk; miss → full scan, then persist.
+fn load_or_build() -> RegistryInner {
+    let fp = registry_cache::fingerprint();
+    if let Some(cached) = registry_cache::load(&fp) {
+        eprintln!("registry: {} módulos desde caché", cached.len());
+        return hydrate(cached);
+    }
+    let list = scan_all();
+    registry_cache::store(&fp, &list);
+    hydrate(list)
 }
 
 fn with_registry<R>(f: impl FnOnce(&RegistryInner) -> R) -> R {
     let mut guard = REGISTRY.lock();
     if guard.is_none() {
-        *guard = Some(build_registry());
+        *guard = Some(load_or_build());
     }
     f(guard.as_ref().unwrap())
 }
 
+/// Forces a full rescan, ignoring and rewriting the cache. This is the escape
+/// hatch behind the "check modules" button in Options.
 pub fn refresh() -> usize {
     let mut guard = REGISTRY.lock();
-    let inner = build_registry();
+    let list = scan_all();
+    registry_cache::store(&registry_cache::fingerprint(), &list);
+    let inner = hydrate(list);
     let n = inner.list.len();
     *guard = Some(inner);
     n
