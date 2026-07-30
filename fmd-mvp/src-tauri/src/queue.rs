@@ -404,27 +404,68 @@ fn process_item(
 
     let pack_fmt = crate::settings_keys::pack_format();
     if matches!(pack_fmt.as_str(), "cbz" | "zip" | "pdf" | "epub") && !result.files.is_empty() {
-        if let Some(first) = result.files.first() {
-            if let Some(dir) = std::path::Path::new(first).parent() {
-                match crate::pack::pack_chapter_dir(dir, &pack_fmt) {
-                    Ok(archive) => {
-                        if crate::settings_keys::pack_delete_folder() {
-                            let _ = std::fs::remove_dir_all(crate::paths::fs_path(dir));
-                        }
-                        if !err.is_empty() {
-                            err.push_str("; ");
-                        }
-                        err.push_str(&format!("packed {}", archive.display()));
-                    }
-                    Err(e) => {
-                        if !err.is_empty() {
-                            err.push_str("; ");
-                        }
-                        err.push_str(&format!("pack failed: {e}"));
-                    }
-                }
-            }
+        let Some(first) = result.files.first() else {
+            return Err("pack: sin archivos".into());
+        };
+        let Some(dir) = std::path::Path::new(first).parent() else {
+            return Err("pack: carpeta de capítulo inválida".into());
+        };
+        if cancel.load(Ordering::SeqCst) {
+            let _ = db::queue_mark_cancelled_if_running(
+                &app.state::<QueueState>().db,
+                item.id,
+                "",
+            );
+            return Ok(());
         }
+
+        let archive = match crate::pack::pack_chapter_dir(dir, &pack_fmt, Some(&cancel)) {
+            Ok(p) => p,
+            Err(e) if e == crate::pack::PACK_CANCELLED || cancel.load(Ordering::SeqCst) => {
+                let _ = db::queue_mark_cancelled_if_running(
+                    &app.state::<QueueState>().db,
+                    item.id,
+                    "",
+                );
+                return Ok(());
+            }
+            Err(e) => return Err(format!("pack failed: {e}")),
+        };
+
+        // Cancel requested while packing finished: do not count as success.
+        if cancel.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(crate::paths::fs_path(&archive));
+            let _ = db::queue_mark_cancelled_if_running(
+                &app.state::<QueueState>().db,
+                item.id,
+                "",
+            );
+            return Ok(());
+        }
+
+        if !crate::paths::fs_path(&archive).is_file() {
+            return Err(format!(
+                "pack failed: archive ausente ({})",
+                archive.display()
+            ));
+        }
+
+        if crate::settings_keys::pack_delete_folder() {
+            let _ = std::fs::remove_dir_all(crate::paths::fs_path(dir));
+        }
+        if !err.is_empty() {
+            err.push_str("; ");
+        }
+        err.push_str(&format!("packed {}", archive.display()));
+    }
+
+    if cancel.load(Ordering::SeqCst) {
+        let _ = db::queue_mark_cancelled_if_running(
+            &app.state::<QueueState>().db,
+            item.id,
+            "",
+        );
+        return Ok(());
     }
 
     db::queue_set_status(&app.state::<QueueState>().db, item.id, "done", &err)?;

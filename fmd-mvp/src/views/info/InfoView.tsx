@@ -120,7 +120,8 @@ function isNaTitle(title: string | undefined | null): boolean {
 function chapterMarkKey(link: string): string {
   const raw = (link || "").trim();
   if (!raw) return "";
-  return catalogLinkKey(raw) || mangaPathKey(raw) || raw.toLowerCase();
+  // Same path-only key as backend `link_mark_key` / `mangaPathKey`.
+  return mangaPathKey(raw) || raw.toLowerCase().replace(/\/+$/, "");
 }
 
 function inaccessibleInfoMessage(moduleName: string): string {
@@ -330,7 +331,6 @@ export function InfoView() {
   } | null>(null);
   const [enqueueBusy, setEnqueueBusy] = useState(false);
   const [splitBusy, setSplitBusy] = useState(false);
-  const [loadCovers, setLoadCovers] = useState(true);
   const loadCoversRef = useRef(true);
 
   const [sidebarRows, setSidebarRows] = useState<SidebarRows>(EMPTY_SIDEBAR_ROWS);
@@ -360,7 +360,6 @@ export function InfoView() {
 
   function setLoadCoversFlag(on: boolean) {
     loadCoversRef.current = on;
-    setLoadCovers(on);
   }
 
   function setCoverIsDefault(v: boolean) {
@@ -480,10 +479,11 @@ export function InfoView() {
         api.downloadedChaptersList(mid, url),
         api.queueActiveChapterLinks(mid, url),
       ]);
+      // Backend already returns canonical path keys; map again for safety.
       setChDownloaded(new Set(done.map(chapterMarkKey).filter(Boolean)));
       setChQueued(new Set(active.map(chapterMarkKey).filter(Boolean)));
     } catch {
-      /* ignore mark refresh errors */
+      /* ignore mark refresh errors — keep previous marks */
     }
   }, [mangaUrl]);
 
@@ -1756,7 +1756,8 @@ export function InfoView() {
         if (map.size === 0) {
           setActiveCatalogTitle("");
         } else {
-          const fallback = [...map.values()].at(-1)!;
+          const selected = [...map.values()];
+          const fallback = selected[selected.length - 1]!;
           setActiveCatalogTitle(fallback.title || fallback.link);
         }
       } else {
@@ -2143,14 +2144,21 @@ export function InfoView() {
         output_dir: dir,
         chapters: info.chapters,
         start: !taskStopped,
+        batch_id: `dl-${Date.now().toString(36)}`,
       });
-      log(
-        taskStopped
-          ? `Encolados ${n} de «${info.title || title}» (detenidos). Ve a Descargas y reanuda.`
-          : `Encolados ${n} de «${info.title || title}».`,
-        "ok",
-      );
+      const msg = taskStopped
+        ? `Encolados ${n} de «${info.title || title}» (detenidos).`
+        : `Encolados ${n} de «${info.title || title}».`;
+      log(msg, "ok");
       if (n > 0) {
+        appToast({
+          message: msg,
+          kind: "ok",
+          action: {
+            label: "Ver descargas",
+            onClick: () => setActiveNav("downloads"),
+          },
+        });
         const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
         if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
       }
@@ -2242,12 +2250,20 @@ export function InfoView() {
         output_dir: dir,
         chapters,
         start: !taskStopped,
+        batch_id: `dl-${Date.now().toString(36)}`,
       });
       const msg = taskStopped
-        ? `Encolados ${n} (detenidos). Ve a Descargas y reanuda.`
+        ? `Encolados ${n} (detenidos).`
         : `Encolados ${n} capítulo(s).`;
       log(msg, "ok");
-      appToast({ message: msg, kind: "ok" });
+      appToast({
+        message: msg,
+        kind: "ok",
+        action: {
+          label: "Ver descargas",
+          onClick: () => setActiveNav("downloads"),
+        },
+      });
       const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
       if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
     } catch (e) {
@@ -2329,7 +2345,14 @@ export function InfoView() {
         ? `Dividido en ${batches.length} tareas (${total} caps, detenidos).`
         : `Dividido en ${batches.length} tareas (${total} caps).`;
       log(msg, "ok");
-      appToast({ message: msg, kind: "ok" });
+      appToast({
+        message: msg,
+        kind: "ok",
+        action: {
+          label: "Ver descargas",
+          onClick: () => setActiveNav("downloads"),
+        },
+      });
       setSplitPrompt(null);
       const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
       if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");

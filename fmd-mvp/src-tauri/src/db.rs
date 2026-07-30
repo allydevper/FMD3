@@ -974,6 +974,36 @@ pub fn queue_clear_finished(db: &Db) -> Result<usize, String> {
     Ok(n)
 }
 
+/// Path-only mark key (aligns with frontend `mangaPathKey`): strip host/query,
+/// lowercase, no trailing slash. Absolute vs relative URLs of the same work match.
+fn link_mark_key(url: &str) -> String {
+    let s = url.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    let path = if let Ok(u) = url::Url::parse(s) {
+        u.path().to_string()
+    } else if let Some(rest) = s.strip_prefix("//") {
+        if let Ok(u) = url::Url::parse(&format!("https://{rest}")) {
+            u.path().to_string()
+        } else {
+            s.split(['?', '#']).next().unwrap_or(s).to_string()
+        }
+    } else {
+        s.split(['?', '#']).next().unwrap_or(s).to_string()
+    };
+    let path = path.trim();
+    if path.is_empty() {
+        return String::new();
+    }
+    let with_slash = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    with_slash.trim_end_matches('/').to_ascii_lowercase()
+}
+
 /// Record a chapter as downloaded (idempotent upsert).
 pub fn downloaded_chapters_mark(
     db: &Db,
@@ -982,12 +1012,40 @@ pub fn downloaded_chapters_mark(
     chapter_link: &str,
 ) -> Result<(), String> {
     let mid = module_id.trim();
-    let mu = manga_url.trim();
-    let link = chapter_link.trim();
+    let mu = link_mark_key(manga_url);
+    let link = link_mark_key(chapter_link);
     if mid.is_empty() || mu.is_empty() || link.is_empty() {
         return Ok(());
     }
     let conn = db.lock();
+    // Drop legacy rows for the same chapter under non-canonical manga_url variants.
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT manga_url, chapter_link FROM downloaded_chapters WHERE module_id=?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map(params![mid], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .filter(|(row_mu, row_ch)| {
+                link_mark_key(row_mu) == mu
+                    && link_mark_key(row_ch) == link
+                    && (row_mu != &mu || row_ch != &link)
+            })
+            .collect();
+        drop(stmt);
+        for (row_mu, row_ch) in rows {
+            let _ = conn.execute(
+                "DELETE FROM downloaded_chapters
+                 WHERE module_id=?1 AND manga_url=?2 AND chapter_link=?3",
+                params![mid, row_mu, row_ch],
+            );
+        }
+    }
     conn.execute(
         "INSERT INTO downloaded_chapters(module_id, manga_url, chapter_link, downloaded_at)
          VALUES(?1,?2,?3,?4)
@@ -998,26 +1056,79 @@ pub fn downloaded_chapters_mark(
     Ok(())
 }
 
-/// Chapter links marked downloaded for a manga.
+/// Clear the "already downloaded" mark (e.g. when the user deletes chapter files).
+pub fn downloaded_chapters_unmark(
+    db: &Db,
+    module_id: &str,
+    manga_url: &str,
+    chapter_link: &str,
+) -> Result<(), String> {
+    let mid = module_id.trim();
+    let mu_key = link_mark_key(manga_url);
+    let ch_key = link_mark_key(chapter_link);
+    if mid.is_empty() || mu_key.is_empty() || ch_key.is_empty() {
+        return Ok(());
+    }
+    let conn = db.lock();
+    let mut stmt = conn
+        .prepare("SELECT manga_url, chapter_link FROM downloaded_chapters WHERE module_id=?1")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map(params![mid], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .filter(|(row_mu, row_ch)| {
+            link_mark_key(row_mu) == mu_key && link_mark_key(row_ch) == ch_key
+        })
+        .collect();
+    drop(stmt);
+    for (row_mu, row_ch) in rows {
+        conn.execute(
+            "DELETE FROM downloaded_chapters
+             WHERE module_id=?1 AND manga_url=?2 AND chapter_link=?3",
+            params![mid, row_mu, row_ch],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Chapter links marked downloaded for a manga (canonical path keys).
 pub fn downloaded_chapters_list(
     db: &Db,
     module_id: &str,
     manga_url: &str,
 ) -> Result<Vec<String>, String> {
+    let mid = module_id.trim();
+    let mu_key = link_mark_key(manga_url);
+    if mid.is_empty() || mu_key.is_empty() {
+        return Ok(Vec::new());
+    }
     let conn = db.lock();
     let mut stmt = conn
         .prepare(
-            "SELECT chapter_link FROM downloaded_chapters
-             WHERE module_id=?1 AND manga_url=?2
+            "SELECT manga_url, chapter_link FROM downloaded_chapters
+             WHERE module_id=?1
              ORDER BY downloaded_at ASC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![module_id.trim(), manga_url.trim()], |r| r.get(0))
+        .query_map(params![mid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
+        let (row_mu, row_ch) = row.map_err(|e| e.to_string())?;
+        if link_mark_key(&row_mu) != mu_key {
+            continue;
+        }
+        let ch = link_mark_key(&row_ch);
+        if ch.is_empty() || !seen.insert(ch.clone()) {
+            continue;
+        }
+        out.push(ch);
     }
     Ok(out)
 }
@@ -1028,19 +1139,33 @@ pub fn queue_active_chapter_links(
     module_id: &str,
     manga_url: &str,
 ) -> Result<Vec<String>, String> {
+    let mid = module_id.trim();
+    let mu_key = link_mark_key(manga_url);
+    if mid.is_empty() || mu_key.is_empty() {
+        return Ok(Vec::new());
+    }
     let conn = db.lock();
     let mut stmt = conn
         .prepare(
-            "SELECT chapter_link FROM queue_items
-             WHERE module_id=?1 AND manga_url=?2 AND status IN ('pending','running')",
+            "SELECT manga_url, chapter_link FROM queue_items
+             WHERE module_id=?1 AND status IN ('pending','running')",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![module_id.trim(), manga_url.trim()], |r| r.get(0))
+        .query_map(params![mid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
+        let (row_mu, row_ch) = row.map_err(|e| e.to_string())?;
+        if link_mark_key(&row_mu) != mu_key {
+            continue;
+        }
+        let ch = link_mark_key(&row_ch);
+        if ch.is_empty() || !seen.insert(ch.clone()) {
+            continue;
+        }
+        out.push(ch);
     }
     Ok(out)
 }

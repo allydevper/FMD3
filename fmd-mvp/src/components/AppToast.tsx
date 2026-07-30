@@ -12,12 +12,19 @@ import { Icon } from "./Icon";
 
 export type AppToastKind = "ok" | "err" | "";
 
+export type AppToastAction = {
+  label: string;
+  onClick: () => void;
+};
+
 export type AppToastOptions = {
   message: string;
   kind?: AppToastKind;
   durationMs?: number;
   /** When set, shows a Deshacer action. */
   onUndo?: () => void | Promise<void>;
+  /** Secondary link-style action (e.g. Ver descargas). */
+  action?: AppToastAction;
 };
 
 /** @deprecated Prefer `appToast({ message, onUndo })`. */
@@ -34,6 +41,7 @@ type Pending = {
   message: string;
   kind: AppToastKind;
   onUndo?: () => void | Promise<void>;
+  action?: AppToastAction;
   durationMs: number;
 };
 
@@ -79,12 +87,14 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
     (opts) => {
       clearTimer();
       const id = ++seqRef.current;
-      const durationMs = opts.durationMs ?? (opts.onUndo ? 6000 : 3200);
+      const durationMs =
+        opts.durationMs ?? (opts.onUndo || opts.action ? 6000 : 3200);
       setPending({
         id,
         message: opts.message,
         kind: opts.kind ?? "",
         onUndo: opts.onUndo,
+        action: opts.action,
         durationMs,
       });
       timerRef.current = window.setTimeout(() => {
@@ -113,6 +123,12 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
     }
   }, [pending, dismiss]);
 
+  const handleAction = useCallback(() => {
+    const action = pending?.action;
+    dismiss();
+    if (action) action.onClick();
+  }, [pending, dismiss]);
+
   const value = useMemo(() => show, [show]);
   const kindClass =
     pending?.kind === "ok"
@@ -131,6 +147,15 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
           aria-live="polite"
         >
           <span className="app-toast-text">{pending.message}</span>
+          {pending.action ? (
+            <button
+              type="button"
+              className="app-toast-undo"
+              onClick={handleAction}
+            >
+              {pending.action.label}
+            </button>
+          ) : null}
           {pending.onUndo ? (
             <button type="button" className="app-toast-undo" onClick={handleUndo}>
               Deshacer

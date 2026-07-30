@@ -635,8 +635,8 @@ pub fn queue_remove(state: State<QueueState>, id: i64) -> Result<(), String> {
     db::queue_remove(&state.db, id)
 }
 
-/// Delete the on-disk chapter folder for a queue item (safe path under output_dir).
-/// Does not remove the queue row — call `queue_remove` after.
+/// Delete the on-disk chapter folder and/or packed archive for a queue item
+/// (safe paths under output_dir). Does not remove the queue row — call `queue_remove` after.
 #[tauri::command]
 pub fn queue_delete_chapter_files(
     state: State<QueueState>,
@@ -690,28 +690,86 @@ pub fn queue_delete_chapter_files(
         .canonicalize()
         .map(|p| crate::paths::strip_long_prefix(&p))
         .unwrap_or_else(|_| crate::paths::strip_long_prefix(&base));
+
+    fn path_under_base(
+        candidate: &std::path::Path,
+        base_canon: &std::path::Path,
+        base_root: &std::path::Path,
+    ) -> Result<std::path::PathBuf, String> {
+        let fs = crate::paths::fs_path(candidate);
+        if !fs.exists() {
+            return Ok(crate::paths::strip_long_prefix(candidate));
+        }
+        let canon = fs
+            .canonicalize()
+            .map_err(|e| format!("ruta inválida {}: {e}", candidate.display()))?;
+        let cmp = crate::paths::strip_long_prefix(&canon);
+        if !cmp.starts_with(base_canon) {
+            return Err(format!(
+                "ruta fuera de la carpeta de salida: {}",
+                cmp.display()
+            ));
+        }
+        if cmp == *base_canon || cmp == crate::paths::strip_long_prefix(base_root) {
+            return Err("no se borra la carpeta raíz de descargas".into());
+        }
+        Ok(cmp)
+    }
+
+    let mut deleted: Vec<String> = Vec::new();
     let chapter_fs = crate::paths::fs_path(&chapter_dir);
-    // If chapter dir doesn't exist yet, nothing to delete.
-    if !chapter_fs.exists() {
-        return Ok(chapter_dir.display().to_string());
+
+    // Packed archive next to the chapter folder (…/cap.zip when folder was …/cap).
+    for ext in ["zip", "cbz", "pdf", "epub"] {
+        let archive = chapter_dir.with_extension(ext);
+        let archive_fs = crate::paths::fs_path(&archive);
+        if !archive_fs.is_file() {
+            continue;
+        }
+        let cmp = path_under_base(&archive, &base_canon, &base)?;
+        std::fs::remove_file(&archive_fs)
+            .map_err(|e| format!("no se pudo borrar {}: {e}", cmp.display()))?;
+        deleted.push(cmp.display().to_string());
     }
-    let chap_canon = chapter_fs
-        .canonicalize()
-        .map_err(|e| format!("ruta inválida {}: {e}", chapter_dir.display()))?;
-    let chap_cmp = crate::paths::strip_long_prefix(&chap_canon);
-    if !chap_cmp.starts_with(&base_canon) {
-        return Err(format!(
-            "ruta fuera de la carpeta de salida: {}",
-            chap_cmp.display()
+    // Leftover atomic-write temps (…/cap.zip.partial).
+    for ext in ["zip", "cbz", "pdf", "epub"] {
+        let partial = std::path::PathBuf::from(format!(
+            "{}.partial",
+            chapter_dir.with_extension(ext).display()
         ));
+        let partial_fs = crate::paths::fs_path(&partial);
+        if !partial_fs.is_file() {
+            continue;
+        }
+        if let Ok(cmp) = path_under_base(&partial, &base_canon, &base) {
+            let _ = std::fs::remove_file(&partial_fs);
+            deleted.push(cmp.display().to_string());
+        }
     }
-    // Never delete the base output root itself.
-    if chap_cmp == base_canon {
-        return Err("no se borra la carpeta raíz de descargas".into());
+
+    if chapter_fs.is_dir() {
+        let chap_cmp = path_under_base(&chapter_dir, &base_canon, &base)?;
+        let chap_canon = chapter_fs
+            .canonicalize()
+            .map_err(|e| format!("ruta inválida {}: {e}", chapter_dir.display()))?;
+        std::fs::remove_dir_all(&chap_canon)
+            .map_err(|e| format!("no se pudo borrar {}: {e}", chap_cmp.display()))?;
+        deleted.push(chap_cmp.display().to_string());
     }
-    std::fs::remove_dir_all(&chap_canon)
-        .map_err(|e| format!("no se pudo borrar {}: {e}", chap_cmp.display()))?;
-    Ok(chap_cmp.display().to_string())
+
+    // Drop the UI "already downloaded" mark whenever the user deletes files.
+    let _ = db::downloaded_chapters_unmark(
+        &state.db,
+        &item.module_id,
+        &item.manga_url,
+        &item.chapter_link,
+    );
+
+    if deleted.is_empty() {
+        Ok(chapter_dir.display().to_string())
+    } else {
+        Ok(deleted.join("; "))
+    }
 }
 
 #[tauri::command]

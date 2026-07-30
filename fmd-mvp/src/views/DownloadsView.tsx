@@ -7,12 +7,13 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { Icon } from "../components/Icon";
-import { appToastUndo } from "../components/AppToast";
+import { appToast, appToastUndo } from "../components/AppToast";
 import { ICO } from "../icons";
 import { DL_HIST, DL_ST, SK } from "../constants";
 import * as api from "../api/tauri";
 import { useApp } from "../context/AppContext";
 import { confirmIfEnabled, settingBool, settingNumber } from "../utils/settings";
+import { catalogLinkKey, mangaPathKey } from "../utils/url";
 import type {
   ChapterInfo,
   LiveProgress,
@@ -92,8 +93,8 @@ function dlItemPct(
   item: QueueItem,
   liveProgress: Map<number, LiveProgress>,
 ): { pct: number; pages: string; label: string } {
-  const live = liveProgress.get(item.id);
   if (item.status === "done") return { pct: 100, pages: "", label: "100%" };
+  const live = liveProgress.get(item.id);
   if (live && live.page_total > 0) {
     const pct = Math.min(100, Math.round((live.page_current / live.page_total) * 100));
     return {
@@ -110,7 +111,11 @@ function mangaGroupKey(it: QueueItem): string {
   const batch = (it.batch_id || "").trim();
   if (batch) return `batch:${batch}`;
   const url = (it.manga_url || "").trim();
-  return `${it.module_id}|${url || it.manga_title}`;
+  // Stabilize absolute vs relative / trailing-slash variants so sequential
+  // single-chapter downloads of the same work merge into one group.
+  const normalized =
+    (url && (catalogLinkKey(url) || mangaPathKey(url))) || url || it.manga_title;
+  return `${it.module_id}|${normalized}`;
 }
 
 /** Parse `…-kofN` suffix from split batch ids. */
@@ -702,11 +707,16 @@ export function DownloadsView() {
     }
     await refreshQueue();
     if (!snapshots.length) return;
-    const toastMsg = deleteFiles
-      ? `${label} (archivos borrados; Deshacer solo re-encola)`
-      : label;
+    if (deleteFiles) {
+      appToast({
+        message: `${label}`,
+        kind: "ok",
+        durationMs: 4000,
+      });
+      return;
+    }
     appToastUndo({
-      message: toastMsg,
+      message: label,
       durationMs: 6000,
       onUndo: async () => {
         try {
