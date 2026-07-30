@@ -171,11 +171,11 @@ pub fn download_pages_with_referer_for_test(
 }
 
 pub fn open_db_for_test() -> Result<db::Db, String> {
-    let (main, _) = db::open_app_dbs()?;
+    let (main, _, _) = db::open_app_dbs()?;
     Ok(main)
 }
 
-pub fn open_app_dbs_for_test() -> Result<(db::Db, db::Db), String> {
+pub fn open_app_dbs_for_test() -> Result<(db::Db, db::Db, db::Db), String> {
     db::open_app_dbs()
 }
 
@@ -213,9 +213,10 @@ pub fn catalog_search_for_test(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let (db, favorites) = db::open_app_dbs().expect("no se pudo abrir la base de datos");
+    let (db, favorites, downloaded) =
+        db::open_app_dbs().expect("no se pudo abrir la base de datos");
     let _ = db::queue_reset_running_to_pending(&db);
-    let queue_state = QueueState::new(db, favorites);
+    let queue_state = QueueState::new(db, favorites, downloaded);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

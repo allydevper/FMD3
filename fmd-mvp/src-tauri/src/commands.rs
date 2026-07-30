@@ -1012,7 +1012,7 @@ pub fn downloaded_chapters_list(
     module_id: String,
     manga_url: String,
 ) -> Result<Vec<String>, String> {
-    db::downloaded_chapters_list(&state.db, &module_id, &manga_url)
+    db::downloaded_chapters_list(&state.downloaded, &module_id, &manga_url)
 }
 
 #[tauri::command]

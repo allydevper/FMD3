@@ -162,7 +162,23 @@ pub fn favorites_db_path() -> PathBuf {
     userdata_path().join("favorites.db")
 }
 
+pub fn downloaded_db_path() -> PathBuf {
+    userdata_path().join("downloaded.db")
+}
+
 const USERDATA_SPLIT_KEY: &str = "db.userdata_split";
+
+const DOWNLOADED_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS downloaded_chapters (
+    module_id TEXT NOT NULL,
+    manga_url TEXT NOT NULL,
+    chapter_link TEXT NOT NULL,
+    downloaded_at TEXT NOT NULL,
+    PRIMARY KEY (module_id, manga_url, chapter_link)
+);
+CREATE INDEX IF NOT EXISTS idx_downloaded_chapters_manga
+    ON downloaded_chapters(module_id, manga_url);
+"#;
 
 const FAVORITES_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS favorites (
@@ -203,7 +219,8 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool, String> {
     Ok(n > 0)
 }
 
-/// Open main app DB (`fmd-mvp.db`): settings, queue, manga_cache, downloaded_chapters.
+/// Open main app DB (`fmd-mvp.db`): settings, queue, manga_cache. Favorites and
+/// downloaded marks live in their own files under `userdata/`.
 pub fn open_db() -> Result<Db, String> {
     let dir = db_path();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -253,15 +270,6 @@ pub fn open_db() -> Result<Db, String> {
             PRIMARY KEY (module_id, link)
         );
         CREATE INDEX IF NOT EXISTS idx_manga_cache_module ON manga_cache(module_id);
-        CREATE TABLE IF NOT EXISTS downloaded_chapters (
-            module_id TEXT NOT NULL,
-            manga_url TEXT NOT NULL,
-            chapter_link TEXT NOT NULL,
-            downloaded_at TEXT NOT NULL,
-            PRIMARY KEY (module_id, manga_url, chapter_link)
-        );
-        CREATE INDEX IF NOT EXISTS idx_downloaded_chapters_manga
-            ON downloaded_chapters(module_id, manga_url);
         "#,
     )
     .map_err(|e| e.to_string())?;
@@ -296,69 +304,18 @@ pub fn open_db() -> Result<Db, String> {
     );
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN alt_titles TEXT", []);
-    let _ = backfill_downloaded_from_queue(&conn);
     Ok(Arc::new(Mutex::new(conn)))
 }
 
-/// One-time seed of `downloaded_chapters` from historical `queue_items` rows with
-/// status `done` (downloads that predate the marks table).
-///
-/// Runs once, guarded by a settings flag. After this the two tables are fully
-/// independent: the queue can be cleared, or its tasks removed along with their
-/// files, without losing marks.
-fn backfill_downloaded_from_queue(conn: &Connection) -> Result<(), String> {
-    const FLAG: &str = "db.backfill_downloaded_v1";
-    let already: Option<String> = conn
-        .query_row("SELECT value FROM settings WHERE key=?1", params![FLAG], |r| {
-            r.get(0)
-        })
-        .optional()
+/// Open portable downloaded-marks DB (`userdata/downloaded.db`).
+pub fn open_downloaded_db() -> Result<Db, String> {
+    let dir = userdata_path();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let conn = Connection::open(downloaded_db_path()).map_err(|e| e.to_string())?;
+    configure_connection(&conn)?;
+    conn.execute_batch(DOWNLOADED_DDL)
         .map_err(|e| e.to_string())?;
-    if already.is_some() {
-        return Ok(());
-    }
-
-    let rows: Vec<(String, String, String, String)> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT module_id, manga_url, chapter_link, updated_at FROM queue_items
-                 WHERE status='done' AND module_id<>'' AND manga_url<>'' AND chapter_link<>''",
-            )
-            .map_err(|e| e.to_string())?;
-        let mapped = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?;
-        mapped.filter_map(|r| r.ok()).collect()
-    };
-
-    /* Insert canonical keys, same as `downloaded_chapters_mark`, so the table only
-    ever holds one form. `OR IGNORE` keeps existing marks untouched. */
-    for (mid, mu, ch, at) in rows {
-        let mu_key = link_mark_key(&mu);
-        let ch_key = link_mark_key(&ch);
-        if mu_key.is_empty() || ch_key.is_empty() {
-            continue;
-        }
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO downloaded_chapters(module_id, manga_url, chapter_link, downloaded_at)
-             VALUES(?1,?2,?3,?4)",
-            params![mid.trim(), mu_key, ch_key, at],
-        );
-    }
-
-    conn.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES(?1, '1')",
-        params![FLAG],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(Arc::new(Mutex::new(conn)))
 }
 
 /// Open portable favorites DB (`userdata/favorites.db`).
@@ -447,12 +404,17 @@ fn migrate_favorites_from_main(main: &Db, favorites: &Db) -> Result<(), String> 
     Ok(())
 }
 
-/// Open main + favorites DBs and run one-shot favorites migration.
-pub fn open_app_dbs() -> Result<(Db, Db), String> {
+/// Open main + favorites + downloaded-marks DBs.
+///
+/// `userdata/downloaded.db` starts empty on existing installs: there is no migration
+/// from the old main-DB table, so previously downloaded chapters show as unmarked
+/// until they are downloaded again.
+pub fn open_app_dbs() -> Result<(Db, Db, Db), String> {
     let main = open_db()?;
     let favorites = open_favorites_db()?;
     migrate_favorites_from_main(&main, &favorites)?;
-    Ok((main, favorites))
+    let downloaded = open_downloaded_db()?;
+    Ok((main, favorites, downloaded))
 }
 
 pub fn settings_get(db: &Db, key: &str) -> Result<Option<String>, String> {
@@ -1226,9 +1188,16 @@ pub fn queue_has_pending(db: &Db) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    /// In-memory DB with the same schema `open_db` creates for the tables the mark
-    /// path touches.
+    /// In-memory stand-in for `userdata/downloaded.db` (marks only).
     fn test_db() -> Db {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(DOWNLOADED_DDL).expect("downloaded ddl");
+        Arc::new(Mutex::new(conn))
+    }
+
+    /// In-memory stand-in for the main DB: settings + queue, no marks table (the
+    /// split moved it out).
+    fn test_main_db() -> Db {
         let conn = Connection::open_in_memory().expect("open in-memory db");
         conn.execute_batch(
             r#"
@@ -1252,13 +1221,6 @@ mod tests {
                 updated_at TEXT NOT NULL DEFAULT '',
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 position INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE downloaded_chapters (
-                module_id TEXT NOT NULL,
-                manga_url TEXT NOT NULL,
-                chapter_link TEXT NOT NULL,
-                downloaded_at TEXT NOT NULL,
-                PRIMARY KEY (module_id, manga_url, chapter_link)
             );
             "#,
         )
@@ -1351,41 +1313,16 @@ mod tests {
 
     #[test]
     fn marks_survive_clearing_finished_queue_rows() {
+        let main = test_main_db();
         let db = test_db();
         downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-1").unwrap();
-        add_done(&db, MID, MU, "/manga/foo/c-1");
+        add_done(&main, MID, MU, "/manga/foo/c-1");
 
-        queue_clear_finished(&db).unwrap();
+        queue_clear_finished(&main).unwrap();
         assert_eq!(
             downloaded_chapters_list(&db, MID, MU).unwrap(),
             vec!["/manga/foo/c-1"]
         );
-    }
-
-    #[test]
-    fn backfill_seeds_canonical_keys_once() {
-        let db = test_db();
-        /* Legacy history: raw URL forms, no marks table rows. */
-        add_done(&db, MID, "https://site.com/Manga/Foo/", "/manga/foo/c-1/");
-        add_done(&db, MID, "/manga/foo", "/manga/foo/c-2");
-        add_done(&db, MID, "", "/manga/foo/c-3"); /* skipped: empty manga_url */
-
-        {
-            let conn = db.lock();
-            backfill_downloaded_from_queue(&conn).unwrap();
-        }
-        let mut got = downloaded_chapters_list(&db, MID, MU).unwrap();
-        got.sort();
-        assert_eq!(got, vec!["/manga/foo/c-1", "/manga/foo/c-2"]);
-
-        /* Guarded by the settings flag: a second run must not duplicate rows. */
-        {
-            let conn = db.lock();
-            backfill_downloaded_from_queue(&conn).unwrap();
-        }
-        let mut again = downloaded_chapters_list(&db, MID, MU).unwrap();
-        again.sort();
-        assert_eq!(again, vec!["/manga/foo/c-1", "/manga/foo/c-2"]);
     }
 
     /// The reported "the mark disappears" sequence, now with the intended outcome:
@@ -1394,15 +1331,16 @@ mod tests {
     /// revoke.
     #[test]
     fn marks_survive_removing_finished_tasks_and_their_files() {
+        let main = test_main_db();
         let db = test_db();
         downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-1").unwrap();
         downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-2").unwrap();
-        add_done(&db, MID, MU, "/manga/foo/c-1");
-        add_done(&db, MID, MU, "/manga/foo/c-2");
+        add_done(&main, MID, MU, "/manga/foo/c-1");
+        add_done(&main, MID, MU, "/manga/foo/c-2");
 
         /* "Quitar de la cola" + "borrar también los archivos": queue rows go, files
-        go, marks stay. */
-        queue_clear_finished(&db).unwrap();
+        go, marks stay — they now live in a different file entirely. */
+        queue_clear_finished(&main).unwrap();
 
         let mut got = downloaded_chapters_list(&db, MID, MU).unwrap();
         got.sort();
@@ -1429,3 +1367,4 @@ mod tests {
         );
     }
 }
+

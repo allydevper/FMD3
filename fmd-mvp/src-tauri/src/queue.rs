@@ -13,6 +13,8 @@ use tokio::sync::mpsc::UnboundedSender;
 pub struct QueueState {
     pub db: Db,
     pub favorites: Db,
+    /// `userdata/downloaded.db` — the "already downloaded" marks, append-only.
+    pub downloaded: Db,
     running: Arc<AtomicBool>,
     /// Per-item cancel flags for in-flight `process_item` jobs.
     cancels: Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>,
@@ -23,10 +25,11 @@ pub struct QueueState {
 }
 
 impl QueueState {
-    pub fn new(db: Db, favorites: Db) -> Self {
+    pub fn new(db: Db, favorites: Db, downloaded: Db) -> Self {
         Self {
             db,
             favorites,
+            downloaded,
             running: Arc::new(AtomicBool::new(false)),
             cancels: Arc::new(Mutex::new(HashMap::new())),
             active: Arc::new(AtomicUsize::new(0)),
@@ -470,7 +473,7 @@ fn process_item(
 
     db::queue_set_status(&app.state::<QueueState>().db, item.id, "done", &err)?;
     let _ = db::downloaded_chapters_mark(
-        &app.state::<QueueState>().db,
+        &app.state::<QueueState>().downloaded,
         &item.module_id,
         &item.manga_url,
         &item.chapter_link,
