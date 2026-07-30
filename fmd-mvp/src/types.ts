@@ -106,6 +106,8 @@ export type QueueProgressEvent = {
   pending_left: number;
   page_current: number;
   page_total: number;
+  /** "download" mientras se bajan páginas, "processing" durante el empaquetado. */
+  phase?: string;
   bytes_per_sec?: number;
   bytes_current?: number;
 };
@@ -242,5 +244,6 @@ export type LiveProgress = {
   page_total: number;
   message: string;
   chapter_name: string;
+  phase?: string;
   bytes_per_sec?: number;
 };

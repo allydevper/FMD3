@@ -95,6 +95,13 @@ function dlItemPct(
 ): { pct: number; pages: string; label: string } {
   if (item.status === "done") return { pct: 100, pages: "", label: "100%" };
   const live = liveProgress.get(item.id);
+  if (live?.phase === "processing") {
+    return {
+      pct: 100,
+      pages: live.page_total > 0 ? `${live.page_total}/${live.page_total} pág` : "",
+      label: "Procesando…",
+    };
+  }
   if (live && live.page_total > 0) {
     const pct = Math.min(100, Math.round((live.page_current / live.page_total) * 100));
     return {
@@ -188,11 +195,15 @@ function groupByManga(list: QueueItem[], modules: ModuleMeta[]): MangaGroup[] {
 type GroupAgg = {
   status: string;
   st: ReturnType<typeof dlStatusMeta>;
+  /** Etiqueta a mostrar: `st.label`, o "Procesando" si todo lo activo está empaquetando. */
+  stLabel: string;
   done: number;
   active: number;
   queued: number;
   paused: number;
   failed: number;
+  /** Subconjunto de `active` que ya terminó de bajar y está empaquetando. */
+  processing: number;
   pct: number;
   wDone: number;
   wActive: number;
@@ -210,6 +221,7 @@ function aggregateGroup(
   let queued = 0;
   let paused = 0;
   let failed = 0;
+  let processing = 0;
   let pctSum = 0;
   let speed = 0;
   for (const it of cs) {
@@ -218,6 +230,7 @@ function aggregateGroup(
     if (it.status === "done") done++;
     else if (it.status === "running") {
       active++;
+      if (liveProgress.get(it.id)?.phase === "processing") processing++;
       speed += liveProgress.get(it.id)?.bytes_per_sec ?? 0;
     } else if (it.status === "pending") queued++;
     else if (it.status === "cancelled") paused++;
@@ -234,18 +247,25 @@ function aggregateGroup(
   else if (queued > 0) status = "pending";
   const parts: string[] = [];
   if (done) parts.push(`${done} listos`);
-  if (active) parts.push(active === 1 ? "1 descargando" : `${active} descargando`);
+  const downloading = active - processing;
+  if (downloading)
+    parts.push(downloading === 1 ? "1 descargando" : `${downloading} descargando`);
+  if (processing) parts.push(`${processing} procesando`);
   if (queued) parts.push(`${queued} en cola`);
   if (paused) parts.push(`${paused} detenidos`);
   if (failed) parts.push(`${failed} con error`);
+  const st = dlStatusMeta(status);
   return {
     status,
-    st: dlStatusMeta(status),
+    st,
+    stLabel:
+      active > 0 && processing === active ? "Procesando" : st.label,
     done,
     active,
     queued,
     paused,
     failed,
+    processing,
     pct,
     wDone,
     wActive,
@@ -467,6 +487,7 @@ export function DownloadsView() {
             page_total: p.page_total,
             message: p.message,
             chapter_name: p.chapter_name,
+            phase: p.phase,
             bytes_per_sec: p.bytes_per_sec,
           });
           return next;
@@ -474,6 +495,7 @@ export function DownloadsView() {
         if (
           p.message.startsWith("Obteniendo") ||
           p.message.startsWith("Downloading") ||
+          p.message.startsWith("Procesando") ||
           p.message.startsWith("Completed") ||
           p.message.startsWith("[")
         ) {
@@ -1245,7 +1267,7 @@ export function DownloadsView() {
                         className="dl-badge"
                         style={{ color: a.st.color, background: a.st.bg }}
                       >
-                        {a.st.label}
+                        {a.stLabel}
                       </span>
                       <div className="dl-prog">
                         <div className="dl-seg">
@@ -1406,7 +1428,7 @@ export function DownloadsView() {
                           background: focusAgg.st.bg,
                         }}
                       >
-                        {focusAgg.st.label}
+                        {focusAgg.stLabel}
                       </span>
                       {focusGroup.taskLabel ? (
                         <span className="mono dl-tag">{focusGroup.taskLabel}</span>
@@ -1557,8 +1579,12 @@ export function DownloadsView() {
                         c.status === "running" || c.status === "pending";
                       const canResume =
                         c.status === "cancelled" || c.status === "failed";
-                      const meta =
-                        c.status === "running"
+                      const isProcessing =
+                        c.status === "running" &&
+                        liveProgress.get(c.id)?.phase === "processing";
+                      const meta = isProcessing
+                        ? prog.pages || "…"
+                        : c.status === "running"
                           ? formatBytesPerSec(
                               liveProgress.get(c.id)?.bytes_per_sec,
                             ) || "…"
@@ -1609,7 +1635,7 @@ export function DownloadsView() {
                                   background: st.bg,
                                 }}
                               >
-                                {st.label}
+                                {isProcessing ? "Procesando" : st.label}
                               </span>
                               <span className="mono" style={{ fontSize: "10.5px", color: "var(--muted)" }}>
                                 {meta}
@@ -1705,7 +1731,7 @@ export function DownloadsView() {
                     background: focusAgg.st.bg,
                   }}
                 >
-                  {focusAgg.st.label}
+                  {focusAgg.stLabel}
                 </span>
                 <span className="ell" style={{ minWidth: 0, fontSize: "11.5px", color: "var(--muted)" }}>
                   {`${focusGroup.items.length} cap · ${focusAgg.done} listos${

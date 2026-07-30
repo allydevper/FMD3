@@ -69,6 +69,8 @@ pub struct QueueProgressEvent {
     pub pending_left: i64,
     pub page_current: u32,
     pub page_total: u32,
+    /// "download" mientras se bajan páginas, "processing" durante el empaquetado.
+    pub phase: String,
     #[serde(default)]
     pub bytes_per_sec: u64,
     #[serde(default)]
@@ -109,6 +111,7 @@ fn progress_event(
     pending_left: i64,
     page_current: u32,
     page_total: u32,
+    phase: &str,
 ) -> QueueProgressEvent {
     QueueProgressEvent {
         item_id: item.id,
@@ -118,6 +121,7 @@ fn progress_event(
         pending_left,
         page_current,
         page_total,
+        phase: phase.to_string(),
         bytes_per_sec: 0,
         bytes_current: 0,
     }
@@ -188,6 +192,7 @@ pub fn start_worker(app: AppHandle) {
                         pending_count(&db),
                         0,
                         0,
+                        "download",
                     ),
                 );
 
@@ -326,6 +331,7 @@ fn process_item(
             pending_count(&app.state::<QueueState>().db),
             0,
             0,
+            "download",
         ),
     );
 
@@ -356,6 +362,7 @@ fn process_item(
                 pending_left: pending_count(&app_progress.state::<QueueState>().db),
                 page_current: cur as u32,
                 page_total: total as u32,
+                phase: "download".to_string(),
                 bytes_per_sec,
                 bytes_current: bytes_total,
             },
@@ -422,6 +429,19 @@ fn process_item(
             return Ok(());
         }
 
+        // Fase de empaquetado: conserva el ratio N/N para que la barra no retroceda.
+        let _ = app.emit(
+            "queue-progress",
+            progress_event(
+                &item,
+                format!("Procesando {}", item.chapter_name),
+                pending_count(&app.state::<QueueState>().db),
+                result.files.len() as u32,
+                result.files.len() as u32,
+                "processing",
+            ),
+        );
+
         let archive = match crate::pack::pack_chapter_dir(dir, &pack_fmt, Some(&cancel)) {
             Ok(p) => p,
             Err(e) if e == crate::pack::PACK_CANCELLED || cancel.load(Ordering::SeqCst) => {
@@ -486,6 +506,7 @@ fn process_item(
             pending_count(&app.state::<QueueState>().db),
             result.files.len() as u32,
             result.files.len() as u32,
+            "download",
         ),
     );
     crate::log_file::append(&format!(
