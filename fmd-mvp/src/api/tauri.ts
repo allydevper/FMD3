@@ -214,6 +214,14 @@ export function queueActiveChapterLinks(moduleId: string, mangaUrl: string) {
   return invoke<string[]>("queue_active_chapter_links", { moduleId, mangaUrl });
 }
 
+/**
+ * Canonical mark keys for `links`, same order. The backend owns the key rules —
+ * never recompute them here, that is how the two definitions drifted apart.
+ */
+export function chapterMarkKeys(links: string[]) {
+  return invoke<string[]>("chapter_mark_keys", { links });
+}
+
 export function queueReorder(ids: number[]) {
   return invoke("queue_reorder", { ids });
 }

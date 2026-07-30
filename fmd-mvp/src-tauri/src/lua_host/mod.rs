@@ -22,3 +22,4 @@ pub use runtime::{
     manga_output_dir, resolve_queue_item_paths, update_list, ChapterInfo, MangaInfoResult,
     PageLinksResult, UpdateListProgress, UpdateListStats, DOWNLOAD_CANCELLED,
 };
+pub use strings::maybe_fill_host;

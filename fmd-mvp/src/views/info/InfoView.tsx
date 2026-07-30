@@ -26,6 +26,7 @@ import {
   DEFAULT_GENRES,
   FILTER_CUSTOM_HINT,
   GENRE_TRI_CYCLE,
+  MARK_REFRESH_DEBOUNCE_MS,
   emptyAdvFilter,
   cloneAdvFilter,
   advFilterToPayload,
@@ -33,7 +34,7 @@ import {
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
-import { catalogLinkKey, maybeFillHost, mangaPathKey, normalizeMangaUrl, resolveCover, urlsReferToSameManga } from "../../utils/url";
+import { catalogLinkKey, maybeFillHost, normalizeMangaUrl, resolveCover, urlsReferToSameManga } from "../../utils/url";
 import {
   favoritesCacheRemove,
   favoritesCacheUpsert,
@@ -115,13 +116,6 @@ function chapterNum(index: number): string {
 function isNaTitle(title: string | undefined | null): boolean {
   const t = (title || "").trim();
   return !t || t.toUpperCase() === "N/A";
-}
-
-function chapterMarkKey(link: string): string {
-  const raw = (link || "").trim();
-  if (!raw) return "";
-  // Same path-only key as backend `link_mark_key` / `mangaPathKey`.
-  return mangaPathKey(raw) || raw.toLowerCase().replace(/\/+$/, "");
 }
 
 function inaccessibleInfoMessage(moduleName: string): string {
@@ -312,6 +306,10 @@ export function InfoView() {
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [chDownloaded, setChDownloaded] = useState<Set<string>>(() => new Set());
   const [chQueued, setChQueued] = useState<Set<string>>(() => new Set());
+  /** chapter.index -> canonical mark key, resolved by the backend on manga load. */
+  const [chMarkKeys, setChMarkKeys] = useState<Map<number, string>>(
+    () => new Map(),
+  );
   const [infoPanelOpen, setInfoPanelOpen] = useState(false);
   const [infoSidebarCollapsed, setInfoSidebarCollapsed] = useState(false);
   const [sourceToolsOpen, setSourceToolsOpen] = useState(false);
@@ -320,6 +318,8 @@ export function InfoView() {
   >("update_one");
   const [isFavorite, setIsFavorite] = useState(false);
   const [favoriteId, setFavoriteId] = useState<number | null>(null);
+  /** Guards against out-of-order `refreshChapterMarks` responses. */
+  const markSeqRef = useRef(0);
   /** Module of the manga currently shown / loading in the info sidebar. */
   const sidebarModuleIdRef = useRef("");
   /** Stable catalog row key for the title open in the sidebar (`module:link`). */
@@ -465,27 +465,73 @@ export function InfoView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * The DB is the only source of truth: whatever it returns *is* the mark set. No
+   * merging with previous state — marks are append-only in the backend, so a chapter
+   * missing from the listing simply was never downloaded.
+   *
+   * `markSeqRef` drops out-of-order responses. Parallel chapter downloads fire
+   * `queue-changed` in bursts, so several refreshes overlap; without the guard an
+   * older response can land last and clobber newer marks.
+   */
   const refreshChapterMarks = useCallback(async () => {
     const m = mangaRef.current;
     const url = (mangaUrl || "").trim();
     const mid = (m?.module_id || sidebarModuleIdRef.current || "").trim();
-    if (!m || !url || !mid) {
+    if (!m) {
+      /* Only a closed manga clears the marks. A momentarily empty url/module id
+      during a re-render must not wipe them. */
+      markSeqRef.current++;
       setChDownloaded(new Set());
       setChQueued(new Set());
       return;
     }
+    if (!url || !mid) return;
+    const seq = ++markSeqRef.current;
     try {
       const [done, active] = await Promise.all([
         api.downloadedChaptersList(mid, url),
         api.queueActiveChapterLinks(mid, url),
       ]);
-      // Backend already returns canonical path keys; map again for safety.
-      setChDownloaded(new Set(done.map(chapterMarkKey).filter(Boolean)));
-      setChQueued(new Set(active.map(chapterMarkKey).filter(Boolean)));
+      if (seq !== markSeqRef.current) return; /* stale response */
+      setChDownloaded(new Set(done));
+      setChQueued(new Set(active));
     } catch {
       /* ignore mark refresh errors — keep previous marks */
     }
   }, [mangaUrl]);
+
+  /* Canonical keys for the loaded chapters, resolved once per manga by the backend
+  so the frontend never reimplements the key rules. */
+  useEffect(() => {
+    const chapters = manga?.chapters;
+    if (!chapters?.length) {
+      setChMarkKeys(new Map());
+      return;
+    }
+    let cancelled = false;
+    void api
+      .chapterMarkKeys(chapters.map((c) => c.link))
+      .then((keys) => {
+        if (cancelled) return;
+        const next = new Map<number, string>();
+        chapters.forEach((c, i) => {
+          const k = keys[i];
+          if (k) next.set(c.index, k);
+        });
+        setChMarkKeys(next);
+      })
+      .catch((e) => {
+        /* Never blank the keys on failure: with no keys every chapter renders as
+        "not downloaded", which looks exactly like lost marks. Say so out loud —
+        a silent catch here hid a stale-binary mismatch for a whole round. */
+        if (cancelled) return;
+        log(`No se pudieron resolver las claves de capítulo: ${String(e)}`, "err");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [manga]);
 
   useEffect(() => {
     void refreshChapterMarks();
@@ -494,14 +540,21 @@ export function InfoView() {
   useEffect(() => {
     let un: (() => void) | undefined;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     void api.onQueueChanged(() => {
-      void refreshChapterMarks();
+      /* Coalesce bursts: parallel downloads emit this many times per second. */
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        void refreshChapterMarks();
+      }, MARK_REFRESH_DEBOUNCE_MS);
     }).then((u) => {
       if (cancelled) u();
       else un = u;
     });
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
       un?.();
     };
   }, [refreshChapterMarks]);
@@ -2610,9 +2663,9 @@ export function InfoView() {
         getKey={(c) => c.index}
         renderItem={(c, _i, style: CSSProperties) => {
           const on = selected.has(c.index);
-          const mark = chapterMarkKey(c.link);
-          const isDl = mark ? chDownloaded.has(mark) : false;
-          const isQ = mark ? chQueued.has(mark) : false;
+          const mark = chMarkKeys.get(c.index) || "";
+          const isDl = !!mark && chDownloaded.has(mark);
+          const isQ = !!mark && chQueued.has(mark);
           const markCls = isDl ? " is-downloaded" : isQ ? " is-queued" : "";
           return (
             <button

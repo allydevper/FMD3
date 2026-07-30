@@ -68,7 +68,13 @@ export function catalogLinkKey(link: string): string {
   }
 }
 
-/** Path-only key so relative catalog links match absolute manga URLs. */
+/**
+ * Path-only key so relative catalog links match absolute manga URLs.
+ *
+ * Used for favorites matching and for display — NOT for downloaded/queued chapter
+ * marks. Those keys come from the backend (`api.chapterMarkKeys`), which owns the
+ * single canonical definition.
+ */
 export function mangaPathKey(link: string): string {
   const s = (link || "").trim();
   if (!s) return "";

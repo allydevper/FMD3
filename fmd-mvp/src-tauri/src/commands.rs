@@ -453,7 +453,9 @@ async fn check_favorite_inner(
     }
     let manga_url = fav.manga_url.clone();
     let module_id = fav.module_id.clone();
-    let manga_url_for_queue = manga_url.clone();
+    /* Store one absolute form so the mark key matches what InfoView enqueues. */
+    let manga_url_for_queue =
+        crate::lua_host::maybe_fill_host(&fav.root_url, &fav.manga_url);
 
     let info = tauri::async_runtime::spawn_blocking(move || {
         get_info(&manga_url, Some(module_id.as_str()))
@@ -541,6 +543,9 @@ pub fn queue_add(
     }
     let _ = db::settings_set(&state.db, "default_output_dir", &req.output_dir);
     let batch_id = req.batch_id.trim().to_string();
+    /* Store one absolute form regardless of caller, so every row for a work agrees
+    on the mark key (catalog "download all" passes absolute, other paths may not). */
+    let manga_url = crate::lua_host::maybe_fill_host(&req.root_url, &req.manga_url);
     let items: Vec<NewQueueItem> = req
         .chapters
         .iter()
@@ -565,7 +570,7 @@ pub fn queue_add(
                         c.index as usize,
                         &c.name,
                         &req.module_id,
-                        &req.manga_url,
+                        &manga_url,
                     );
                     (
                         frozen_manga
@@ -580,7 +585,7 @@ pub fn queue_add(
             NewQueueItem {
                 manga_title: req.manga_title.clone(),
                 root_url: req.root_url.clone(),
-                manga_url: req.manga_url.clone(),
+                manga_url: manga_url.clone(),
                 module_id: req.module_id.clone(),
                 chapter_index: c.index as i64,
                 chapter_name: c.name.clone(),
@@ -757,13 +762,9 @@ pub fn queue_delete_chapter_files(
         deleted.push(chap_cmp.display().to_string());
     }
 
-    // Drop the UI "already downloaded" mark whenever the user deletes files.
-    let _ = db::downloaded_chapters_unmark(
-        &state.db,
-        &item.module_id,
-        &item.manga_url,
-        &item.chapter_link,
-    );
+    /* The "already downloaded" mark is deliberately NOT touched here. Marks record
+    that a chapter was downloaded once; queue rows are separate bookkeeping, so
+    removing a finished task — with or without its files — leaves the mark alone. */
 
     if deleted.is_empty() {
         Ok(chapter_dir.display().to_string())
@@ -1021,6 +1022,16 @@ pub fn queue_active_chapter_links(
     manga_url: String,
 ) -> Result<Vec<String>, String> {
     db::queue_active_chapter_links(&state.db, &module_id, &manga_url)
+}
+
+/// Canonical mark keys for the given links, in the same order.
+///
+/// The UI calls this once per loaded manga so it can match rows against
+/// `downloaded_chapters_list` / `queue_active_chapter_links` without carrying its
+/// own copy of the key rules (which is how the two definitions drifted apart).
+#[tauri::command]
+pub fn chapter_mark_keys(links: Vec<String>) -> Vec<String> {
+    db::mark_keys(&links)
 }
 
 fn log_file_path(db: &db::Db) -> Result<std::path::PathBuf, String> {

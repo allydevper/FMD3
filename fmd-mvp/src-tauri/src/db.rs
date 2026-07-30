@@ -296,20 +296,69 @@ pub fn open_db() -> Result<Db, String> {
     );
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN alt_titles TEXT", []);
-    let _ = conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS downloaded_chapters (
-            module_id TEXT NOT NULL,
-            manga_url TEXT NOT NULL,
-            chapter_link TEXT NOT NULL,
-            downloaded_at TEXT NOT NULL,
-            PRIMARY KEY (module_id, manga_url, chapter_link)
-        );
-        CREATE INDEX IF NOT EXISTS idx_downloaded_chapters_manga
-            ON downloaded_chapters(module_id, manga_url);
-        "#,
-    );
+    let _ = backfill_downloaded_from_queue(&conn);
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// One-time seed of `downloaded_chapters` from historical `queue_items` rows with
+/// status `done` (downloads that predate the marks table).
+///
+/// Runs once, guarded by a settings flag. After this the two tables are fully
+/// independent: the queue can be cleared, or its tasks removed along with their
+/// files, without losing marks.
+fn backfill_downloaded_from_queue(conn: &Connection) -> Result<(), String> {
+    const FLAG: &str = "db.backfill_downloaded_v1";
+    let already: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key=?1", params![FLAG], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if already.is_some() {
+        return Ok(());
+    }
+
+    let rows: Vec<(String, String, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT module_id, manga_url, chapter_link, updated_at FROM queue_items
+                 WHERE status='done' AND module_id<>'' AND manga_url<>'' AND chapter_link<>''",
+            )
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        mapped.filter_map(|r| r.ok()).collect()
+    };
+
+    /* Insert canonical keys, same as `downloaded_chapters_mark`, so the table only
+    ever holds one form. `OR IGNORE` keeps existing marks untouched. */
+    for (mid, mu, ch, at) in rows {
+        let mu_key = link_mark_key(&mu);
+        let ch_key = link_mark_key(&ch);
+        if mu_key.is_empty() || ch_key.is_empty() {
+            continue;
+        }
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO downloaded_chapters(module_id, manga_url, chapter_link, downloaded_at)
+             VALUES(?1,?2,?3,?4)",
+            params![mid.trim(), mu_key, ch_key, at],
+        );
+    }
+
+    conn.execute(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES(?1, '1')",
+        params![FLAG],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Open portable favorites DB (`userdata/favorites.db`).
@@ -974,8 +1023,11 @@ pub fn queue_clear_finished(db: &Db) -> Result<usize, String> {
     Ok(n)
 }
 
-/// Path-only mark key (aligns with frontend `mangaPathKey`): strip host/query,
-/// lowercase, no trailing slash. Absolute vs relative URLs of the same work match.
+/// Canonical mark key: path only (host/query/fragment dropped), lowercased, no
+/// trailing slash. Absolute vs relative URLs of the same work map to one key.
+///
+/// This is the *single* definition of the key. The frontend must never compute
+/// it — it asks for canonical keys via the `chapter_mark_keys` command instead.
 fn link_mark_key(url: &str) -> String {
     let s = url.trim();
     if s.is_empty() {
@@ -1004,7 +1056,14 @@ fn link_mark_key(url: &str) -> String {
     with_slash.trim_end_matches('/').to_ascii_lowercase()
 }
 
-/// Record a chapter as downloaded (idempotent upsert).
+/// Canonical keys for a batch of links, so the UI can match rows against
+/// `downloaded_chapters_list` without reimplementing `link_mark_key`.
+pub fn mark_keys(links: &[String]) -> Vec<String> {
+    links.iter().map(|l| link_mark_key(l)).collect()
+}
+
+/// Record a chapter as downloaded. Write-once: a chapter that is already marked
+/// is left untouched (re-downloading must not move `downloaded_at`).
 pub fn downloaded_chapters_mark(
     db: &Db,
     module_id: &str,
@@ -1047,55 +1106,23 @@ pub fn downloaded_chapters_mark(
         }
     }
     conn.execute(
-        "INSERT INTO downloaded_chapters(module_id, manga_url, chapter_link, downloaded_at)
-         VALUES(?1,?2,?3,?4)
-         ON CONFLICT(module_id, manga_url, chapter_link) DO UPDATE SET downloaded_at=excluded.downloaded_at",
+        "INSERT OR IGNORE INTO downloaded_chapters(module_id, manga_url, chapter_link, downloaded_at)
+         VALUES(?1,?2,?3,?4)",
         params![mid, mu, link, now()],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Clear the "already downloaded" mark (e.g. when the user deletes chapter files).
-pub fn downloaded_chapters_unmark(
-    db: &Db,
-    module_id: &str,
-    manga_url: &str,
-    chapter_link: &str,
-) -> Result<(), String> {
-    let mid = module_id.trim();
-    let mu_key = link_mark_key(manga_url);
-    let ch_key = link_mark_key(chapter_link);
-    if mid.is_empty() || mu_key.is_empty() || ch_key.is_empty() {
-        return Ok(());
-    }
-    let conn = db.lock();
-    let mut stmt = conn
-        .prepare("SELECT manga_url, chapter_link FROM downloaded_chapters WHERE module_id=?1")
-        .map_err(|e| e.to_string())?;
-    let rows: Vec<(String, String)> = stmt
-        .query_map(params![mid], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .filter(|(row_mu, row_ch)| {
-            link_mark_key(row_mu) == mu_key && link_mark_key(row_ch) == ch_key
-        })
-        .collect();
-    drop(stmt);
-    for (row_mu, row_ch) in rows {
-        conn.execute(
-            "DELETE FROM downloaded_chapters
-             WHERE module_id=?1 AND manga_url=?2 AND chapter_link=?3",
-            params![mid, row_mu, row_ch],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
+/* No unmark: `downloaded_chapters` is append-only. A mark records that a chapter
+was downloaded once, and nothing after that revokes it — not removing the queue
+task, not deleting the files from disk. Only `downloaded_chapters_mark` writes. */
 
 /// Chapter links marked downloaded for a manga (canonical path keys).
+///
+/// `downloaded_chapters` is the sole source of truth: the queue is never consulted
+/// here. That keeps the two tables independent — removing finished queue tasks, with
+/// or without their files, must not change what shows as downloaded.
 pub fn downloaded_chapters_list(
     db: &Db,
     module_id: &str,
@@ -1115,7 +1142,9 @@ pub fn downloaded_chapters_list(
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![mid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .query_map(params![mid], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -1191,4 +1220,212 @@ pub fn queue_has_pending(db: &Db) -> Result<bool, String> {
         )
         .map_err(|e| e.to_string())?;
     Ok(n > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// In-memory DB with the same schema `open_db` creates for the tables the mark
+    /// path touches.
+    fn test_db() -> Db {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE settings (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+            CREATE TABLE queue_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                manga_title TEXT NOT NULL DEFAULT '',
+                root_url TEXT NOT NULL DEFAULT '',
+                manga_url TEXT NOT NULL DEFAULT '',
+                module_id TEXT NOT NULL DEFAULT '',
+                chapter_index INTEGER NOT NULL DEFAULT 0,
+                chapter_name TEXT NOT NULL DEFAULT '',
+                chapter_link TEXT NOT NULL DEFAULT '',
+                output_dir TEXT NOT NULL DEFAULT '',
+                manga_path TEXT NOT NULL DEFAULT '',
+                chapter_path TEXT NOT NULL DEFAULT '',
+                batch_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                position INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE downloaded_chapters (
+                module_id TEXT NOT NULL,
+                manga_url TEXT NOT NULL,
+                chapter_link TEXT NOT NULL,
+                downloaded_at TEXT NOT NULL,
+                PRIMARY KEY (module_id, manga_url, chapter_link)
+            );
+            "#,
+        )
+        .expect("schema");
+        Arc::new(Mutex::new(conn))
+    }
+
+    fn add_done(db: &Db, mid: &str, mu: &str, ch: &str) {
+        db.lock()
+            .execute(
+                "INSERT INTO queue_items(module_id, manga_url, chapter_link, status, updated_at)
+                 VALUES(?1,?2,?3,'done','2020-01-01T00:00:00Z')",
+                params![mid, mu, ch],
+            )
+            .expect("insert done row");
+    }
+
+    #[test]
+    fn link_mark_key_is_path_only() {
+        let cases = [
+            /* Absolute vs relative vs protocol-relative collapse to one key. */
+            ("https://site.com/manga/foo", "/manga/foo"),
+            ("http://other.com/manga/foo", "/manga/foo"),
+            ("//site.com/manga/foo", "/manga/foo"),
+            ("/manga/foo", "/manga/foo"),
+            ("manga/foo", "/manga/foo"),
+            /* Trailing slash, case, and surrounding space are not significant. */
+            ("https://site.com/manga/foo/", "/manga/foo"),
+            ("/manga/foo///", "/manga/foo"),
+            ("https://site.com/Manga/Foo", "/manga/foo"),
+            ("  /manga/foo  ", "/manga/foo"),
+            /* Query and fragment are dropped. */
+            ("https://site.com/manga/foo?page=2", "/manga/foo"),
+            ("https://site.com/manga/foo#top", "/manga/foo"),
+            ("/manga/foo?a=1#b", "/manga/foo"),
+            /* Percent escapes are kept verbatim — no decoding on either side. */
+            ("https://site.com/manga/a%20b", "/manga/a%20b"),
+            ("/manga/a%zz", "/manga/a%zz"),
+            /* Empty / degenerate input yields an empty key (callers skip it). */
+            ("", ""),
+            ("   ", ""),
+            ("https://site.com", ""),
+            ("https://site.com/", ""),
+        ];
+        for (input, want) in cases {
+            assert_eq!(link_mark_key(input), want, "link_mark_key({input:?})");
+        }
+    }
+
+    #[test]
+    fn link_mark_key_keeps_distinct_chapters_distinct() {
+        assert_ne!(link_mark_key("/manga/a/c-1"), link_mark_key("/manga/a/c-2"));
+        /* Suffix overlap must NOT collapse: c-1 is a suffix of c-11 as a string. */
+        assert_ne!(link_mark_key("/manga/a/c-1"), link_mark_key("/manga/a/c-11"));
+        /* Same chapter path under a different manga is a different key. */
+        assert_ne!(link_mark_key("/manga/a/c-1"), link_mark_key("/manga/b/c-1"));
+    }
+
+    #[test]
+    fn mark_keys_maps_the_batch() {
+        let links = vec![
+            "https://site.com/Manga/A/".to_string(),
+            "/manga/b?x=1".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(mark_keys(&links), vec!["/manga/a", "/manga/b", ""]);
+    }
+
+    const MID: &str = "mod1";
+    const MU: &str = "https://site.com/manga/foo";
+
+    #[test]
+    fn list_matches_across_url_variants_and_survives_requeue() {
+        let db = test_db();
+        downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-1").unwrap();
+        /* Same work, different URL form: relative manga_url, trailing slash, case. */
+        downloaded_chapters_mark(&db, MID, "/manga/foo/", "https://site.com/manga/foo/C-2/")
+            .unwrap();
+
+        let mut got = downloaded_chapters_list(&db, MID, MU).unwrap();
+        got.sort();
+        assert_eq!(got, vec!["/manga/foo/c-1", "/manga/foo/c-2"]);
+
+        /* Re-downloading ch-1 must not disturb ch-2 (the original bug). */
+        downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-1").unwrap();
+        let mut after = downloaded_chapters_list(&db, MID, "/manga/foo").unwrap();
+        after.sort();
+        assert_eq!(after, vec!["/manga/foo/c-1", "/manga/foo/c-2"]);
+    }
+
+    #[test]
+    fn marks_survive_clearing_finished_queue_rows() {
+        let db = test_db();
+        downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-1").unwrap();
+        add_done(&db, MID, MU, "/manga/foo/c-1");
+
+        queue_clear_finished(&db).unwrap();
+        assert_eq!(
+            downloaded_chapters_list(&db, MID, MU).unwrap(),
+            vec!["/manga/foo/c-1"]
+        );
+    }
+
+    #[test]
+    fn backfill_seeds_canonical_keys_once() {
+        let db = test_db();
+        /* Legacy history: raw URL forms, no marks table rows. */
+        add_done(&db, MID, "https://site.com/Manga/Foo/", "/manga/foo/c-1/");
+        add_done(&db, MID, "/manga/foo", "/manga/foo/c-2");
+        add_done(&db, MID, "", "/manga/foo/c-3"); /* skipped: empty manga_url */
+
+        {
+            let conn = db.lock();
+            backfill_downloaded_from_queue(&conn).unwrap();
+        }
+        let mut got = downloaded_chapters_list(&db, MID, MU).unwrap();
+        got.sort();
+        assert_eq!(got, vec!["/manga/foo/c-1", "/manga/foo/c-2"]);
+
+        /* Guarded by the settings flag: a second run must not duplicate rows. */
+        {
+            let conn = db.lock();
+            backfill_downloaded_from_queue(&conn).unwrap();
+        }
+        let mut again = downloaded_chapters_list(&db, MID, MU).unwrap();
+        again.sort();
+        assert_eq!(again, vec!["/manga/foo/c-1", "/manga/foo/c-2"]);
+    }
+
+    /// The reported "the mark disappears" sequence, now with the intended outcome:
+    /// removing the finished queue tasks (even with "delete files") leaves both marks
+    /// standing, because a completed download is a fact that task bookkeeping cannot
+    /// revoke.
+    #[test]
+    fn marks_survive_removing_finished_tasks_and_their_files() {
+        let db = test_db();
+        downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-1").unwrap();
+        downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-2").unwrap();
+        add_done(&db, MID, MU, "/manga/foo/c-1");
+        add_done(&db, MID, MU, "/manga/foo/c-2");
+
+        /* "Quitar de la cola" + "borrar también los archivos": queue rows go, files
+        go, marks stay. */
+        queue_clear_finished(&db).unwrap();
+
+        let mut got = downloaded_chapters_list(&db, MID, MU).unwrap();
+        got.sort();
+        assert_eq!(got, vec!["/manga/foo/c-1", "/manga/foo/c-2"]);
+
+        /* Re-downloading c-1 changes nothing for c-2. */
+        downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-1").unwrap();
+        let mut after = downloaded_chapters_list(&db, MID, MU).unwrap();
+        after.sort();
+        assert_eq!(after, vec!["/manga/foo/c-1", "/manga/foo/c-2"]);
+    }
+
+    #[test]
+    fn list_ignores_other_mangas_and_modules() {
+        let db = test_db();
+        downloaded_chapters_mark(&db, MID, MU, "/manga/foo/c-1").unwrap();
+        downloaded_chapters_mark(&db, MID, "https://site.com/manga/bar", "/manga/bar/c-1")
+            .unwrap();
+        downloaded_chapters_mark(&db, "mod2", MU, "/manga/foo/c-9").unwrap();
+
+        assert_eq!(
+            downloaded_chapters_list(&db, MID, MU).unwrap(),
+            vec!["/manga/foo/c-1"]
+        );
+    }
 }

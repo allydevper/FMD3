@@ -161,6 +161,8 @@ export const CH_ROW_H = 52;
 export const CH_ROW_GAP = 8;
 export const CH_ROW_STRIDE = CH_ROW_H + CH_ROW_GAP;
 export const CH_OVERSCAN = 8;
+/** Coalesce `queue-changed` bursts before re-reading chapter marks. */
+export const MARK_REFRESH_DEBOUNCE_MS = 150;
 export const CAT_ROW_H = 44;
 /** Title (2 lines) + source line when all-sites filter is on. */
 export const CAT_ROW_H_ALL_SITES = 62;

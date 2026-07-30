@@ -349,6 +349,7 @@ pub fn run() {
             commands::queue_open_manga_folder,
             commands::downloaded_chapters_list,
             commands::queue_active_chapter_links,
+            commands::chapter_mark_keys,
             commands::shell_open_external,
             commands::log_open,
             commands::log_clear,
