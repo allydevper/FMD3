@@ -142,6 +142,7 @@ export function InfoView() {
     outputDir,
     setOutputDir,
     refreshModules,
+    refreshEnabledModules,
     setShowMangaInfo,
     enabledModuleIds,
     hideInfo,
@@ -159,6 +160,7 @@ export function InfoView() {
   const [sourceOpen, setSourceOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState("");
   const [sourcesLoading, setSourcesLoading] = useState(true);
+  const [sourcesBooted, setSourcesBooted] = useState(false);
   const sourceQRef = useRef<HTMLInputElement>(null);
   const sourceListRef = useRef<HTMLDivElement>(null);
 
@@ -176,7 +178,8 @@ export function InfoView() {
 
   const [catalogText, setCatalogText] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(false);
-  const [catalogLoadingText, setCatalogLoadingText] = useState("Cargando títulos…");
+  /** True after at least one catalog query finished for the current selection. */
+  const [catalogFetched, setCatalogFetched] = useState(false);
   const [catalogError, setCatalogError] = useState(false);
   const [catalogStatsText, setCatalogStatsText] = useState("0");
   const [catalogResetSeq, setCatalogResetSeq] = useState(0);
@@ -205,8 +208,6 @@ export function InfoView() {
   const catalogLoadedKeyRef = useRef("");
   const catalogSearchTimerRef = useRef<number | undefined>(undefined);
   const catalogLoadGenRef = useRef(0);
-  const catalogLoadingDelayRef = useRef<number | undefined>(undefined);
-  const catalogSpinnerShownRef = useRef(false);
   const loadedPagesRef = useRef<Set<number>>(new Set());
   const inflightRef = useRef<Set<number>>(new Set());
   const wantedPagesRef = useRef<number[]>([]);
@@ -440,7 +441,16 @@ export function InfoView() {
    * Bootstrap: modules + output dir + initial catalog load
    * ------------------------------------------------------------------- */
   useEffect(() => {
-    if (!modules.length) void refreshModules();
+    let cancelled = false;
+    void (async () => {
+      try {
+        await Promise.all([refreshModules(), refreshEnabledModules()]);
+      } catch {
+        /* ignore boot errors; UI falls back to empty/error states */
+      } finally {
+        if (!cancelled) setSourcesBooted(true);
+      }
+    })();
     // Warm favorites cache so sidebar heart doesn't flicker on first open.
     void loadFavoritesCached().catch(() => {
       /* ignore */
@@ -462,6 +472,9 @@ export function InfoView() {
     void api.settingsGet("ui.live_search").then((v) => {
       if (v === "0" || v === "false") setLiveSearch(false);
     });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -694,7 +707,6 @@ export function InfoView() {
     void (async () => {
       clearCatalogSelection();
       setCatalogLoading(true);
-      setCatalogLoadingText("Cargando títulos…");
       try {
         const snapshot = cloneAdvFilter(advFilter);
         appliedAdvFilterRef.current = snapshot;
@@ -750,8 +762,15 @@ export function InfoView() {
   }
 
   useEffect(() => {
-    if (modules.length) setSourcesLoading(false);
-  }, [modules]);
+    if (!sourcesBooted) return;
+    if (enabledModules.length > 0) {
+      if (selectedModuleId && enabledModules.some((m) => m.id === selectedModuleId)) {
+        setSourcesLoading(false);
+      }
+      return;
+    }
+    setSourcesLoading(false);
+  }, [sourcesBooted, enabledModules, selectedModuleId]);
 
   /** Keep combo on an enabled source; empty list → no selection. */
   useEffect(() => {
@@ -848,9 +867,6 @@ export function InfoView() {
       }
       loadedPagesRef.current.add(page);
       setCatalogRows(next);
-      if (fillWaitersRef.current.length) {
-        setCatalogLoadingText(`Cargando títulos… (${next.filter(Boolean).length})`);
-      }
     } catch {
       /* skip page to avoid fill loop; leave holes */
       if (gen === catalogLoadGenRef.current) loadedPagesRef.current.add(page);
@@ -897,9 +913,6 @@ export function InfoView() {
         return;
       }
       fillWaitersRef.current.push(finish);
-      setCatalogLoadingText(
-        `Cargando títulos… (${catalogRowsRef.current.filter(Boolean).length})`,
-      );
       void startFill(catalogLoadGenRef.current);
     });
   }
@@ -913,11 +926,11 @@ export function InfoView() {
     if (!enabledModules.length) {
       catalogLoadGenRef.current += 1;
       resetFillQueues();
-      window.clearTimeout(catalogLoadingDelayRef.current);
       setCatalogRows([]);
       setCatalogTotalBoth(0);
       setCatalogError(false);
       setCatalogLoading(false);
+      setCatalogFetched(false);
       setCatalogStatsText("0");
       catalogLoadedKeyRef.current = "";
       if (!silent) {
@@ -931,11 +944,11 @@ export function InfoView() {
     if (!id || !enabledModuleIds.has(id)) {
       catalogLoadGenRef.current += 1;
       resetFillQueues();
-      window.clearTimeout(catalogLoadingDelayRef.current);
       setCatalogRows([]);
       setCatalogTotalBoth(0);
       setCatalogError(false);
       setCatalogLoading(false);
+      setCatalogFetched(false);
       if (!silent) {
         log("Elige una fuente en el selector (o actívala en Ajustes → Sitios Web).", "err");
       }
@@ -949,21 +962,14 @@ export function InfoView() {
     const gen = ++catalogLoadGenRef.current;
     resetFillQueues();
     clearCatalogSelection();
-    window.clearTimeout(catalogLoadingDelayRef.current);
     const preserveUntilData = silent && catalogRowsRef.current.length > 0;
 
     if (!preserveUntilData) {
       setCatalogRows([]);
       setCatalogTotalBoth(0);
       setCatalogError(false);
-      setCatalogLoading(false);
-      catalogSpinnerShownRef.current = false;
-      catalogLoadingDelayRef.current = window.setTimeout(() => {
-        if (gen !== catalogLoadGenRef.current) return;
-        catalogSpinnerShownRef.current = true;
-        setCatalogLoading(true);
-        setCatalogLoadingText("Cargando títulos…");
-      }, 200);
+      setCatalogLoading(true);
+      setCatalogFetched(false);
     }
 
     try {
@@ -982,6 +988,7 @@ export function InfoView() {
       setCatalogStatsText(String(actualTotal));
       setCatalogRows(rows);
       catalogLoadedKeyRef.current = key;
+      setCatalogFetched(true);
       if (silent) bumpCatalogReset();
       if (!silent && actualTotal > 0) log(`Catálogo: ${actualTotal} títulos`, "ok");
       void startFill(gen);
@@ -991,6 +998,7 @@ export function InfoView() {
       setCatalogRows([]);
       setCatalogTotalBoth(0);
       setCatalogError(true);
+      setCatalogFetched(true);
       const msg = String(e);
       if (/deshabilitado|disabled|no activado/i.test(msg)) {
         log(
@@ -1002,7 +1010,6 @@ export function InfoView() {
       }
     } finally {
       if (gen === catalogLoadGenRef.current) {
-        window.clearTimeout(catalogLoadingDelayRef.current);
         setCatalogLoading(false);
       }
     }
@@ -1021,6 +1028,7 @@ export function InfoView() {
       setCatalogRows([]);
       setCatalogTotalBoth(0);
       setCatalogStatsText("0");
+      setCatalogFetched(false);
       catalogLoadedKeyRef.current = "";
       if (!silent) {
         log(
@@ -1041,23 +1049,14 @@ export function InfoView() {
     const gen = ++catalogLoadGenRef.current;
     resetFillQueues();
     clearCatalogSelection();
-    window.clearTimeout(catalogLoadingDelayRef.current);
     const preserveUntilData = silent && catalogRowsRef.current.length > 0;
 
     if (!preserveUntilData) {
       setCatalogRows([]);
       setCatalogTotalBoth(0);
       setCatalogError(false);
-      setCatalogLoading(false);
-      catalogSpinnerShownRef.current = false;
-      catalogLoadingDelayRef.current = window.setTimeout(() => {
-        if (gen !== catalogLoadGenRef.current) return;
-        catalogSpinnerShownRef.current = true;
-        setCatalogLoading(true);
-        setCatalogLoadingText("Cargando todas las fuentes…");
-      }, 200);
-    } else {
-      setCatalogLoadingText("Cargando todas las fuentes…");
+      setCatalogLoading(true);
+      setCatalogFetched(false);
     }
 
     try {
@@ -1076,6 +1075,7 @@ export function InfoView() {
       setCatalogStatsText(String(actualTotal));
       setCatalogRows(rows);
       catalogLoadedKeyRef.current = key;
+      setCatalogFetched(true);
       bumpCatalogReset();
       void startFill(gen);
     } catch (e) {
@@ -1084,10 +1084,10 @@ export function InfoView() {
       setCatalogRows([]);
       setCatalogTotalBoth(0);
       setCatalogError(true);
+      setCatalogFetched(true);
       log(String(e), "err");
     } finally {
       if (gen === catalogLoadGenRef.current) {
-        window.clearTimeout(catalogLoadingDelayRef.current);
         setCatalogLoading(false);
       }
     }
@@ -1109,6 +1109,7 @@ export function InfoView() {
     setCatalogTotalBoth(0);
     setCatalogError(false);
     setCatalogLoading(false);
+    setCatalogFetched(false);
     setCatalogStatsText("0");
     catalogLoadedKeyRef.current = "";
   }, [enabledModules.length]);
@@ -2690,7 +2691,8 @@ export function InfoView() {
   }
 
   function renderCatalogBody() {
-    if (!enabledModules.length) {
+    /* Sin fuentes (solo cuando ya terminó el boot). */
+    if (sourcesBooted && !sourcesLoading && !enabledModules.length) {
       return (
         <div className="catalog-results" id="catalog-list">
           <div className="catalog-empty">
@@ -2701,15 +2703,9 @@ export function InfoView() {
         </div>
       );
     }
-    if (catalogLoading) {
-      return (
-        <div className="catalog-results" id="catalog-list">
-          <div className="panel-loading">
-            <span className="spinner" />
-            {catalogLoadingText}
-          </div>
-        </div>
-      );
+    /* Por defecto / cargando: nada. */
+    if (!sourcesBooted || sourcesLoading || catalogLoading || !catalogFetched) {
+      return <div className="catalog-results" id="catalog-list" />;
     }
     if (catalogError) {
       return (
@@ -2722,7 +2718,7 @@ export function InfoView() {
       advFilterApplied && !appliedAdvFilter.allSites
         ? visibleCatalog.length === 0
         : catalogTotal === 0;
-    if (isEmpty && !catalogLoading) {
+    if (isEmpty) {
       return (
         <div className="catalog-results" id="catalog-list">
           <div className="catalog-empty">Sin resultados.</div>
