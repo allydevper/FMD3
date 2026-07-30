@@ -1751,13 +1751,16 @@ export function OptionsView() {
                       <div className="st-row" id="set-pdf-quality-row" hidden={s.packFormat !== "pdf"}>
                         <div className="st-meta">
                           <div className="st-label">Calidad del PDF</div>
-                          <div className="st-desc">Menor calidad, archivos más ligeros</div>
+                          <div className="st-desc">
+                            Las imágenes que ya estén en esta calidad o por debajo se
+                            incluyen sin recomprimir; solo se recomprimen las que la superan
+                          </div>
                         </div>
                         <div className="st-num-wrap">
                           <Stepper
                             id="set-pdf-quality"
                             value={s.pdfQuality}
-                            min={5}
+                            min={1}
                             max={100}
                             suffix="%"
                             onChange={(v) => update("pdfQuality", v)}
