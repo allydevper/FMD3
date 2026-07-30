@@ -429,9 +429,18 @@
 
 .dl-cell-title-text {
   min-width: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.dl-cell-tags {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .dl-manga {

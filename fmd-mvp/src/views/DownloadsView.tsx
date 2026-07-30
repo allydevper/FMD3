@@ -122,12 +122,14 @@ function mangaGroupKey(it: QueueItem): string {
 function batchTaskLabel(batchId: string): string | null {
   const m = /-(\d+)of(\d+)$/.exec(batchId.trim());
   if (!m) return null;
-  return `tarea ${m[1]}/${m[2]}`;
+  return `${m[1]}/${m[2]}`;
 }
 
 type MangaGroup = {
   key: string;
   title: string;
+  /** Split-batch label e.g. "1/2", shown as tag after chapter count. */
+  taskLabel: string | null;
   moduleId: string;
   mangaUrl: string;
   rootUrl: string;
@@ -158,10 +160,10 @@ function groupByManga(list: QueueItem[], modules: ModuleMeta[]): MangaGroup[] {
     let g = map.get(key);
     if (!g) {
       const batch = (it.batch_id || "").trim();
-      const task = batch ? batchTaskLabel(batch) : null;
       g = {
         key,
-        title: task ? `${it.manga_title} · ${task}` : it.manga_title,
+        title: it.manga_title,
+        taskLabel: batch ? batchTaskLabel(batch) : null,
         moduleId: it.module_id,
         mangaUrl: (it.manga_url || "").trim(),
         rootUrl: it.root_url,
@@ -1232,7 +1234,12 @@ export function DownloadsView() {
                           <span className="ell dl-manga">{g.title}</span>
                           <span className="ell dl-chapter">{a.summary}</span>
                         </div>
-                        <span className="mono dl-tag">{g.items.length} cap.</span>
+                        <span className="dl-cell-tags">
+                          <span className="mono dl-tag">{g.items.length} cap.</span>
+                          {g.taskLabel ? (
+                            <span className="mono dl-tag">{g.taskLabel}</span>
+                          ) : null}
+                        </span>
                       </div>
                       <span
                         className="dl-badge"
@@ -1401,6 +1408,9 @@ export function DownloadsView() {
                       >
                         {focusAgg.st.label}
                       </span>
+                      {focusGroup.taskLabel ? (
+                        <span className="mono dl-tag">{focusGroup.taskLabel}</span>
+                      ) : null}
                       <span style={{ fontSize: "11.5px", color: "var(--muted)" }}>
                         {focusGroup.site}
                       </span>
