@@ -583,6 +583,20 @@ mod tests {
         assert_eq!(out, "D:\\Manga\\One Piece\\003extra\\001");
     }
 
+    /// La carpeta del capítulo y el `%CHAPTER%` del nombre de archivo tienen que
+    /// salir del mismo `prepare_chapter_display`. Es la invariante que sostiene
+    /// el congelado en la cola: si divergieran aquí, divergirían también allí.
+    #[test]
+    fn chapter_display_is_shared_by_folder_and_filename() {
+        let mut o = opts();
+        o.remove_manga_from_chapter = true;
+        o.pat_page = "%CHAPTER%_%FILENAME%".into();
+        let display = o.prepare_chapter_display(SAMPLE_CHAPTER, SAMPLE_MANGA);
+        let out = preview(&o, "D:\\Manga", "");
+        assert_eq!(display, "Chapter 003");
+        assert_eq!(out, format!("D:\\Manga\\One Piece\\{display}\\{display}_001"));
+    }
+
     #[test]
     fn preview_folders_off() {
         let mut o = opts();

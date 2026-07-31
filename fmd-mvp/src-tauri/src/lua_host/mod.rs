@@ -20,7 +20,7 @@ pub use registry::{
 };
 pub use runtime::{
     chapter_output_dir, download_chapter, get_info, get_page_links, get_page_links_warmed,
-    manga_output_dir, resolve_queue_item_paths, update_list, ChapterInfo, MangaInfoResult,
-    PageLinksResult, UpdateListProgress, UpdateListStats, DOWNLOAD_CANCELLED,
+    manga_output_dir, resolve_queue_item_paths, update_list, ChapterInfo, FrozenNaming,
+    MangaInfoResult, PageLinksResult, UpdateListProgress, UpdateListStats, DOWNLOAD_CANCELLED,
 };
 pub use strings::maybe_fill_host;

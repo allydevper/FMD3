@@ -344,6 +344,14 @@ fn process_item(
             Some(PathBuf::from(p))
         }
     };
+    let display_override = {
+        let d = item.chapter_display.trim();
+        if d.is_empty() {
+            None
+        } else {
+            Some(d)
+        }
+    };
     let item_id = item.id;
     let manga_title = item.manga_title.clone();
     let chapter_name = item.chapter_name.clone();
@@ -377,7 +385,10 @@ fn process_item(
         &item.manga_title,
         item.chapter_index as usize,
         &item.chapter_name,
-        chapter_override.as_deref(),
+        lua_host::FrozenNaming {
+            dir: chapter_override.as_deref(),
+            chapter_display: display_override,
+        },
         Some(&mut on_progress),
         Some(&cancel),
     ) {

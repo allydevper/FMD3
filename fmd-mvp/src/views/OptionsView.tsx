@@ -46,6 +46,66 @@ const TOKENS_MANGA = ["%WEBSITE%", "%MANGA%", "%AUTHOR%", "%ARTIST%"];
 const TOKENS_CHAPTER = ["%WEBSITE%", "%MANGA%", "%CHAPTER%", "%AUTHOR%", "%ARTIST%", "%NUMBERING%"];
 const TOKENS_PAGE = ["%WEBSITE%", "%MANGA%", "%CHAPTER%", "%FILENAME%"];
 
+/** Los cinco campos que define un preset de renombrado. */
+type RenameShape = {
+  mangaFolderOn: boolean;
+  chapterFolderOn: boolean;
+  patManga: string;
+  patChapter: string;
+  patPage: string;
+};
+
+/* Atajos para las combinaciones habituales. Sin `\` ni `/` en los patrones:
+   `apply_pattern` los pasa por `sanitize_filename`, que los elimina. */
+const RENAME_PRESETS: { id: string; label: string; shape: RenameShape }[] = [
+  {
+    id: "manga-chapter-page",
+    label: "Manga / Capítulo / página",
+    shape: {
+      mangaFolderOn: true,
+      chapterFolderOn: true,
+      patManga: "%MANGA%",
+      patChapter: "%CHAPTER%",
+      patPage: "%FILENAME%",
+    },
+  },
+  {
+    id: "manga-numbered-chapter-page",
+    label: "Manga / Nº - Capítulo / página",
+    shape: {
+      mangaFolderOn: true,
+      chapterFolderOn: true,
+      patManga: "%MANGA%",
+      patChapter: "%NUMBERING% - %CHAPTER%",
+      patPage: "%FILENAME%",
+    },
+  },
+  {
+    id: "site-manga-chapter-page",
+    label: "Sitio - Manga / Capítulo / página",
+    shape: {
+      mangaFolderOn: true,
+      chapterFolderOn: true,
+      patManga: "%WEBSITE% - %MANGA%",
+      patChapter: "%CHAPTER%",
+      patPage: "%FILENAME%",
+    },
+  },
+  {
+    id: "manga-chapter-in-filename",
+    label: "Manga / capítulo_página",
+    shape: {
+      mangaFolderOn: true,
+      chapterFolderOn: false,
+      patManga: "%MANGA%",
+      patChapter: "%CHAPTER%",
+      patPage: "%CHAPTER%_%FILENAME%",
+    },
+  },
+];
+
+const RENAME_PRESET_CUSTOM = "custom";
+
 const SITE_ROW_H = 31;
 const SITE_OVERSCAN = 10;
 const MOD_ROW_H = 32;
@@ -1103,6 +1163,34 @@ export function OptionsView() {
   );
   const pagePatHint = useMemo(() => patternMissingRequired("page", s.patPage), [s.patPage]);
 
+  /* ---- Presets de renombrado ---- */
+
+  // El preset activo se deriva de los campos, no se guarda: editar uno a mano
+  // pasa el selector a "Personalizado" solo. Solo se comparan los patrones que
+  // están en uso — un patrón de capítulo oculto no debería romper la detección.
+  const renamePreset = useMemo(() => {
+    const match = RENAME_PRESETS.find(
+      ({ shape }) =>
+        shape.mangaFolderOn === s.mangaFolderOn &&
+        shape.chapterFolderOn === s.chapterFolderOn &&
+        shape.patPage === s.patPage &&
+        (!s.mangaFolderOn || shape.patManga === s.patManga) &&
+        (!s.chapterFolderOn || shape.patChapter === s.patChapter),
+    );
+    return match?.id ?? RENAME_PRESET_CUSTOM;
+  }, [s.mangaFolderOn, s.chapterFolderOn, s.patManga, s.patChapter, s.patPage]);
+
+  const applyRenamePreset = useCallback(
+    (id: string) => {
+      const preset = RENAME_PRESETS.find((p) => p.id === id);
+      if (!preset) return;
+      for (const [key, value] of Object.entries(preset.shape)) {
+        update(key as keyof RenameShape, value as never);
+      }
+    },
+    [update],
+  );
+
   const patMangaRef = useRef<HTMLInputElement>(null);
   const patChapterRef = useRef<HTMLInputElement>(null);
   const patPageRef = useRef<HTMLInputElement>(null);
@@ -1873,6 +1961,31 @@ export function OptionsView() {
                       <h2>Renombrado</h2>
                     </div>
                     <div className="st-card">
+                      <SelectRow
+                        id="set-rename-preset"
+                        label="Estructura"
+                        desc="Atajo: rellena los patrones de abajo, que siguen siendo editables"
+                        value={renamePreset}
+                        onChange={applyRenamePreset}
+                        options={[
+                          ...RENAME_PRESETS.map((p) => ({ value: p.id, label: p.label })),
+                          /* "Personalizado" es un estado, no un atajo: solo se lista
+                             cuando ya lo estás, para que no haya opción que no haga nada. */
+                          ...(renamePreset === RENAME_PRESET_CUSTOM
+                            ? [{ value: RENAME_PRESET_CUSTOM, label: "Personalizado" }]
+                            : []),
+                        ]}
+                      />
+                      {/* Junto al preset: al elegir uno, el resultado se ve sin bajar. */}
+                      <div className="st-row st-row-stack">
+                        <div className="st-meta">
+                          <div className="st-label">Resultado</div>
+                          <div className="st-desc">Ejemplo con el capítulo 3 de un manga de tu lista</div>
+                        </div>
+                        <div id="set-rename-preview" className="st-preview" aria-live="polite">
+                          {renamePreview}
+                        </div>
+                      </div>
                       <SwitchRow
                         id="set-manga-folder"
                         label="Carpeta por manga"
@@ -2022,15 +2135,6 @@ export function OptionsView() {
                         </div>
                       </div>
 
-                      <div className="st-row st-row-stack">
-                        <div className="st-meta">
-                          <div className="st-label">Resultado</div>
-                          <div className="st-desc">Ejemplo con el capítulo 3 de un manga de tu lista</div>
-                        </div>
-                        <div id="set-rename-preview" className="st-preview" aria-live="polite">
-                          {renamePreview}
-                        </div>
-                      </div>
                     </div>
                   </section>
                 </div>

@@ -1608,6 +1608,29 @@ pub fn chapter_output_dir(
     authors: &str,
     artists: &str,
 ) -> PathBuf {
+    chapter_output_dir_with_display(
+        output_dir,
+        manga_title,
+        chapter_index,
+        chapter_name,
+        website,
+        authors,
+        artists,
+    )
+    .0
+}
+
+/// Carpeta del capítulo **y** el título ya procesado (strip + pad) que expande
+/// `%CHAPTER%`. Ambos salen del mismo `RenameOpts`, así que no pueden discrepar.
+pub fn chapter_output_dir_with_display(
+    output_dir: &Path,
+    manga_title: &str,
+    chapter_index: usize,
+    chapter_name: &str,
+    website: &str,
+    authors: &str,
+    artists: &str,
+) -> (PathBuf, String) {
     use crate::rename_patterns::{chapter_tokens, ensure_chapter_pattern_numbering, RenameOpts};
     let opts = RenameOpts::from_settings();
     let idx = opts.format_chapter_index(chapter_index + 1);
@@ -1619,10 +1642,11 @@ pub fn chapter_output_dir(
         let pat = ensure_chapter_pattern_numbering(opts.chapter_pattern(), &idx);
         path = path.join(opts.apply_pattern(&pat, &tokens));
     }
-    crate::paths::fit_download_path(&path)
+    (crate::paths::fit_download_path(&path), chapter_display)
 }
 
-/// Resolve manga + chapter folders with **current** settings (call at enqueue to freeze).
+/// Resolve manga + chapter folders **and** the chapter display with the current
+/// settings (call at enqueue to freeze all three together).
 pub fn resolve_queue_item_paths(
     output_dir: &Path,
     manga_title: &str,
@@ -1630,7 +1654,7 @@ pub fn resolve_queue_item_paths(
     chapter_name: &str,
     module_id: &str,
     manga_url: &str,
-) -> (PathBuf, PathBuf) {
+) -> (PathBuf, PathBuf, String) {
     let website = if module_id.trim().is_empty() {
         String::new()
     } else {
@@ -1648,7 +1672,7 @@ pub fn resolve_queue_item_paths(
         (String::new(), String::new())
     };
     let manga = manga_output_dir(output_dir, manga_title, &website, &authors, &artists);
-    let chapter = chapter_output_dir(
+    let (chapter, chapter_display) = chapter_output_dir_with_display(
         output_dir,
         manga_title,
         chapter_index,
@@ -1657,7 +1681,7 @@ pub fn resolve_queue_item_paths(
         &authors,
         &artists,
     );
-    (manga, chapter)
+    (manga, chapter, chapter_display)
 }
 
 /// Todo lo que `work_basename` necesita además del índice de página, resuelto
@@ -1809,11 +1833,23 @@ fn convert_image_bytes(bytes: &[u8], opts: &ConvertOpts) -> (Vec<u8>, Option<&'s
     }
 }
 
+/// Naming frozen at enqueue time.
+///
+/// Both fields travel together on purpose: if the folder comes frozen but the
+/// chapter title does not, a settings change while the item waits in the queue
+/// leaves the folder on the old values and the filenames on the new ones.
+#[derive(Default, Clone, Copy)]
+pub struct FrozenNaming<'a> {
+    /// Destination folder resolved at enqueue.
+    pub dir: Option<&'a Path>,
+    /// Chapter title after strip + pad, i.e. what `%CHAPTER%` expands to.
+    pub chapter_display: Option<&'a str>,
+}
+
 /// Full FMD2 chapter download pipeline in one Lua/HTTP session.
 ///
-/// When `chapter_dir_override` is `Some`, that folder is used as the download
-/// destination (frozen at enqueue). Otherwise paths are resolved from
-/// `output_dir` + current rename settings.
+/// Anything missing from `frozen` is resolved from `output_dir` + the current
+/// rename settings.
 pub fn download_chapter(
     chapter_url: &str,
     module_id: Option<&str>,
@@ -1822,7 +1858,7 @@ pub fn download_chapter(
     manga_title: &str,
     chapter_index: usize,
     chapter_name: &str,
-    chapter_dir_override: Option<&Path>,
+    frozen: FrozenNaming<'_>,
     mut on_progress: Option<&mut dyn FnMut(usize, usize, u64)>,
     cancel: Option<&AtomicBool>,
 ) -> Result<crate::download::DownloadResult, String> {
@@ -1953,14 +1989,17 @@ pub fn download_chapter(
         .map(|row| (row.authors, row.artists))
         .unwrap_or_default();
     let rename_opts = crate::rename_patterns::RenameOpts::from_settings();
-    let chapter_display = rename_opts.prepare_chapter_display(chapter_name, manga_title);
+    let chapter_display = match frozen.chapter_display.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(frozen) => frozen.to_string(),
+        None => rename_opts.prepare_chapter_display(chapter_name, manga_title),
+    };
     let name_ctx = NameCtx {
         manga: manga_title,
         chapter: &chapter_display,
         website: &website_name,
         opts: rename_opts,
     };
-    let chapter_dir = if let Some(p) = chapter_dir_override.filter(|p| !p.as_os_str().is_empty()) {
+    let chapter_dir = if let Some(p) = frozen.dir.filter(|p| !p.as_os_str().is_empty()) {
         p.to_path_buf()
     } else {
         chapter_output_dir(

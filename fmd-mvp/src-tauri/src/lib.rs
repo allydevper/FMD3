@@ -136,7 +136,7 @@ pub fn download_chapter_for_test(
         manga_title,
         chapter_index,
         chapter_name,
-        None,
+        Default::default(),
         None,
         None,
     )

@@ -487,14 +487,15 @@ async fn check_favorite_inner(
             .iter()
             .map(|c| {
                 let base = std::path::Path::new(&output);
-                let (manga_path, chapter_path) = crate::lua_host::resolve_queue_item_paths(
-                    base,
-                    &info.title,
-                    c.index as usize,
-                    &c.name,
-                    &info.module_id,
-                    &manga_url_for_queue,
-                );
+                let (manga_path, chapter_path, chapter_display) =
+                    crate::lua_host::resolve_queue_item_paths(
+                        base,
+                        &info.title,
+                        c.index as usize,
+                        &c.name,
+                        &info.module_id,
+                        &manga_url_for_queue,
+                    );
                 NewQueueItem {
                     manga_title: info.title.clone(),
                     root_url: info.root_url.clone(),
@@ -506,6 +507,7 @@ async fn check_favorite_inner(
                     output_dir: output.clone(),
                     manga_path: manga_path.display().to_string(),
                     chapter_path: chapter_path.display().to_string(),
+                    chapter_display,
                     batch_id: String::new(),
                     pack_format: crate::settings_keys::pack_format(),
                 }
@@ -558,6 +560,7 @@ pub fn queue_add(
     /* Store one absolute form regardless of caller, so every row for a work agrees
     on the mark key (catalog "download all" passes absolute, other paths may not). */
     let manga_url = crate::lua_host::maybe_fill_host(&req.root_url, &req.manga_url);
+    let rename_opts = RenameOpts::from_settings();
     let items: Vec<NewQueueItem> = req
         .chapters
         .iter()
@@ -573,10 +576,18 @@ pub fn queue_add(
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
-            let (manga_path, chapter_path) = match (frozen_manga, frozen_chapter) {
-                (Some(mp), Some(cp)) => (mp.to_string(), cp.to_string()),
+            let (manga_path, chapter_path, chapter_display) = match (frozen_manga, frozen_chapter)
+            {
+                // Rutas ya congeladas por el caller (re-encolado): el título no viaja
+                // en el payload, así que se recalcula aquí — sigue siendo antes de
+                // descargar, que es lo que importa.
+                (Some(mp), Some(cp)) => (
+                    mp.to_string(),
+                    cp.to_string(),
+                    rename_opts.prepare_chapter_display(&c.name, &req.manga_title),
+                ),
                 _ => {
-                    let (m, ch) = crate::lua_host::resolve_queue_item_paths(
+                    let (m, ch, display) = crate::lua_host::resolve_queue_item_paths(
                         base,
                         &req.manga_title,
                         c.index as usize,
@@ -591,6 +602,7 @@ pub fn queue_add(
                         frozen_chapter
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| ch.display().to_string()),
+                        display,
                     )
                 }
             };
@@ -605,6 +617,7 @@ pub fn queue_add(
                 output_dir: req.output_dir.clone(),
                 manga_path,
                 chapter_path,
+                chapter_display,
                 batch_id: batch_id.clone(),
                 pack_format: {
                     let frozen = c

@@ -65,6 +65,11 @@ pub struct QueueItem {
     /// Chapter folder resolved at enqueue time (empty = legacy, resolve live).
     #[serde(default)]
     pub chapter_path: String,
+    /// Chapter title after strip + pad, frozen at enqueue so the filenames match
+    /// the folder even if the rename settings change meanwhile.
+    /// Empty = legacy, resolve live.
+    #[serde(default)]
+    pub chapter_display: String,
     /// Split-download batch id (empty = group by manga only).
     #[serde(default)]
     pub batch_id: String,
@@ -93,6 +98,7 @@ pub struct NewQueueItem {
     pub output_dir: String,
     pub manga_path: String,
     pub chapter_path: String,
+    pub chapter_display: String,
     pub batch_id: String,
     pub pack_format: String,
 }
@@ -139,6 +145,7 @@ fn map_queue_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
         updated_at: r.get(16)?,
         retry_count: r.get(17)?,
         position: r.get(18)?,
+        chapter_display: r.get(19)?,
     })
 }
 
@@ -152,7 +159,8 @@ const QUEUE_SELECT: &str = "SELECT id, manga_title, root_url, COALESCE(manga_url
         output_dir, COALESCE(manga_path,''), COALESCE(chapter_path,''), COALESCE(batch_id,''),
         COALESCE(pack_format,''),
         status, error, created_at, updated_at,
-        COALESCE(retry_count, 0), COALESCE(position, 0)
+        COALESCE(retry_count, 0), COALESCE(position, 0),
+        COALESCE(chapter_display,'')
  FROM queue_items";
 
 pub fn db_path() -> PathBuf {
@@ -258,7 +266,8 @@ pub fn open_db() -> Result<Db, String> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             retry_count INTEGER NOT NULL DEFAULT 0,
-            position INTEGER NOT NULL DEFAULT 0
+            position INTEGER NOT NULL DEFAULT 0,
+            chapter_display TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_items(status);
         CREATE TABLE IF NOT EXISTS manga_cache (
@@ -311,6 +320,10 @@ pub fn open_db() -> Result<Db, String> {
     );
     let _ = conn.execute(
         "ALTER TABLE queue_items ADD COLUMN pack_format TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN chapter_display TEXT NOT NULL DEFAULT ''",
         [],
     );
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
@@ -755,8 +768,8 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
         conn.execute(
             "INSERT INTO queue_items(
                 manga_title, root_url, manga_url, module_id, chapter_index, chapter_name, chapter_link,
-                output_dir, manga_path, chapter_path, batch_id, pack_format, status, error, created_at, updated_at, retry_count, position
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'pending','',?13,?13,0,?14)",
+                output_dir, manga_path, chapter_path, chapter_display, batch_id, pack_format, status, error, created_at, updated_at, retry_count, position
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'pending','',?14,?14,0,?15)",
             params![
                 item.manga_title,
                 item.root_url,
@@ -768,6 +781,7 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
                 item.output_dir,
                 item.manga_path,
                 item.chapter_path,
+                item.chapter_display,
                 item.batch_id,
                 item.pack_format,
                 ts,
@@ -1260,7 +1274,8 @@ mod tests {
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT '',
                 retry_count INTEGER NOT NULL DEFAULT 0,
-                position INTEGER NOT NULL DEFAULT 0
+                position INTEGER NOT NULL DEFAULT 0,
+                chapter_display TEXT NOT NULL DEFAULT ''
             );
             "#,
         )
