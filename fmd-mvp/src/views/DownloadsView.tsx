@@ -103,7 +103,8 @@ function dlItemPct(
     return {
       pct: 100,
       pages: live.page_total > 0 ? `${done}/${live.page_total} pág` : "",
-      label: packing ? `Empaquetando ${done}/${live.page_total}` : "Procesando…",
+      // El badge es estrecho: aquí solo la palabra, el conteo va en `pages`.
+      label: packing ? "Empaquetando" : "Procesando",
     };
   }
   if (live && live.page_total > 0) {
@@ -199,7 +200,7 @@ function groupByManga(list: QueueItem[], modules: ModuleMeta[]): MangaGroup[] {
 type GroupAgg = {
   status: string;
   st: ReturnType<typeof dlStatusMeta>;
-  /** Etiqueta a mostrar: `st.label`, o "Procesando" si todo lo activo está empaquetando. */
+  /** Etiqueta a mostrar: `st.label`, o "Empaquetando" si todo lo activo lo está. */
   stLabel: string;
   done: number;
   active: number;
@@ -254,7 +255,7 @@ function aggregateGroup(
   const downloading = active - processing;
   if (downloading)
     parts.push(downloading === 1 ? "1 descargando" : `${downloading} descargando`);
-  if (processing) parts.push(`${processing} procesando`);
+  if (processing) parts.push(`${processing} empaquetando`);
   if (queued) parts.push(`${queued} en cola`);
   if (paused) parts.push(`${paused} detenidos`);
   if (failed) parts.push(`${failed} con error`);
@@ -263,7 +264,7 @@ function aggregateGroup(
     status,
     st,
     stLabel:
-      active > 0 && processing === active ? "Procesando" : st.label,
+      active > 0 && processing === active ? "Empaquetando" : st.label,
     done,
     active,
     queued,
@@ -500,6 +501,7 @@ export function DownloadsView() {
           p.message.startsWith("Obteniendo") ||
           p.message.startsWith("Downloading") ||
           p.message.startsWith("Procesando") ||
+          p.message.startsWith("Empaquetando") ||
           p.message.startsWith("Completed") ||
           p.message.startsWith("[")
         ) {
@@ -1639,7 +1641,7 @@ export function DownloadsView() {
                                   background: st.bg,
                                 }}
                               >
-                                {isProcessing ? "Procesando" : st.label}
+                                {isProcessing ? prog.label : st.label}
                               </span>
                               <span className="mono" style={{ fontSize: "10.5px", color: "var(--muted)" }}>
                                 {meta}
