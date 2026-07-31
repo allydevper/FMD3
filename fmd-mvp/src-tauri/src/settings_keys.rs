@@ -15,6 +15,7 @@ pub const DOWNLOAD_PAGE_NAME_PATTERN: &str = "download.page_name_pattern";
 pub const DOWNLOAD_CONVERT_TO: &str = "download.convert_to";
 pub const DOWNLOAD_PNG_AS_JPEG: &str = "download.png_as_jpeg";
 pub const DOWNLOAD_WEBP_AS: &str = "download.webp_as";
+pub const DOWNLOAD_PNG_LEVEL: &str = "download.png_level";
 pub const DOWNLOAD_JPEG_QUALITY: &str = "download.jpeg_quality";
 pub const DOWNLOAD_MANGA_FOLDER_ON: &str = "download.manga_folder_on";
 pub const DOWNLOAD_CHAPTER_FOLDER_ON: &str = "download.chapter_folder_on";
@@ -161,6 +162,11 @@ pub fn webp_as() -> u8 {
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(1)
         .clamp(0, 2)
+}
+
+/// FMD2 `OptionPNGCompressionLevel`: 0 none / 1 fastest / 2 default / 3 max.
+pub fn png_level() -> u8 {
+    usize_setting(DOWNLOAD_PNG_LEVEL, 1).clamp(0, 3) as u8
 }
 
 /// FMD2 `OptionJPEGQuality` (used when converting to JPEG).

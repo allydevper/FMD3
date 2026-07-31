@@ -1704,6 +1704,40 @@ fn work_basename(file_names: &LuaStringList, work_id: usize, page_count: usize) 
     )
 }
 
+/// Map FMD2 `OptionPNGCompressionLevel`: 0 none / 1 fastest / 2 default / 3 max.
+fn png_compression_type(level: u8) -> image::codecs::png::CompressionType {
+    use image::codecs::png::CompressionType;
+    match level {
+        0 => CompressionType::Uncompressed,
+        2 => CompressionType::Default,
+        3 => CompressionType::Best,
+        _ => CompressionType::Fast,
+    }
+}
+
+/// Encode `img` as PNG using FMD2-style compression level.
+/// Keeps the alpha channel only when the source has one (an opaque page saved as
+/// RGBA would be ~33% larger for nothing).
+fn encode_png_with_level(img: &image::DynamicImage, level: u8) -> Result<Vec<u8>, String> {
+    use image::codecs::png::{FilterType, PngEncoder};
+    use image::ImageEncoder;
+    let (w, h) = (img.width(), img.height());
+    let (raw, color) = if img.color().has_alpha() {
+        (img.to_rgba8().into_raw(), image::ExtendedColorType::Rgba8)
+    } else {
+        (img.to_rgb8().into_raw(), image::ExtendedColorType::Rgb8)
+    };
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let enc = PngEncoder::new_with_quality(
+        &mut cursor,
+        png_compression_type(level),
+        FilterType::Adaptive,
+    );
+    enc.write_image(&raw, w, h, color)
+        .map_err(|e| e.to_string())?;
+    Ok(cursor.into_inner())
+}
+
 /// FMD2 `SaveImageStreamToFile` conversion:
 /// - PNG → JPEG only if `png_as_jpeg`
 /// - WebP → PNG/JPEG according to `webp_as` (0 keep / 1 png / 2 jpg)
@@ -1730,27 +1764,23 @@ fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {
     let Ok(img) = image::load_from_memory(bytes) else {
         return (bytes.to_vec(), None);
     };
-    let mut cursor = std::io::Cursor::new(Vec::new());
-    let result = match ext {
+    let encoded: Result<Vec<u8>, String> = match ext {
         "jpg" => {
             use image::ImageEncoder;
             let q = crate::settings_keys::jpeg_quality();
             let rgb = img.to_rgb8();
             let (w, h) = (rgb.width(), rgb.height());
+            let mut cursor = std::io::Cursor::new(Vec::new());
             let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, q);
             enc.write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
                 .map_err(|e| e.to_string())
+                .map(|_| cursor.into_inner())
         }
-        "png" => img
-            .write_to(&mut cursor, image::ImageFormat::Png)
-            .map_err(|e| e.to_string()),
-        "webp" => img
-            .write_to(&mut cursor, image::ImageFormat::WebP)
-            .map_err(|e| e.to_string()),
+        "png" => encode_png_with_level(&img, crate::settings_keys::png_level()),
         _ => return (bytes.to_vec(), None),
     };
-    match result {
-        Ok(()) => (cursor.into_inner(), Some(ext)),
+    match encoded {
+        Ok(buf) => (buf, Some(ext)),
         Err(_) => (bytes.to_vec(), None),
     }
 }
@@ -2860,6 +2890,50 @@ mod tests {
         cur.into_inner()
     }
 
+    fn sample_rgba() -> image::DynamicImage {
+        use image::{Rgba, RgbaImage};
+        let mut img = RgbaImage::new(64, 64);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = Rgba([
+                (x * 4 % 256) as u8,
+                (y * 4 % 256) as u8,
+                128,
+                if (x + y) % 3 == 0 { 200 } else { 255 },
+            ]);
+        }
+        image::DynamicImage::ImageRgba8(img)
+    }
+
+    fn sample_rgb() -> image::DynamicImage {
+        use image::{Rgb, RgbImage};
+        let mut img = RgbImage::new(64, 64);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = Rgb([(x * 4 % 256) as u8, (y * 4 % 256) as u8, 128]);
+        }
+        image::DynamicImage::ImageRgb8(img)
+    }
+
+    /// Lossless WebP, with or without alpha channel.
+    fn webp_bytes(with_alpha: bool) -> Vec<u8> {
+        use image::ImageEncoder;
+        let (raw, color) = if with_alpha {
+            (
+                sample_rgba().to_rgba8().into_raw(),
+                image::ExtendedColorType::Rgba8,
+            )
+        } else {
+            (
+                sample_rgb().to_rgb8().into_raw(),
+                image::ExtendedColorType::Rgb8,
+            )
+        };
+        let mut cur = std::io::Cursor::new(Vec::new());
+        image::codecs::webp::WebPEncoder::new_lossless(&mut cur)
+            .write_image(&raw, 64, 64, color)
+            .unwrap();
+        cur.into_inner()
+    }
+
     #[test]
     fn resume_accepts_complete_pages() {
         let dir = std::env::temp_dir().join(format!("fmd_resume_ok_{}", std::process::id()));
@@ -2900,5 +2974,69 @@ mod tests {
         assert!(!empty.exists(), "empty page must be removed");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn png_level_maps_like_fmd2() {
+        use image::codecs::png::CompressionType;
+        assert_eq!(png_compression_type(0), CompressionType::Uncompressed);
+        assert_eq!(png_compression_type(1), CompressionType::Fast);
+        assert_eq!(png_compression_type(2), CompressionType::Default);
+        assert_eq!(png_compression_type(3), CompressionType::Best);
+    }
+
+    #[test]
+    fn encode_png_with_level_produces_valid_png() {
+        let img = sample_rgba();
+        for level in [0u8, 1, 2, 3] {
+            let png = encode_png_with_level(&img, level).expect("encode");
+            assert!(
+                png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]),
+                "PNG signature"
+            );
+            let decoded = image::load_from_memory(&png).expect("decode");
+            assert_eq!(decoded.width(), 64);
+            assert_eq!(decoded.height(), 64);
+        }
+    }
+
+    #[test]
+    fn png_level_sizes_are_ordered() {
+        let img = sample_rgba();
+        let sizes: Vec<usize> = (0u8..=3)
+            .map(|l| encode_png_with_level(&img, l).unwrap().len())
+            .collect();
+        assert!(
+            sizes[0] > sizes[1],
+            "Uncompressed ({}) should be > Fast ({})",
+            sizes[0],
+            sizes[1]
+        );
+        assert!(
+            sizes[3] <= sizes[1],
+            "Best ({}) should be <= Fast ({})",
+            sizes[3],
+            sizes[1]
+        );
+    }
+
+    /// WebP → PNG is the path where `png_level` actually applies. Uses the encoder
+    /// directly so the test does not depend on the user's stored `webp_as` setting.
+    #[test]
+    fn webp_encodes_to_png_keeping_source_color_type() {
+        for with_alpha in [true, false] {
+            let webp = webp_bytes(with_alpha);
+            assert_eq!(ext_from_bytes(&webp), "webp");
+            let img = image::load_from_memory(&webp).expect("decode webp");
+            let png = encode_png_with_level(&img, crate::settings_keys::png_level()).unwrap();
+            assert!(
+                png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]),
+                "PNG signature"
+            );
+            let decoded = image::load_from_memory(&png).expect("decode png");
+            assert_eq!(decoded.width(), 64);
+            assert_eq!(decoded.height(), 64);
+            assert_eq!(decoded.color().has_alpha(), with_alpha);
+        }
     }
 }
