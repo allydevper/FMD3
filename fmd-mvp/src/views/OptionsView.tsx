@@ -2020,16 +2020,30 @@ export function OptionsView() {
                             Nombre de la carpeta del manga. No admite «\» ni «/»: se eliminan
                           </div>
                         </div>
-                        <input
-                          ref={patMangaRef}
-                          id="set-pat-manga"
-                          className="st-field st-mono"
-                          type="text"
-                          autoComplete="off"
-                          spellCheck={false}
-                          value={s.patManga}
-                          onChange={(e) => update("patManga", e.target.value)}
-                        />
+                        <div className="st-field-wrap">
+                          <input
+                            ref={patMangaRef}
+                            id="set-pat-manga"
+                            className="st-field st-mono"
+                            type="text"
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={s.patManga}
+                            onChange={(e) => update("patManga", e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            className="sites-clear"
+                            hidden={!s.patManga}
+                            title="Limpiar"
+                            onClick={() => {
+                              update("patManga", "");
+                              patMangaRef.current?.focus();
+                            }}
+                          >
+                            <Icon ico={ICO.x} className="ico ico-sm" />
+                          </button>
+                        </div>
                         <TokenInsert tokens={TOKENS_MANGA} onInsert={(t) => insertTokenInto(patMangaRef, "patManga", t)} />
                         {mangaPatHint ? (
                           <div className="st-pat-hint">
@@ -2058,16 +2072,30 @@ export function OptionsView() {
                               : "Nombre de la carpeta del capítulo"}
                           </div>
                         </div>
-                        <input
-                          ref={patChapterRef}
-                          id="set-pat-chapter"
-                          className="st-field st-mono"
-                          type="text"
-                          autoComplete="off"
-                          spellCheck={false}
-                          value={s.patChapter}
-                          onChange={(e) => update("patChapter", e.target.value)}
-                        />
+                        <div className="st-field-wrap">
+                          <input
+                            ref={patChapterRef}
+                            id="set-pat-chapter"
+                            className="st-field st-mono"
+                            type="text"
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={s.patChapter}
+                            onChange={(e) => update("patChapter", e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            className="sites-clear"
+                            hidden={!s.patChapter}
+                            title="Limpiar"
+                            onClick={() => {
+                              update("patChapter", "");
+                              patChapterRef.current?.focus();
+                            }}
+                          >
+                            <Icon ico={ICO.x} className="ico ico-sm" />
+                          </button>
+                        </div>
                         <TokenInsert tokens={TOKENS_CHAPTER} onInsert={(t) => insertTokenInto(patChapterRef, "patChapter", t)} />
                         {chapterPatHint ? (
                           <div className="st-pat-hint">
@@ -2085,16 +2113,30 @@ export function OptionsView() {
                               : "Nombre de cada imagen descargada"}
                           </div>
                         </div>
-                        <input
-                          ref={patPageRef}
-                          id="set-pat-page"
-                          className="st-field st-mono"
-                          type="text"
-                          autoComplete="off"
-                          spellCheck={false}
-                          value={s.patPage}
-                          onChange={(e) => update("patPage", e.target.value)}
-                        />
+                        <div className="st-field-wrap">
+                          <input
+                            ref={patPageRef}
+                            id="set-pat-page"
+                            className="st-field st-mono"
+                            type="text"
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={s.patPage}
+                            onChange={(e) => update("patPage", e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            className="sites-clear"
+                            hidden={!s.patPage}
+                            title="Limpiar"
+                            onClick={() => {
+                              update("patPage", "");
+                              patPageRef.current?.focus();
+                            }}
+                          >
+                            <Icon ico={ICO.x} className="ico ico-sm" />
+                          </button>
+                        </div>
                         <TokenInsert tokens={TOKENS_PAGE} onInsert={(t) => insertTokenInto(patPageRef, "patPage", t)} />
                         {pagePatHint ? (
                           <div className="st-pat-hint">

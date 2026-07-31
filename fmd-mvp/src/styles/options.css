@@ -261,6 +261,15 @@
   outline: none;
 }
 
+.st-field-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.st-field-wrap .st-field {
+  padding-right: 32px;
+}
+
 .st-field:focus {
   border-color: var(--focus);
   box-shadow: 0 0 0 1px var(--focus);
