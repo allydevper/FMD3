@@ -1716,14 +1716,24 @@ fn png_compression_type(level: u8) -> image::codecs::png::CompressionType {
 }
 
 /// Encode `img` as PNG using FMD2-style compression level.
-/// Keeps the alpha channel only when the source has one (an opaque page saved as
-/// RGBA would be ~33% larger for nothing).
+/// Keeps the alpha channel only if some pixel is actually not fully opaque, like
+/// FMD2's `HasTransparentPixels`: a channel that is all-255 would make the file
+/// ~33% larger for nothing.
 fn encode_png_with_level(img: &image::DynamicImage, level: u8) -> Result<Vec<u8>, String> {
     use image::codecs::png::{FilterType, PngEncoder};
     use image::ImageEncoder;
     let (w, h) = (img.width(), img.height());
     let (raw, color) = if img.color().has_alpha() {
-        (img.to_rgba8().into_raw(), image::ExtendedColorType::Rgba8)
+        let rgba = img.to_rgba8();
+        if rgba.pixels().any(|p| p.0[3] != u8::MAX) {
+            (rgba.into_raw(), image::ExtendedColorType::Rgba8)
+        } else {
+            let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+            for p in rgba.pixels() {
+                rgb.extend_from_slice(&p.0[..3]);
+            }
+            (rgb, image::ExtendedColorType::Rgb8)
+        }
     } else {
         (img.to_rgb8().into_raw(), image::ExtendedColorType::Rgb8)
     };
@@ -1738,16 +1748,42 @@ fn encode_png_with_level(img: &image::DynamicImage, level: u8) -> Result<Vec<u8>
     Ok(cursor.into_inner())
 }
 
+/// FMD2 image conversion options, resolved once so the conversion itself stays
+/// independent of the settings store (and testable without a DB).
+struct ConvertOpts {
+    png_as_jpeg: bool,
+    webp_as: u8,
+    png_level: u8,
+    jpeg_quality: u8,
+}
+
+impl ConvertOpts {
+    fn from_settings() -> Self {
+        use crate::settings_keys as sk;
+        Self {
+            png_as_jpeg: sk::png_as_jpeg(),
+            webp_as: sk::webp_as(),
+            png_level: sk::png_level(),
+            jpeg_quality: sk::jpeg_quality(),
+        }
+    }
+}
+
+/// FMD2 `SaveImageStreamToFile` conversion using the current settings.
+fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {
+    convert_image_bytes(bytes, &ConvertOpts::from_settings())
+}
+
 /// FMD2 `SaveImageStreamToFile` conversion:
 /// - PNG → JPEG only if `png_as_jpeg`
 /// - WebP → PNG/JPEG according to `webp_as` (0 keep / 1 png / 2 jpg)
 /// - JPEG/GIF stay as-is (legacy global `convert_to=png` is ignored so it cannot
 ///   re-encode every page — that was a UI bug when WebP→PNG was the default)
-fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {
+fn convert_image_bytes(bytes: &[u8], opts: &ConvertOpts) -> (Vec<u8>, Option<&'static str>) {
     let src = ext_from_bytes(bytes);
     let target: Option<&'static str> = match src {
-        "png" if crate::settings_keys::png_as_jpeg() => Some("jpg"),
-        "webp" => match crate::settings_keys::webp_as() {
+        "png" if opts.png_as_jpeg => Some("jpg"),
+        "webp" => match opts.webp_as {
             1 => Some("png"),
             2 => Some("jpg"),
             _ => None,
@@ -1767,7 +1803,7 @@ fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {
     let encoded: Result<Vec<u8>, String> = match ext {
         "jpg" => {
             use image::ImageEncoder;
-            let q = crate::settings_keys::jpeg_quality();
+            let q = opts.jpeg_quality;
             let rgb = img.to_rgb8();
             let (w, h) = (rgb.width(), rgb.height());
             let mut cursor = std::io::Cursor::new(Vec::new());
@@ -1776,7 +1812,7 @@ fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {
                 .map_err(|e| e.to_string())
                 .map(|_| cursor.into_inner())
         }
-        "png" => encode_png_with_level(&img, crate::settings_keys::png_level()),
+        "png" => encode_png_with_level(&img, opts.png_level),
         _ => return (bytes.to_vec(), None),
     };
     match encoded {
@@ -2890,7 +2926,9 @@ mod tests {
         cur.into_inner()
     }
 
-    fn sample_rgba() -> image::DynamicImage {
+    /// RGBA image whose alpha channel uses `alpha` on some pixels and 255 on the
+    /// rest — `alpha = 255` yields a channel that exists but is fully opaque.
+    fn sample_rgba_with_alpha(alpha: u8) -> image::DynamicImage {
         use image::{Rgba, RgbaImage};
         let mut img = RgbaImage::new(64, 64);
         for (x, y, px) in img.enumerate_pixels_mut() {
@@ -2898,10 +2936,14 @@ mod tests {
                 (x * 4 % 256) as u8,
                 (y * 4 % 256) as u8,
                 128,
-                if (x + y) % 3 == 0 { 200 } else { 255 },
+                if (x + y) % 3 == 0 { alpha } else { 255 },
             ]);
         }
         image::DynamicImage::ImageRgba8(img)
+    }
+
+    fn sample_rgba() -> image::DynamicImage {
+        sample_rgba_with_alpha(200)
     }
 
     fn sample_rgb() -> image::DynamicImage {
@@ -2913,19 +2955,19 @@ mod tests {
         image::DynamicImage::ImageRgb8(img)
     }
 
-    /// Lossless WebP, with or without alpha channel.
-    fn webp_bytes(with_alpha: bool) -> Vec<u8> {
+    /// Lossless WebP. `alpha`: `None` → no alpha channel at all; `Some(a)` → alpha
+    /// channel present, using `a` on some pixels (`Some(255)` = channel but opaque).
+    fn webp_bytes(alpha: Option<u8>) -> Vec<u8> {
         use image::ImageEncoder;
-        let (raw, color) = if with_alpha {
-            (
-                sample_rgba().to_rgba8().into_raw(),
+        let (raw, color) = match alpha {
+            Some(a) => (
+                sample_rgba_with_alpha(a).to_rgba8().into_raw(),
                 image::ExtendedColorType::Rgba8,
-            )
-        } else {
-            (
+            ),
+            None => (
                 sample_rgb().to_rgb8().into_raw(),
                 image::ExtendedColorType::Rgb8,
-            )
+            ),
         };
         let mut cur = std::io::Cursor::new(Vec::new());
         image::codecs::webp::WebPEncoder::new_lossless(&mut cur)
@@ -3020,23 +3062,85 @@ mod tests {
         );
     }
 
-    /// WebP → PNG is the path where `png_level` actually applies. Uses the encoder
-    /// directly so the test does not depend on the user's stored `webp_as` setting.
+    /// Explicit options so the conversion tests never touch the settings DB.
+    fn opts(png_as_jpeg: bool, webp_as: u8, png_level: u8) -> ConvertOpts {
+        ConvertOpts {
+            png_as_jpeg,
+            webp_as,
+            png_level,
+            jpeg_quality: 80,
+        }
+    }
+
+    fn is_png(bytes: &[u8]) -> bool {
+        bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10])
+    }
+
     #[test]
-    fn webp_encodes_to_png_keeping_source_color_type() {
-        for with_alpha in [true, false] {
-            let webp = webp_bytes(with_alpha);
-            assert_eq!(ext_from_bytes(&webp), "webp");
-            let img = image::load_from_memory(&webp).expect("decode webp");
-            let png = encode_png_with_level(&img, crate::settings_keys::png_level()).unwrap();
-            assert!(
-                png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]),
-                "PNG signature"
-            );
-            let decoded = image::load_from_memory(&png).expect("decode png");
+    fn convert_routes_each_format_like_fmd2() {
+        let webp = webp_bytes(Some(200));
+        assert_eq!(ext_from_bytes(&webp), "webp");
+
+        // webp_as: 0 keep / 1 png / 2 jpg
+        let (out, conv) = convert_image_bytes(&webp, &opts(false, 0, 1));
+        assert_eq!(conv, None);
+        assert_eq!(out, webp);
+
+        let (out, conv) = convert_image_bytes(&webp, &opts(false, 1, 1));
+        assert_eq!(conv, Some("png"));
+        assert!(is_png(&out));
+
+        let (out, conv) = convert_image_bytes(&webp, &opts(false, 2, 1));
+        assert_eq!(conv, Some("jpg"));
+        assert_eq!(ext_from_bytes(&out), "jpg");
+
+        // PNG source: only converted when png_as_jpeg is on.
+        let png = encode_png_with_level(&sample_rgba(), 1).unwrap();
+        let (out, conv) = convert_image_bytes(&png, &opts(false, 1, 1));
+        assert_eq!(conv, None);
+        assert_eq!(out, png);
+        let (out, conv) = convert_image_bytes(&png, &opts(true, 1, 1));
+        assert_eq!(conv, Some("jpg"));
+        assert_eq!(ext_from_bytes(&out), "jpg");
+
+        // JPEG is never re-encoded.
+        let (out, conv) = convert_image_bytes(&jpeg(80), &opts(true, 2, 1));
+        assert_eq!(conv, None);
+        assert_eq!(out, jpeg(80));
+    }
+
+    /// `png_level` must reach the encoder through the real conversion path, not
+    /// just through `encode_png_with_level`.
+    #[test]
+    fn convert_threads_png_level_to_the_encoder() {
+        let webp = webp_bytes(Some(200));
+        let uncompressed = convert_image_bytes(&webp, &opts(false, 1, 0)).0;
+        let best = convert_image_bytes(&webp, &opts(false, 1, 3)).0;
+        assert!(is_png(&uncompressed) && is_png(&best));
+        assert!(
+            uncompressed.len() > best.len(),
+            "level 0 ({}) should be > level 3 ({})",
+            uncompressed.len(),
+            best.len()
+        );
+    }
+
+    /// FMD2 `HasTransparentPixels`: the alpha channel survives only if some pixel
+    /// is really translucent — an all-255 channel is dropped.
+    #[test]
+    fn convert_keeps_alpha_only_for_transparent_pixels() {
+        for (alpha, expect_alpha) in [(Some(200), true), (Some(255), false), (None, false)] {
+            let webp = webp_bytes(alpha);
+            let (out, conv) = convert_image_bytes(&webp, &opts(false, 1, 1));
+            assert_eq!(conv, Some("png"));
+            let decoded = image::load_from_memory(&out).expect("decode png");
             assert_eq!(decoded.width(), 64);
             assert_eq!(decoded.height(), 64);
-            assert_eq!(decoded.color().has_alpha(), with_alpha);
+            assert_eq!(
+                decoded.color().has_alpha(),
+                expect_alpha,
+                "alpha source {alpha:?}"
+            );
         }
     }
 }
