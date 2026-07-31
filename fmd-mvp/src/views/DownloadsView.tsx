@@ -96,10 +96,14 @@ function dlItemPct(
   if (item.status === "done") return { pct: 100, pages: "", label: "100%" };
   const live = liveProgress.get(item.id);
   if (live?.phase === "processing") {
+    // La descarga sí terminó, así que la barra se queda al 100% y no retrocede;
+    // el conteo de páginas empaquetadas es lo que muestra que sigue avanzando.
+    const done = Math.min(live.page_current, live.page_total);
+    const packing = live.page_total > 0 && done < live.page_total;
     return {
       pct: 100,
-      pages: live.page_total > 0 ? `${live.page_total}/${live.page_total} pág` : "",
-      label: "Procesando…",
+      pages: live.page_total > 0 ? `${done}/${live.page_total} pág` : "",
+      label: packing ? `Empaquetando ${done}/${live.page_total}` : "Procesando…",
     };
   }
   if (live && live.page_total > 0) {

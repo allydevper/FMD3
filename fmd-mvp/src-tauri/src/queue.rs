@@ -429,20 +429,44 @@ fn process_item(
             return Ok(());
         }
 
-        // Fase de empaquetado: conserva el ratio N/N para que la barra no retroceda.
-        let _ = app.emit(
-            "queue-progress",
-            progress_event(
-                &item,
-                format!("Procesando {}", item.chapter_name),
-                pending_count(&app.state::<QueueState>().db),
-                result.files.len() as u32,
-                result.files.len() as u32,
-                "processing",
-            ),
+        // Fase de empaquetado. La barra se queda al 100% (la descarga sí acabó);
+        // el conteso de páginas es lo que da señal de vida mientras se empaqueta.
+        // `pending_left` se calcula una sola vez: se emite un evento por página y
+        // no vale una consulta a la BD cada vez.
+        let pending_left = pending_count(&app.state::<QueueState>().db);
+        // Embebiendo, una página se empaqueta en milisegundos: sin este freno un
+        // capítulo largo inundaría la UI. El último informe pasa siempre.
+        let last_emit = std::sync::Mutex::new(
+            std::time::Instant::now() - std::time::Duration::from_secs(1),
         );
+        let emit_pack = |done: u32, total: u32| {
+            if done < total {
+                let Ok(mut last) = last_emit.lock() else { return };
+                if last.elapsed() < std::time::Duration::from_millis(100) {
+                    return;
+                }
+                *last = std::time::Instant::now();
+            }
+            let _ = app.emit(
+                "queue-progress",
+                progress_event(
+                    &item,
+                    format!("Empaquetando {}", item.chapter_name),
+                    pending_left,
+                    done,
+                    total,
+                    "processing",
+                ),
+            );
+        };
+        emit_pack(0, result.files.len() as u32);
 
-        let archive = match crate::pack::pack_chapter_dir(dir, &pack_fmt, Some(&cancel)) {
+        let archive = match crate::pack::pack_chapter_dir(
+            dir,
+            &pack_fmt,
+            Some(&cancel),
+            Some(&emit_pack),
+        ) {
             Ok(p) => p,
             Err(e) if e == crate::pack::PACK_CANCELLED || cancel.load(Ordering::SeqCst) => {
                 let _ = db::queue_mark_cancelled_if_running(

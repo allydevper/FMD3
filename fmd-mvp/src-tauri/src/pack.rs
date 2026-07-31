@@ -14,6 +14,17 @@ use zip::ZipWriter;
 /// Same token as download cancel so the queue worker treats it uniformly.
 pub const PACK_CANCELLED: &str = "cancelado";
 
+/// Reports packing progress as `(done, total)` entries. Packing a PDF can take
+/// seconds once pages have to be re-encoded, and without this the UI sits at
+/// N/N looking hung.
+pub type PackProgress<'a> = &'a (dyn Fn(u32, u32) + Send + Sync);
+
+fn report(progress: Option<PackProgress>, done: usize, total: usize) {
+    if let Some(p) = progress {
+        p(done as u32, total as u32);
+    }
+}
+
 /// Slack above the requested quality within which the source JPEG is embedded
 /// as-is. Re-encoding a source at or below the target only adds generational
 /// loss without shrinking it, and just above the target the trade is still bad:
@@ -89,6 +100,7 @@ fn pack_zip_like(
     dir: &Path,
     ext: &str,
     cancel: Option<&AtomicBool>,
+    progress: Option<PackProgress>,
 ) -> Result<PathBuf, String> {
     abort_if_cancelled(cancel)?;
     let dir = crate::paths::fs_path(dir);
@@ -110,17 +122,20 @@ fn pack_zip_like(
             .collect();
         entries.sort();
 
-        for path in entries {
+        let total = entries.len();
+        report(progress, 0, total);
+        for (i, path) in entries.iter().enumerate() {
             abort_if_cancelled(cancel)?;
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| format!("nombre inválido: {}", path.display()))?;
             zip.start_file(name, opts).map_err(|e| e.to_string())?;
-            let mut f = File::open(&path).map_err(|e| e.to_string())?;
+            let mut f = File::open(path).map_err(|e| e.to_string())?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
             zip.write_all(&buf).map_err(|e| e.to_string())?;
+            report(progress, i + 1, total);
         }
         abort_if_cancelled(cancel)?;
         zip.finish().map_err(|e| e.to_string())?;
@@ -609,7 +624,11 @@ impl<W: Write> Write for CountingWriter<W> {
 /// Minimal PDF: one JPEG image per page, streamed straight to the `.partial`.
 /// Sources already at or below the requested quality are embedded byte-for-byte;
 /// anything else is re-encoded, in parallel, in chunks.
-fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> {
+fn pack_pdf(
+    dir: &Path,
+    cancel: Option<&AtomicBool>,
+    progress: Option<PackProgress>,
+) -> Result<PathBuf, String> {
     abort_if_cancelled(cancel)?;
     let dir = crate::paths::fs_path(dir);
     let images = list_image_files(&dir)?;
@@ -658,6 +677,11 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
         };
 
         let threads = pdf_worker_threads();
+        // Counts every page *attempted*, so the report stays monotonic even when
+        // a page is dropped.
+        let total = pages.len();
+        let mut processed = 0usize;
+        report(progress, 0, total);
 
         for chunk in pages.chunks(threads) {
             abort_if_cancelled(cancel)?;
@@ -665,12 +689,14 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
 
             for (i, page) in chunk.iter().enumerate() {
                 abort_if_cancelled(cancel)?;
+                processed += 1;
 
                 // Resolve before reserving ids, so a skip consumes nothing.
                 let resolved = match resolve_page(page, encoded[i].take()) {
                     Ok(r) => r,
                     Err(e) => {
                         skipped.push((page.path.clone(), e));
+                        report(progress, processed, total);
                         continue;
                     }
                 };
@@ -739,6 +765,7 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
                     .map_err(|e| e.to_string())?;
 
                 kids.push(page_id);
+                report(progress, processed, total);
             }
         }
 
@@ -799,7 +826,11 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
     result
 }
 
-fn pack_epub(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> {
+fn pack_epub(
+    dir: &Path,
+    cancel: Option<&AtomicBool>,
+    progress: Option<PackProgress>,
+) -> Result<PathBuf, String> {
     abort_if_cancelled(cancel)?;
     let dir = crate::paths::fs_path(dir);
     let images = list_image_files(&dir)?;
@@ -843,6 +874,7 @@ fn pack_epub(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String>
         let mut spine = String::new();
         let mut nav_points = String::new();
 
+        report(progress, 0, images.len());
         for (i, path) in images.iter().enumerate() {
             abort_if_cancelled(cancel)?;
             let n = i + 1;
@@ -894,6 +926,7 @@ fn pack_epub(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String>
     </navPoint>
 "#
             ));
+            report(progress, n, images.len());
         }
 
         abort_if_cancelled(cancel)?;
@@ -949,12 +982,13 @@ pub fn pack_chapter_dir(
     dir: &Path,
     format: &str,
     cancel: Option<&AtomicBool>,
+    progress: Option<PackProgress>,
 ) -> Result<PathBuf, String> {
     match format {
-        "cbz" => pack_zip_like(dir, "cbz", cancel),
-        "zip" => pack_zip_like(dir, "zip", cancel),
-        "pdf" => pack_pdf(dir, cancel),
-        "epub" => pack_epub(dir, cancel),
+        "cbz" => pack_zip_like(dir, "cbz", cancel, progress),
+        "zip" => pack_zip_like(dir, "zip", cancel, progress),
+        "pdf" => pack_pdf(dir, cancel, progress),
+        "epub" => pack_epub(dir, cancel, progress),
         _ => Err(format!("formato de pack desconocido: {format}")),
     }
 }
@@ -1061,7 +1095,7 @@ mod tests {
             .unwrap()
             .write_all(b"fake")
             .unwrap();
-        let out = pack_chapter_dir(&dir, "cbz", None).unwrap();
+        let out = pack_chapter_dir(&dir, "cbz", None, None).unwrap();
         assert!(out.exists());
         assert_eq!(out.extension().unwrap(), "cbz");
         assert!(!PathBuf::from(format!("{}.partial", out.display())).exists());
@@ -1079,7 +1113,7 @@ mod tests {
             .write_all(b"fake")
             .unwrap();
         let flag = Arc::new(AtomicBool::new(true));
-        let err = pack_chapter_dir(&dir, "zip", Some(flag.as_ref())).unwrap_err();
+        let err = pack_chapter_dir(&dir, "zip", Some(flag.as_ref()), None).unwrap_err();
         assert_eq!(err, PACK_CANCELLED);
         let out = dir.with_extension("zip");
         assert!(!out.exists());
@@ -1188,7 +1222,7 @@ mod tests {
         let truncated = &full[..full.len() * 2 / 3];
         std::fs::write(dir.join("002.jpg"), truncated).unwrap();
 
-        let out = pack_chapter_dir(&dir, "pdf", None).unwrap();
+        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap();
         let pdf = std::fs::read(&out).unwrap();
 
         // The decoder recovers what it can, so the page survives — but it goes in
@@ -1253,7 +1287,7 @@ mod tests {
         let dir = temp_dir("pdf_gray");
         let gray = write_gray_jpeg(&dir.join("001.jpg"), 40);
 
-        let out = pack_chapter_dir(&dir, "pdf", None).unwrap();
+        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap();
         let pdf = std::fs::read(&out).unwrap();
         let text = String::from_utf8_lossy(&pdf);
 
@@ -1278,7 +1312,7 @@ mod tests {
         std::fs::write(dir.join("002.jpg"), b"definitely not a jpeg").unwrap();
         write_jpeg(&dir.join("003.jpg"), 80);
 
-        let out = pack_chapter_dir(&dir, "pdf", None).unwrap();
+        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap();
         let pdf = std::fs::read(&out).unwrap();
         let text = String::from_utf8_lossy(&pdf);
         assert!(
@@ -1297,7 +1331,7 @@ mod tests {
         std::fs::write(dir.join("001.jpg"), b"garbage").unwrap();
         std::fs::write(dir.join("002.png"), b"garbage").unwrap();
 
-        let err = pack_chapter_dir(&dir, "pdf", None).unwrap_err();
+        let err = pack_chapter_dir(&dir, "pdf", None, None).unwrap_err();
         assert_eq!(err, "no hay imágenes válidas para PDF");
         assert!(!dir.with_extension("pdf").exists());
         assert!(!PathBuf::from(format!("{}.pdf.partial", dir.display())).exists());
@@ -1316,7 +1350,7 @@ mod tests {
         let png = image::RgbImage::from_pixel(16, 16, image::Rgb([10u8, 20, 30]));
         png.save(dir.join("100.png")).unwrap();
 
-        let out = pack_chapter_dir(&dir, "pdf", None).unwrap();
+        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap();
         let pdf = std::fs::read(&out).unwrap();
         assert!(pdf.starts_with(b"%PDF-1.4\n"));
         assert!(String::from_utf8_lossy(&pdf).contains("/Count 10"));
@@ -1327,13 +1361,45 @@ mod tests {
     }
 
     #[test]
+    fn pack_reports_progress_monotonically() {
+        let dir = temp_dir("progress");
+        for i in 0..7 {
+            write_jpeg(&dir.join(format!("{i:03}.jpg")), 70);
+        }
+        // One unreadable page, so a dropped entry cannot stall the counter.
+        std::fs::write(dir.join("007.jpg"), b"garbage").unwrap();
+
+        for fmt in ["pdf", "cbz", "epub"] {
+            let seen = std::sync::Mutex::new(Vec::<(u32, u32)>::new());
+            let cb = |done: u32, total: u32| seen.lock().unwrap().push((done, total));
+            let out = pack_chapter_dir(&dir, fmt, None, Some(&cb)).unwrap();
+
+            let seen = seen.into_inner().unwrap();
+            assert!(seen.len() >= 2, "{fmt}: expected several reports, got {seen:?}");
+            assert_eq!(seen.first().unwrap().0, 0, "{fmt}: should start at 0");
+            // PDF counts planned pages, so the garbage file (dropped while
+            // planning) is outside its total; zip/epub count every entry.
+            let total = seen[0].1;
+            assert!(total >= 7, "{fmt}: total {total} too small");
+            assert_eq!(seen.last().unwrap(), &(total, total), "{fmt}: must reach total");
+            assert!(
+                seen.windows(2).all(|w| w[1].0 >= w[0].0),
+                "{fmt}: progress went backwards: {seen:?}"
+            );
+
+            let _ = std::fs::remove_file(&out);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn pack_pdf_respects_cancel_mid_chunk() {
         let dir = temp_dir("pdf_cancel");
         for i in 0..6 {
             write_jpeg(&dir.join(format!("{i:03}.jpg")), 95);
         }
         let flag = Arc::new(AtomicBool::new(true));
-        let err = pack_chapter_dir(&dir, "pdf", Some(flag.as_ref())).unwrap_err();
+        let err = pack_chapter_dir(&dir, "pdf", Some(flag.as_ref()), None).unwrap_err();
         assert_eq!(err, PACK_CANCELLED);
         assert!(!dir.with_extension("pdf").exists());
         assert!(!PathBuf::from(format!("{}.pdf.partial", dir.display())).exists());
