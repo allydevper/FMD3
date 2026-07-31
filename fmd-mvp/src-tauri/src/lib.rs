@@ -4,6 +4,7 @@ mod commands;
 mod cover_cache;
 mod db;
 mod download;
+mod image_integrity;
 pub mod lua_host;
 mod log_file;
 mod pack;

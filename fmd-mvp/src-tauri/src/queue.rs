@@ -461,7 +461,7 @@ fn process_item(
         };
         emit_pack(0, result.files.len() as u32);
 
-        let archive = match crate::pack::pack_chapter_dir(
+        let outcome = match crate::pack::pack_chapter_dir(
             dir,
             &pack_fmt,
             Some(&cancel),
@@ -478,6 +478,7 @@ fn process_item(
             }
             Err(e) => return Err(format!("pack failed: {e}")),
         };
+        let archive = outcome.archive;
 
         // Cancel requested while packing finished: do not count as success.
         if cancel.load(Ordering::SeqCst) {
@@ -497,13 +498,50 @@ fn process_item(
             ));
         }
 
-        if crate::settings_keys::pack_delete_folder() {
-            let _ = std::fs::remove_dir_all(crate::paths::fs_path(dir));
+        // Si al archivo le faltan páginas, NO se borran los originales: son la
+        // única copia y borrarlos volvería la pérdida irrecuperable.
+        if outcome.skipped.is_empty() {
+            if crate::settings_keys::pack_delete_folder() {
+                let _ = std::fs::remove_dir_all(crate::paths::fs_path(dir));
+            }
+        } else if crate::settings_keys::pack_delete_folder() {
+            eprintln!(
+                "pack: se conserva {} — al archivo le faltan {} página(s)",
+                dir.display(),
+                outcome.skipped.len()
+            );
         }
+
         if !err.is_empty() {
             err.push_str("; ");
         }
         err.push_str(&format!("packed {}", archive.display()));
+
+        if !outcome.skipped.is_empty() {
+            // Unos pocos nombres bastan para orientar; la razón de cada uno ya
+            // está en el log.
+            const SHOWN: usize = 5;
+            let names: Vec<&str> = outcome
+                .skipped
+                .iter()
+                .take(SHOWN)
+                .map(|(p, _)| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("?")
+                })
+                .collect();
+            let more = outcome.skipped.len().saturating_sub(names.len());
+            let listed = if more > 0 {
+                format!("{} y {more} más", names.join(", "))
+            } else {
+                names.join(", ")
+            };
+            err.push_str(&format!(
+                "; AVISO: faltan {} página(s) ({listed}); se conserva la carpeta de imágenes",
+                outcome.skipped.len()
+            ));
+        }
     }
 
     if cancel.load(Ordering::SeqCst) {

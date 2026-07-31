@@ -25,6 +25,29 @@ fn report(progress: Option<PackProgress>, done: usize, total: usize) {
     }
 }
 
+/// Images left out of the archive, as `(path, reason)`.
+pub type SkippedPages = Vec<(PathBuf, String)>;
+
+/// What packing produced. `skipped` matters to the caller: pages missing from the
+/// archive mean the source images must **not** be deleted afterwards, or the loss
+/// becomes unrecoverable.
+#[derive(Debug)]
+pub struct PackOutcome {
+    pub archive: PathBuf,
+    /// Every page left out of the archive.
+    pub skipped: SkippedPages,
+}
+
+impl PackOutcome {
+    /// For formats that copy every entry verbatim and so can never drop one.
+    fn complete(archive: PathBuf) -> Self {
+        Self {
+            archive,
+            skipped: Vec::new(),
+        }
+    }
+}
+
 /// Slack above the requested quality within which the source JPEG is embedded
 /// as-is. Re-encoding a source at or below the target only adds generational
 /// loss without shrinking it, and just above the target the trade is still bad:
@@ -101,7 +124,7 @@ fn pack_zip_like(
     ext: &str,
     cancel: Option<&AtomicBool>,
     progress: Option<PackProgress>,
-) -> Result<PathBuf, String> {
+) -> Result<PackOutcome, String> {
     abort_if_cancelled(cancel)?;
     let dir = crate::paths::fs_path(dir);
     let out = dir.with_extension(ext);
@@ -112,7 +135,8 @@ fn pack_zip_like(
         abort_if_cancelled(cancel)?;
         let file = File::create(crate::paths::fs_path(&partial)).map_err(|e| e.to_string())?;
         let mut zip = ZipWriter::new(file);
-        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
         let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
             .map_err(|e| e.to_string())?
@@ -130,11 +154,11 @@ fn pack_zip_like(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| format!("nombre inválido: {}", path.display()))?;
+            let opts = if is_precompressed(path) { stored } else { deflated };
             zip.start_file(name, opts).map_err(|e| e.to_string())?;
+            // Stream it: a chapter's pages should never all sit in RAM at once.
             let mut f = File::open(path).map_err(|e| e.to_string())?;
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-            zip.write_all(&buf).map_err(|e| e.to_string())?;
+            std::io::copy(&mut f, &mut zip).map_err(|e| e.to_string())?;
             report(progress, i + 1, total);
         }
         abort_if_cancelled(cancel)?;
@@ -145,7 +169,20 @@ fn pack_zip_like(
     if result.is_err() {
         remove_if_exists(&partial);
     }
-    result
+    result.map(PackOutcome::complete)
+}
+
+/// Already-compressed payloads: deflating them again costs CPU for almost no
+/// gain, so they go in `Stored`. Anything else (a `ComicInfo.xml`, a `.txt`)
+/// still compresses well.
+fn is_precompressed(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("jpg") | Some("jpeg") | Some("png") | Some("webp") | Some("gif") | Some("avif")
+    )
 }
 
 fn is_jpeg_path(path: &Path) -> bool {
@@ -351,26 +388,6 @@ fn read_prefix(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// Cheap integrity check for the part of the file the header probe never sees:
-/// the entropy-coded scan must be terminated by an EOI marker. This catches the
-/// dominant corruption mode — an interrupted download — without paying for a
-/// full decode. Encoders may pad after EOI, so scan the tail rather than
-/// requiring an exact suffix.
-fn jpeg_scan_is_terminated(path: &Path, len: u64) -> bool {
-    use std::io::{Seek, SeekFrom};
-    const TAIL: u64 = 64;
-    let Ok(mut f) = File::open(path) else {
-        return false;
-    };
-    if f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).is_err() {
-        return false;
-    }
-    let mut buf = Vec::new();
-    if f.read_to_end(&mut buf).is_err() {
-        return false;
-    }
-    buf.windows(2).any(|w| w == [0xFF, 0xD9])
-}
 
 /// Flatten transparency onto white. `to_rgb8` alone drops alpha against black,
 /// which darkens the edges of pages that have any.
@@ -430,13 +447,15 @@ struct PageSource {
 }
 
 /// Decide per image how it will reach the PDF, without holding page bytes.
-/// Unreadable images are skipped (and reported) instead of failing the chapter.
+/// Unreadable images are skipped instead of failing the chapter, and returned so
+/// the caller knows the archive is incomplete.
 fn plan_pdf_pages(
     images: &[PathBuf],
     quality: u8,
     cancel: Option<&AtomicBool>,
-) -> Result<Vec<PageSource>, String> {
+) -> Result<(Vec<PageSource>, SkippedPages), String> {
     let mut pages = Vec::with_capacity(images.len());
+    let mut skipped: SkippedPages = Vec::new();
 
     for path in images {
         abort_if_cancelled(cancel)?;
@@ -458,7 +477,9 @@ fn plan_pdf_pages(
             // through. Verify the tail before trusting the bytes verbatim.
             let embeddable = is_embeddable(&info)
                 && match std::fs::metadata(path).map(|m| m.len()) {
-                    Ok(len) if len > 0 => jpeg_scan_is_terminated(path, len),
+                    Ok(len) if len > 0 => {
+                        crate::image_integrity::jpeg_scan_is_terminated(path, len)
+                    }
                     _ => false,
                 };
             let embed = embeddable.then(|| EmbedInfo {
@@ -487,15 +508,15 @@ fn plan_pdf_pages(
                 h,
                 mode: PageMode::Reencode { fallback: None },
             }),
-            Ok(_) => eprintln!("pack pdf: se omite {} — dimensiones 0", path.display()),
-            Err(e) => eprintln!("pack pdf: se omite {} — {e}", path.display()),
+            Ok(_) => skipped.push((path.clone(), "dimensiones 0".into())),
+            Err(e) => skipped.push((path.clone(), e.to_string())),
         }
     }
 
     if pages.is_empty() {
         return Err("no hay imágenes válidas para PDF".into());
     }
-    Ok(pages)
+    Ok((pages, skipped))
 }
 
 /// How many pages to re-encode at once. Divided by the chapter-level
@@ -628,7 +649,7 @@ fn pack_pdf(
     dir: &Path,
     cancel: Option<&AtomicBool>,
     progress: Option<PackProgress>,
-) -> Result<PathBuf, String> {
+) -> Result<PackOutcome, String> {
     abort_if_cancelled(cancel)?;
     let dir = crate::paths::fs_path(dir);
     let images = list_image_files(&dir)?;
@@ -642,7 +663,9 @@ fn pack_pdf(
 
     let result = (|| {
         let quality = crate::settings_keys::pdf_quality();
-        let pages = plan_pdf_pages(&images, quality, cancel)?;
+        // Images unreadable at planning time are already dropped here; pages that
+        // die later in the re-encoder are added to the same list below.
+        let (pages, mut skipped) = plan_pdf_pages(&images, quality, cancel)?;
         abort_if_cancelled(cancel)?;
 
         let file = File::create(crate::paths::fs_path(&partial)).map_err(|e| e.to_string())?;
@@ -660,7 +683,6 @@ fn pack_pdf(
         // dropped instead of costing the whole chapter.
         let mut offsets: Vec<u64> = vec![0; 3];
         let mut kids: Vec<usize> = Vec::new();
-        let mut skipped: Vec<(PathBuf, String)> = Vec::new();
 
         let write_obj = |w: &mut CountingWriter<BufWriter<File>>,
                          offsets: &mut Vec<u64>,
@@ -817,7 +839,8 @@ fn pack_pdf(
         w.flush().map_err(|e| e.to_string())?;
         drop(w);
 
-        finalize_partial(&partial, &out)
+        let archive = finalize_partial(&partial, &out)?;
+        Ok(PackOutcome { archive, skipped })
     })();
 
     if result.is_err() {
@@ -830,7 +853,7 @@ fn pack_epub(
     dir: &Path,
     cancel: Option<&AtomicBool>,
     progress: Option<PackProgress>,
-) -> Result<PathBuf, String> {
+) -> Result<PackOutcome, String> {
     abort_if_cancelled(cancel)?;
     let dir = crate::paths::fs_path(dir);
     let images = list_image_files(&dir)?;
@@ -892,10 +915,13 @@ fn pack_epub(
             let img_name = format!("Images/{n:03}.{ext}");
             let page_name = format!("Text/page_{n:03}.xhtml");
 
-            zip.start_file(format!("OEBPS/{img_name}"), deflated)
+            // Images go in uncompressed and streamed; only the XML below is
+            // worth deflating.
+            let img_opts = if is_precompressed(path) { stored } else { deflated };
+            zip.start_file(format!("OEBPS/{img_name}"), img_opts)
                 .map_err(|e| e.to_string())?;
-            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-            zip.write_all(&bytes).map_err(|e| e.to_string())?;
+            let mut f = File::open(path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut f, &mut zip).map_err(|e| e.to_string())?;
 
             let xhtml = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -975,7 +1001,7 @@ fn pack_epub(
     if result.is_err() {
         remove_if_exists(&partial);
     }
-    result
+    result.map(PackOutcome::complete)
 }
 
 pub fn pack_chapter_dir(
@@ -983,7 +1009,7 @@ pub fn pack_chapter_dir(
     format: &str,
     cancel: Option<&AtomicBool>,
     progress: Option<PackProgress>,
-) -> Result<PathBuf, String> {
+) -> Result<PackOutcome, String> {
     match format {
         "cbz" => pack_zip_like(dir, "cbz", cancel, progress),
         "zip" => pack_zip_like(dir, "zip", cancel, progress),
@@ -1095,7 +1121,7 @@ mod tests {
             .unwrap()
             .write_all(b"fake")
             .unwrap();
-        let out = pack_chapter_dir(&dir, "cbz", None, None).unwrap();
+        let out = pack_chapter_dir(&dir, "cbz", None, None).unwrap().archive;
         assert!(out.exists());
         assert_eq!(out.extension().unwrap(), "cbz");
         assert!(!PathBuf::from(format!("{}.partial", out.display())).exists());
@@ -1162,12 +1188,12 @@ mod tests {
         };
 
         // Source ~60, asked for 85: re-encoding would only lose quality.
-        let pages = plan_pdf_pages(std::slice::from_ref(&path), 85, None).unwrap();
+        let (pages, _) = plan_pdf_pages(std::slice::from_ref(&path), 85, None).unwrap();
         assert_eq!(pages[0].mode, PageMode::Embed(rgb));
 
         // Source ~60, asked for 40: honor the setting and re-encode — but keep
         // the original as a fallback, since it is safe to embed verbatim.
-        let pages = plan_pdf_pages(std::slice::from_ref(&path), 40, None).unwrap();
+        let (pages, _) = plan_pdf_pages(std::slice::from_ref(&path), 40, None).unwrap();
         assert_eq!(
             pages[0].mode,
             PageMode::Reencode {
@@ -1184,11 +1210,11 @@ mod tests {
         let path = dir.join("001.jpg");
         write_jpeg(&path, 95);
 
-        let pages = plan_pdf_pages(std::slice::from_ref(&path), 50, None).unwrap();
+        let (pages, _) = plan_pdf_pages(std::slice::from_ref(&path), 50, None).unwrap();
         assert!(matches!(pages[0].mode, PageMode::Reencode { .. }));
 
         // Within the slack, so still embedded rather than pointlessly redone.
-        let pages = plan_pdf_pages(std::slice::from_ref(&path), 95, None).unwrap();
+        let (pages, _) = plan_pdf_pages(std::slice::from_ref(&path), 95, None).unwrap();
         assert!(matches!(pages[0].mode, PageMode::Embed(_)));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1206,7 +1232,7 @@ mod tests {
         assert!(is_embeddable(&info), "the header looks perfectly fine");
 
         // ...but the missing EOI must keep it off the verbatim path.
-        let pages = plan_pdf_pages(std::slice::from_ref(&path), 85, None).unwrap();
+        let (pages, _) = plan_pdf_pages(std::slice::from_ref(&path), 85, None).unwrap();
         assert_eq!(pages[0].mode, PageMode::Reencode { fallback: None });
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1222,7 +1248,7 @@ mod tests {
         let truncated = &full[..full.len() * 2 / 3];
         std::fs::write(dir.join("002.jpg"), truncated).unwrap();
 
-        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap();
+        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap().archive;
         let pdf = std::fs::read(&out).unwrap();
 
         // The decoder recovers what it can, so the page survives — but it goes in
@@ -1287,7 +1313,7 @@ mod tests {
         let dir = temp_dir("pdf_gray");
         let gray = write_gray_jpeg(&dir.join("001.jpg"), 40);
 
-        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap();
+        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap().archive;
         let pdf = std::fs::read(&out).unwrap();
         let text = String::from_utf8_lossy(&pdf);
 
@@ -1306,14 +1332,14 @@ mod tests {
     }
 
     #[test]
-    fn pack_pdf_skips_unreadable_images() {
+    fn pack_pdf_skips_unreadable_images_and_reports_them() {
         let dir = temp_dir("pdf_skip");
         write_jpeg(&dir.join("001.jpg"), 80);
         std::fs::write(dir.join("002.jpg"), b"definitely not a jpeg").unwrap();
         write_jpeg(&dir.join("003.jpg"), 80);
 
-        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap();
-        let pdf = std::fs::read(&out).unwrap();
+        let outcome = pack_chapter_dir(&dir, "pdf", None, None).unwrap();
+        let pdf = std::fs::read(&outcome.archive).unwrap();
         let text = String::from_utf8_lossy(&pdf);
         assert!(
             text.contains("/Count 2"),
@@ -1321,7 +1347,110 @@ mod tests {
         );
         assert_xref_consistent(&pdf);
 
+        // The caller must be able to see the loss: queue.rs relies on this to
+        // keep the source folder instead of deleting it.
+        assert_eq!(outcome.skipped.len(), 1, "skipped: {:?}", outcome.skipped);
+        assert_eq!(
+            outcome.skipped[0].0.file_name().unwrap(),
+            std::ffi::OsStr::new("002.jpg")
+        );
+        assert!(!outcome.skipped[0].1.is_empty(), "a reason is required");
+
+        let _ = std::fs::remove_file(&outcome.archive);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cbz_stores_images_and_deflates_text() {
+        let dir = temp_dir("cbz_methods");
+        write_jpeg(&dir.join("001.jpg"), 80);
+        image::RgbImage::from_pixel(16, 16, image::Rgb([9u8, 9, 9]))
+            .save(dir.join("002.png"))
+            .unwrap();
+        // Highly compressible text, so Deflated is clearly the right call here.
+        std::fs::write(dir.join("ComicInfo.xml"), "<x>".repeat(500)).unwrap();
+
+        let out = pack_chapter_dir(&dir, "cbz", None, None).unwrap().archive;
+        let mut zip = zip::ZipArchive::new(File::open(&out).unwrap()).unwrap();
+
+        let mut seen = 0;
+        for i in 0..zip.len() {
+            let entry = zip.by_index(i).unwrap();
+            let name = entry.name().to_string();
+            let method = entry.compression();
+            if name.ends_with(".jpg") || name.ends_with(".png") {
+                assert_eq!(
+                    method,
+                    CompressionMethod::Stored,
+                    "{name} is already compressed; deflating it is wasted CPU"
+                );
+                seen += 1;
+            } else if name.ends_with(".xml") {
+                assert_eq!(method, CompressionMethod::Deflated, "{name} should deflate");
+                assert!(
+                    entry.compressed_size() < entry.size(),
+                    "{name} should actually get smaller"
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 3, "all three entries should have been checked");
+
         let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn epub_keeps_mimetype_first_and_uncompressed() {
+        let dir = temp_dir("epub_shape");
+        write_jpeg(&dir.join("001.jpg"), 80);
+        write_jpeg(&dir.join("002.jpg"), 80);
+
+        let out = pack_chapter_dir(&dir, "epub", None, None).unwrap().archive;
+        let mut zip = zip::ZipArchive::new(File::open(&out).unwrap()).unwrap();
+
+        // The EPUB spec requires this exact shape for the first entry.
+        {
+            let first = zip.by_index(0).unwrap();
+            assert_eq!(first.name(), "mimetype");
+            assert_eq!(first.compression(), CompressionMethod::Stored);
+        }
+        let mut mimetype = String::new();
+        zip.by_name("mimetype")
+            .unwrap()
+            .read_to_string(&mut mimetype)
+            .unwrap();
+        assert_eq!(mimetype, "application/epub+zip");
+
+        // Images stored, XML deflated.
+        assert_eq!(
+            zip.by_name("OEBPS/Images/001.jpg").unwrap().compression(),
+            CompressionMethod::Stored
+        );
+        assert_eq!(
+            zip.by_name("OEBPS/content.opf").unwrap().compression(),
+            CompressionMethod::Deflated
+        );
+
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_complete_pack_reports_nothing_skipped() {
+        let dir = temp_dir("pdf_nokip");
+        write_jpeg(&dir.join("001.jpg"), 80);
+        write_jpeg(&dir.join("002.jpg"), 80);
+
+        for fmt in ["pdf", "cbz", "epub"] {
+            let outcome = pack_chapter_dir(&dir, fmt, None, None).unwrap();
+            assert!(
+                outcome.skipped.is_empty(),
+                "{fmt} dropped pages it should not have: {:?}",
+                outcome.skipped
+            );
+            let _ = std::fs::remove_file(&outcome.archive);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1350,7 +1479,7 @@ mod tests {
         let png = image::RgbImage::from_pixel(16, 16, image::Rgb([10u8, 20, 30]));
         png.save(dir.join("100.png")).unwrap();
 
-        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap();
+        let out = pack_chapter_dir(&dir, "pdf", None, None).unwrap().archive;
         let pdf = std::fs::read(&out).unwrap();
         assert!(pdf.starts_with(b"%PDF-1.4\n"));
         assert!(String::from_utf8_lossy(&pdf).contains("/Count 10"));
@@ -1372,7 +1501,7 @@ mod tests {
         for fmt in ["pdf", "cbz", "epub"] {
             let seen = std::sync::Mutex::new(Vec::<(u32, u32)>::new());
             let cb = |done: u32, total: u32| seen.lock().unwrap().push((done, total));
-            let out = pack_chapter_dir(&dir, fmt, None, Some(&cb)).unwrap();
+            let out = pack_chapter_dir(&dir, fmt, None, Some(&cb)).unwrap().archive;
 
             let seen = seen.into_inner().unwrap();
             assert!(seen.len() >= 2, "{fmt}: expected several reports, got {seen:?}");

@@ -1548,14 +1548,33 @@ fn ext_from_url(url: &str) -> Option<&'static str> {
     }
 }
 
-fn find_existing_image(base_no_ext: &Path) -> Option<PathBuf> {
-    let exists = |p: &Path| crate::paths::fs_path(p).is_file();
-    if exists(base_no_ext) {
+/// Find a page already on disk, for resume. Existing-but-incomplete files are
+/// **deleted** so the caller re-downloads them.
+///
+/// Existence alone is not enough: a run killed mid-write leaves a truncated or
+/// 0-byte file, and treating that as done poisons the page forever — every retry
+/// skips it, and the packer later drops it from the archive.
+fn find_complete_image(base_no_ext: &Path) -> Option<PathBuf> {
+    let usable = |p: &Path| {
+        if !crate::paths::fs_path(p).is_file() {
+            return false;
+        }
+        if crate::image_integrity::looks_complete(p) {
+            return true;
+        }
+        eprintln!(
+            "descarga: {} está incompleto, se descarta y se vuelve a bajar",
+            p.display()
+        );
+        let _ = std::fs::remove_file(crate::paths::fs_path(p));
+        false
+    };
+    if usable(base_no_ext) {
         return Some(base_no_ext.to_path_buf());
     }
     for ext in ["jpg", "jpeg", "png", "webp", "gif", "avif"] {
         let p = base_no_ext.with_extension(ext);
-        if exists(&p) {
+        if usable(&p) {
             return Some(p);
         }
     }
@@ -1936,7 +1955,7 @@ pub fn download_chapter(
             if trimmed == "D" || (!trimmed.is_empty() && trimmed != "W") {
                 let base_name = work_basename(&task.file_names, i, page_count);
                 let base_path = chapter_dir.join(&base_name);
-                if let Some(existing) = find_existing_image(&base_path) {
+                if let Some(existing) = find_complete_image(&base_path) {
                     if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(&existing)) {
                         bytes_counter.fetch_add(meta.len(), Ordering::SeqCst);
                     }
@@ -1952,7 +1971,7 @@ pub fn download_chapter(
                 errors.push(format!("Página {}: URL vacía (W)", i + 1));
                 continue;
             }
-            if find_existing_image(&chapter_dir.join(work_basename(&task.file_names, i, page_count)))
+            if find_complete_image(&chapter_dir.join(work_basename(&task.file_names, i, page_count)))
                 .is_some()
             {
                 continue;
@@ -1999,7 +2018,7 @@ pub fn download_chapter(
                         }
                         let base_name = work_basename(&task.file_names, i, page_count);
                         let base_path = chapter_dir.join(&base_name);
-                        if let Some(existing) = find_existing_image(&base_path) {
+                        if let Some(existing) = find_complete_image(&base_path) {
                             if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(&existing)) {
                                 bytes_counter.fetch_add(meta.len(), Ordering::SeqCst);
                             }
@@ -2086,7 +2105,7 @@ pub fn download_chapter(
         let trimmed = work_url.trim().to_string();
         if trimmed == "D" {
             let base = chapter_dir.join(work_basename(&task.file_names, i, page_count));
-            if let Some(existing) = find_existing_image(&base) {
+            if let Some(existing) = find_complete_image(&base) {
                 files.push(existing.display().to_string());
             }
             continue;
@@ -2099,7 +2118,7 @@ pub fn download_chapter(
         // Resume: skip pages already on disk before any network I/O (EXTRAS #4).
         let base_name = work_basename(&task.file_names, i, page_count);
         let base_path = chapter_dir.join(&base_name);
-        if let Some(existing) = find_existing_image(&base_path) {
+        if let Some(existing) = find_complete_image(&base_path) {
             if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(&existing)) {
                 bytes_so_far += meta.len();
             }
@@ -2822,4 +2841,64 @@ pub fn update_list(
         skipped,
         cancelled: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn jpeg(quality: u8) -> Vec<u8> {
+        use image::{ImageEncoder, Rgb, RgbImage};
+        let mut img = RgbImage::new(32, 32);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = Rgb([(x * 8 % 256) as u8, (y * 8 % 256) as u8, 64]);
+        }
+        let mut cur = std::io::Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cur, quality)
+            .write_image(img.as_raw(), 32, 32, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        cur.into_inner()
+    }
+
+    #[test]
+    fn resume_accepts_complete_pages() {
+        let dir = std::env::temp_dir().join(format!("fmd_resume_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = dir.join("001.jpg");
+        std::fs::write(&page, jpeg(80)).unwrap();
+
+        assert_eq!(
+            find_complete_image(&dir.join("001")),
+            Some(page.clone()),
+            "a complete page must be reused instead of re-downloaded"
+        );
+        assert!(page.is_file(), "and must not be deleted");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resume_discards_truncated_and_empty_pages() {
+        let dir = std::env::temp_dir().join(format!("fmd_resume_bad_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Killed mid-write: header fine, no EOI.
+        let cut = dir.join("001.jpg");
+        let full = jpeg(80);
+        std::fs::write(&cut, &full[..full.len() * 2 / 3]).unwrap();
+        // Killed before any bytes landed.
+        let empty = dir.join("002.png");
+        std::fs::write(&empty, b"").unwrap();
+
+        assert_eq!(find_complete_image(&dir.join("001")), None);
+        assert_eq!(find_complete_image(&dir.join("002")), None);
+        // Deleting them is what un-poisons the page: otherwise every retry keeps
+        // skipping it for merely existing.
+        assert!(!cut.exists(), "truncated page must be removed");
+        assert!(!empty.exists(), "empty page must be removed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
