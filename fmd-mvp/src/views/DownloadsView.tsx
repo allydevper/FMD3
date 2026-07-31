@@ -850,7 +850,7 @@ export function DownloadsView() {
     ev.stopPropagation();
     const pad = 8;
     const menuW = 220;
-    const menuH = 220;
+    const menuH = 260;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     setDlCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), ids });
@@ -1248,7 +1248,12 @@ export function DownloadsView() {
               <span className="ell dl-sel-label">{selLabel}</span>
             </div>
 
-            <div className="dl-scroll">
+            <div
+              className="dl-scroll"
+              onContextMenu={(ev) => {
+                openCtx(ev, []);
+              }}
+            >
               <div className="dl-grid dl-head">
                 <button
                   type="button"
@@ -1635,7 +1640,12 @@ export function DownloadsView() {
                       <Icon ico={ICO.trash} className="ico ico-sm" />
                     </button>
                   </div>
-                  <div className="dl-panel-list-scroll">
+                  <div
+                    className="dl-panel-list-scroll"
+                    onContextMenu={(ev) => {
+                      openCtx(ev, []);
+                    }}
+                  >
                     {focusGroup.items.map((c) => {
                       const st = dlStatusMeta(c.status);
                       const prog = dlItemPct(c, liveProgress);
@@ -1957,6 +1967,19 @@ export function DownloadsView() {
             >
               <Icon ico={ICO.plus} className="ico ico-sm" />
               <span>Agregar más capítulos</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={clearableN === 0}
+              onClick={() => {
+                setDlCtxMenu(null);
+                void handleClearDone();
+              }}
+            >
+              <Icon ico={ICO.broom} className="ico ico-sm" />
+              <span>Limpiar completadas</span>
             </button>
             <button
               type="button"
