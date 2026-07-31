@@ -347,12 +347,18 @@ pub fn build_preview(opts: &RenameOpts, output_dir: &str, pack_ext: &str) -> Str
         path = join_fitted(&path, &opts.apply_pattern(&pat, &tokens));
     }
 
+    if !pack_ext.is_empty() {
+        // Al empaquetar, el archivo se nombra con la carpeta que se empaqueta
+        // (`pack_chapter_dir` hace `dir.with_extension`); las páginas quedan dentro.
+        return format!("{}{pack_ext}", path.display());
+    }
+
     let page = format_page(1);
     let leaf = opts.apply_pattern(
         opts.page_pattern(),
         &page_tokens(&page, SAMPLE_MANGA, &chapter, SAMPLE_WEBSITE),
     );
-    format!("{}{pack_ext}", path.join(leaf).display())
+    path.join(leaf).display().to_string()
 }
 
 fn join_fitted(base: &Path, segment: &str) -> PathBuf {
@@ -566,13 +572,15 @@ mod tests {
         assert!(out.starts_with("D:\\Descargas Manga\\Añejo\\"));
     }
 
+    /// Al empaquetar, el resultado es la carpeta del capítulo con extensión —
+    /// no una página con extensión: `pack_chapter_dir` hace `dir.with_extension`.
     #[test]
-    fn preview_honours_strip_and_pack_ext() {
+    fn preview_pack_names_the_chapter_folder() {
         let mut o = opts();
         o.remove_manga_from_chapter = true;
         o.pat_chapter = "%NUMBERING%_%CHAPTER%".into();
         let out = preview(&o, "D:\\Manga", ".cbz");
-        assert_eq!(out, "D:\\Manga\\One Piece\\003_Chapter 003\\001.cbz");
+        assert_eq!(out, "D:\\Manga\\One Piece\\003_Chapter 003.cbz");
     }
 
     #[test]

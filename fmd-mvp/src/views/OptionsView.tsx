@@ -577,7 +577,13 @@ function SwitchRow({
         <div className="st-desc">{desc}</div>
       </div>
       <span className="st-switch">
-        <input id={id} className="opt-stub" type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        <input
+          id={id}
+          className="opt-stub"
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+        />
         <span className="sw" aria-hidden="true">
           <span className="knob" />
         </span>
@@ -1163,11 +1169,23 @@ export function OptionsView() {
   );
   const pagePatHint = useMemo(() => patternMissingRequired("page", s.patPage), [s.patPage]);
 
+  /* ---- Empaquetado ----
+     El archivo se nombra a partir de la carpeta que se empaqueta, así que sin
+     carpeta de capítulo se empaquetaría la del manga. Los textos de la sección
+     lo avisan; el switch se deja libre para no pelearse con el usuario. */
+  const packing = s.packFormat !== "none";
+
   /* ---- Presets de renombrado ---- */
 
   // El preset activo se deriva de los campos, no se guarda: editar uno a mano
   // pasa el selector a "Personalizado" solo. Solo se comparan los patrones que
   // están en uso — un patrón de capítulo oculto no debería romper la detección.
+  // Con empaquetado, los presets sin carpeta de capítulo no son aplicables.
+  const availablePresets = useMemo(
+    () => (packing ? RENAME_PRESETS.filter((p) => p.shape.chapterFolderOn) : RENAME_PRESETS),
+    [packing],
+  );
+
   const renamePreset = useMemo(() => {
     const match = RENAME_PRESETS.find(
       ({ shape }) =>
@@ -1968,7 +1986,7 @@ export function OptionsView() {
                         value={renamePreset}
                         onChange={applyRenamePreset}
                         options={[
-                          ...RENAME_PRESETS.map((p) => ({ value: p.id, label: p.label })),
+                          ...availablePresets.map((p) => ({ value: p.id, label: p.label })),
                           /* "Personalizado" es un estado, no un atajo: solo se lista
                              cuando ya lo estás, para que no haya opción que no haga nada. */
                           ...(renamePreset === RENAME_PRESET_CUSTOM
@@ -1980,7 +1998,9 @@ export function OptionsView() {
                       <div className="st-row st-row-stack">
                         <div className="st-meta">
                           <div className="st-label">Resultado</div>
-                          <div className="st-desc">Ejemplo con el capítulo 3 de un manga de tu lista</div>
+                          <div className="st-desc">
+                            Ejemplo con datos de muestra; refleja tus ajustes actuales
+                          </div>
                         </div>
                         <div id="set-rename-preview" className="st-preview" aria-live="polite">
                           {renamePreview}
@@ -1996,7 +2016,9 @@ export function OptionsView() {
                       <div className="st-row st-row-stack" hidden={!s.mangaFolderOn}>
                         <div className="st-meta">
                           <div className="st-label">Patrón de la carpeta</div>
-                          <div className="st-desc">Plantilla del nombre de carpeta del manga</div>
+                          <div className="st-desc">
+                            Nombre de la carpeta del manga. No admite «\» ni «/»: se eliminan
+                          </div>
                         </div>
                         <input
                           ref={patMangaRef}
@@ -2019,14 +2041,22 @@ export function OptionsView() {
                       <SwitchRow
                         id="set-chapter-folder"
                         label="Carpeta por capítulo"
-                        desc="Cada capítulo en su propia subcarpeta"
+                        desc={
+                          packing
+                            ? "Al empaquetar debe estar activa: su nombre es el del archivo, y al terminar solo queda ese archivo"
+                            : "Cada capítulo en su propia subcarpeta"
+                        }
                         checked={s.chapterFolderOn}
                         onChange={(v) => update("chapterFolderOn", v)}
                       />
                       <div className="st-row st-row-stack" hidden={!s.chapterFolderOn}>
                         <div className="st-meta">
                           <div className="st-label">Patrón del capítulo</div>
-                          <div className="st-desc">Plantilla del nombre de carpeta del capítulo</div>
+                          <div className="st-desc">
+                            {packing
+                              ? "Nombre de la carpeta y, por tanto, del archivo empaquetado"
+                              : "Nombre de la carpeta del capítulo"}
+                          </div>
                         </div>
                         <input
                           ref={patChapterRef}
@@ -2048,8 +2078,12 @@ export function OptionsView() {
 
                       <div className="st-row st-row-stack">
                         <div className="st-meta">
-                          <div className="st-label">Nombre del archivo</div>
-                          <div className="st-desc">Plantilla del archivo final</div>
+                          <div className="st-label">Nombre de las páginas</div>
+                          <div className="st-desc">
+                            {packing
+                              ? "Nombre de cada imagen dentro del archivo empaquetado"
+                              : "Nombre de cada imagen descargada"}
+                          </div>
                         </div>
                         <input
                           ref={patPageRef}
@@ -2080,7 +2114,7 @@ export function OptionsView() {
                       <SwitchRow
                         id="set-vol-pad"
                         label="Rellenar el volumen con ceros"
-                        desc="v2 se convierte en v02"
+                        desc="Vol.2 se convierte en Vol.02, solo si el título trae «Vol»"
                         checked={s.volPadOn}
                         onChange={(v) => update("volPadOn", v)}
                       />
@@ -2096,7 +2130,7 @@ export function OptionsView() {
                       <SwitchRow
                         id="set-chap-pad"
                         label="Rellenar el capítulo con ceros"
-                        desc="3 se convierte en 003"
+                        desc="3 se convierte en 003; también fija los dígitos de %NUMBERING%"
                         checked={s.chapPadOn}
                         onChange={(v) => update("chapPadOn", v)}
                       />
@@ -2112,7 +2146,7 @@ export function OptionsView() {
                       <SwitchRow
                         id="set-replace-ascii"
                         label="Reemplazar caracteres no ASCII"
-                        desc="Evita nombres inválidos en algunos sistemas"
+                        desc="Solo en los nombres generados; la carpeta de «Guardar en» no se toca"
                         checked={s.asciiOn}
                         onChange={(v) => update("asciiOn", v)}
                       />
