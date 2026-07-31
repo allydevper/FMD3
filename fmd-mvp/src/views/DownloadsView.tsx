@@ -1239,6 +1239,7 @@ export function DownloadsView() {
                       onClick={() => {
                         setFocusKey(g.key);
                         setPanelMin(false);
+                        toggleSelG(g.key);
                       }}
                       onContextMenu={(ev) => {
                         if (!selG[g.key]) setSelG({ [g.key]: true });
