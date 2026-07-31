@@ -850,7 +850,7 @@ export function DownloadsView() {
     ev.stopPropagation();
     const pad = 8;
     const menuW = 220;
-    const menuH = 180;
+    const menuH = 220;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     setDlCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), ids });
@@ -935,6 +935,13 @@ export function DownloadsView() {
   );
   const ctxCanDelete = ctxItems.some((i) => i.status !== "running");
   const ctxOpenTarget = ctxItems[0];
+  const ctxAddMoreGroup = ctxOpenTarget
+    ? allGroups.find((g) => g.key === mangaGroupKey(ctxOpenTarget)) || null
+    : null;
+  const ctxCanAddMore = !!(
+    ctxAddMoreGroup &&
+    (ctxAddMoreGroup.mangaUrl || ctxAddMoreGroup.rootUrl || "").trim()
+  );
 
   const selLabel = hasSel
     ? `${selKeys.length} ${selKeys.length === 1 ? "grupo" : "grupos"} · ${selChapterIds.length} cap.`
@@ -1935,6 +1942,21 @@ export function DownloadsView() {
             >
               <Icon ico={ICO.folderOpen} className="ico ico-sm" />
               <span>Abrir ubicación</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={!ctxCanAddMore}
+              onClick={() => {
+                const g = ctxAddMoreGroup;
+                setDlCtxMenu(null);
+                if (!g) return;
+                handleAddMore(g);
+              }}
+            >
+              <Icon ico={ICO.plus} className="ico ico-sm" />
+              <span>Agregar más capítulos</span>
             </button>
             <button
               type="button"
