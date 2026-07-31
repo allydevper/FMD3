@@ -1392,6 +1392,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The interesting cleanup case: abort *after* bytes are already in the
+    /// `.partial`, not before it is created.
+    #[test]
+    fn aborting_mid_write_leaves_no_partial_and_keeps_the_images() {
+        let dir = temp_dir("cancel_mid");
+        for i in 0..8 {
+            write_jpeg(&dir.join(format!("{i:03}.jpg")), 70);
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        let trip = flag.clone();
+        // Cancel once several pages have been written into the partial.
+        let cb = move |done: u32, _total: u32| {
+            if done >= 3 {
+                trip.store(true, Ordering::SeqCst);
+            }
+        };
+
+        let err = pack_chapter_dir(&dir, "pdf", Some(flag.as_ref()), Some(&cb)).unwrap_err();
+        assert_eq!(err, PACK_CANCELLED);
+        assert!(!dir.with_extension("pdf").exists(), "no half-written pdf");
+        assert!(
+            !PathBuf::from(format!("{}.pdf.partial", dir.display())).exists(),
+            "the .partial must not be left behind"
+        );
+        // The originals are untouched, so the chapter can be packed again.
+        assert_eq!(list_image_files(&dir).unwrap().len(), 8);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn pack_pdf_respects_cancel_mid_chunk() {
         let dir = temp_dir("pdf_cancel");
