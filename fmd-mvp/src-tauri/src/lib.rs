@@ -344,6 +344,7 @@ pub fn run() {
             commands::queue_start,
             commands::queue_cancel,
             commands::queue_retry,
+            commands::queue_redownload,
             commands::queue_remove,
             commands::queue_delete_chapter_files,
             commands::queue_clear_finished,

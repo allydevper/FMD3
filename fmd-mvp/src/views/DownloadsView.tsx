@@ -383,6 +383,7 @@ function snapshotItemsForUndo(removed: QueueItem[]): {
       link: it.chapter_link,
       manga_path: (it.manga_path || "").trim() || undefined,
       chapter_path: (it.chapter_path || "").trim() || undefined,
+      pack_format: (it.pack_format || "").trim() || undefined,
     }));
     expectedChapters += chapters.length;
     if (arr.some((it) => it.status === "pending" || it.status === "running")) {
@@ -638,6 +639,10 @@ export function DownloadsView() {
   function chapterFormatLabel(c: QueueItem): string | null {
     const detected = dlContentFormatLabel(contentFmt[c.id]);
     if (detected) return detected;
+    const frozen = (c.pack_format || "").trim();
+    if (frozen) {
+      return dlContentFormatLabel(frozen === "none" ? "folder" : frozen);
+    }
     if (c.status === "done") return null;
     return dlContentFormatLabel(packFmt === "none" ? "folder" : packFmt);
   }
@@ -757,6 +762,29 @@ export function DownloadsView() {
     await refreshQueue();
   }
 
+  async function redownloadDoneIds(ids: number[]) {
+    let n = 0;
+    for (const id of ids) {
+      const it = items.find((x) => x.id === id);
+      if (!it || it.status !== "done") continue;
+      try {
+        await api.queueRedownload(id);
+        n += 1;
+      } catch (e) {
+        log(String(e), "err");
+      }
+    }
+    if (n) {
+      log(
+        n === 1
+          ? "Capítulo en cola para redescarga"
+          : `${n} capítulos en cola para redescarga`,
+        "ok",
+      );
+    }
+    await refreshQueue();
+  }
+
   async function removeItemsWithUndo(
     toRemove: QueueItem[],
     label: string,
@@ -850,7 +878,7 @@ export function DownloadsView() {
     ev.stopPropagation();
     const pad = 8;
     const menuW = 220;
-    const menuH = 260;
+    const menuH = 300;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     setDlCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), ids });
@@ -934,6 +962,7 @@ export function DownloadsView() {
     (i) => i.status === "running" || i.status === "pending",
   );
   const ctxCanDelete = ctxItems.some((i) => i.status !== "running");
+  const ctxCanRedownload = ctxItems.some((i) => i.status === "done");
   const ctxOpenTarget = ctxItems[0];
   const ctxAddMoreGroup = ctxOpenTarget
     ? allGroups.find((g) => g.key === mangaGroupKey(ctxOpenTarget)) || null
@@ -1922,6 +1951,20 @@ export function DownloadsView() {
             >
               <Icon ico={ICO.play} className="ico ico-sm" />
               <span>Reanudar</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={!ctxCanRedownload}
+              onClick={() => {
+                const ids = dlCtxMenu.ids;
+                setDlCtxMenu(null);
+                void redownloadDoneIds(ids);
+              }}
+            >
+              <Icon ico={ICO.download} className="ico ico-sm" />
+              <span>Redescargar</span>
             </button>
             <button
               type="button"

@@ -259,6 +259,9 @@ pub struct DownloadChapterInput {
     pub manga_path: Option<String>,
     #[serde(default)]
     pub chapter_path: Option<String>,
+    /// Pack format frozen at enqueue / undo (`none`/`pdf`/…).
+    #[serde(default)]
+    pub pack_format: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -496,6 +499,7 @@ async fn check_favorite_inner(
                     manga_path: manga_path.display().to_string(),
                     chapter_path: chapter_path.display().to_string(),
                     batch_id: String::new(),
+                    pack_format: crate::settings_keys::pack_format(),
                 }
             })
             .collect();
@@ -594,6 +598,16 @@ pub fn queue_add(
                 manga_path,
                 chapter_path,
                 batch_id: batch_id.clone(),
+                pack_format: {
+                    let frozen = c
+                        .pack_format
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    frozen
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(crate::settings_keys::pack_format)
+                },
             }
         })
         .collect();
@@ -635,6 +649,29 @@ pub fn queue_retry(app: AppHandle, state: State<QueueState>, id: i64) -> Result<
     Ok(())
 }
 
+/// Wipe chapter files and re-queue a completed item so it downloads from scratch.
+/// Keeps the frozen pack format; for legacy rows without one, freezes it from disk first.
+#[tauri::command]
+pub fn queue_redownload(app: AppHandle, state: State<QueueState>, id: i64) -> Result<(), String> {
+    let item = db::queue_get(&state.db, id)?;
+    if item.status != "done" {
+        return Err("solo se puede redescargar ítems completados".into());
+    }
+    if item.pack_format.trim().is_empty() {
+        if let Ok((_manga, chapter_path)) = resolve_item_open_paths(&item) {
+            if let Some(fmt) = chapter_content_format(&chapter_path) {
+                let pack = if fmt == "folder" { "none" } else { fmt };
+                db::queue_set_pack_format(&state.db, id, pack)?;
+            }
+        }
+    }
+    let item = db::queue_get(&state.db, id)?;
+    let _ = delete_chapter_files_for_item(&item, None)?;
+    db::queue_redownload(&state.db, id)?;
+    queue::start_worker(app);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn queue_remove(state: State<QueueState>, id: i64) -> Result<(), String> {
     db::queue_remove(&state.db, id)
@@ -649,6 +686,13 @@ pub fn queue_delete_chapter_files(
     website: Option<String>,
 ) -> Result<String, String> {
     let item = db::queue_get(&state.db, id)?;
+    delete_chapter_files_for_item(&item, website)
+}
+
+fn delete_chapter_files_for_item(
+    item: &QueueItem,
+    website: Option<String>,
+) -> Result<String, String> {
     let base = std::path::PathBuf::from(item.output_dir.trim());
     if item.output_dir.trim().is_empty() {
         return Err("carpeta de salida vacía".into());

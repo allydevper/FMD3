@@ -412,7 +412,14 @@ fn process_item(
         result.errors.join("; ")
     };
 
-    let pack_fmt = crate::settings_keys::pack_format();
+    let pack_fmt = {
+        let frozen = item.pack_format.trim();
+        if frozen.is_empty() {
+            crate::settings_keys::pack_format()
+        } else {
+            frozen.to_string()
+        }
+    };
     if matches!(pack_fmt.as_str(), "cbz" | "zip" | "pdf" | "epub") && !result.files.is_empty() {
         let Some(first) = result.files.first() else {
             return Err("pack: sin archivos".into());

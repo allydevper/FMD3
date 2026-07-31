@@ -190,6 +190,10 @@ export function queueRetry(id: number) {
   return invoke("queue_retry", { id });
 }
 
+export function queueRedownload(id: number) {
+  return invoke("queue_redownload", { id });
+}
+
 export function queueRemove(id: number) {
   return invoke("queue_remove", { id });
 }

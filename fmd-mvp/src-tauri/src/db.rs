@@ -68,6 +68,9 @@ pub struct QueueItem {
     /// Split-download batch id (empty = group by manga only).
     #[serde(default)]
     pub batch_id: String,
+    /// Pack format frozen at enqueue (`none`/`pdf`/`cbz`/…). Empty = legacy (use current setting).
+    #[serde(default)]
+    pub pack_format: String,
     pub status: String,
     pub error: String,
     pub created_at: String,
@@ -91,6 +94,7 @@ pub struct NewQueueItem {
     pub manga_path: String,
     pub chapter_path: String,
     pub batch_id: String,
+    pub pack_format: String,
 }
 
 fn now() -> String {
@@ -128,12 +132,13 @@ fn map_queue_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
         manga_path: r.get(9)?,
         chapter_path: r.get(10)?,
         batch_id: r.get(11)?,
-        status: r.get(12)?,
-        error: r.get(13)?,
-        created_at: r.get(14)?,
-        updated_at: r.get(15)?,
-        retry_count: r.get(16)?,
-        position: r.get(17)?,
+        pack_format: r.get(12)?,
+        status: r.get(13)?,
+        error: r.get(14)?,
+        created_at: r.get(15)?,
+        updated_at: r.get(16)?,
+        retry_count: r.get(17)?,
+        position: r.get(18)?,
     })
 }
 
@@ -145,6 +150,7 @@ const FAVORITE_SELECT: &str = "SELECT id, module_id, module_name, root_url, mang
 const QUEUE_SELECT: &str = "SELECT id, manga_title, root_url, COALESCE(manga_url,''), COALESCE(module_id,''),
         chapter_index, chapter_name, chapter_link,
         output_dir, COALESCE(manga_path,''), COALESCE(chapter_path,''), COALESCE(batch_id,''),
+        COALESCE(pack_format,''),
         status, error, created_at, updated_at,
         COALESCE(retry_count, 0), COALESCE(position, 0)
  FROM queue_items";
@@ -246,6 +252,7 @@ pub fn open_db() -> Result<Db, String> {
             manga_path TEXT NOT NULL DEFAULT '',
             chapter_path TEXT NOT NULL DEFAULT '',
             batch_id TEXT NOT NULL DEFAULT '',
+            pack_format TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
             error TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -300,6 +307,10 @@ pub fn open_db() -> Result<Db, String> {
     );
     let _ = conn.execute(
         "ALTER TABLE queue_items ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN pack_format TEXT NOT NULL DEFAULT ''",
         [],
     );
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
@@ -744,8 +755,8 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
         conn.execute(
             "INSERT INTO queue_items(
                 manga_title, root_url, manga_url, module_id, chapter_index, chapter_name, chapter_link,
-                output_dir, manga_path, chapter_path, batch_id, status, error, created_at, updated_at, retry_count, position
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending','',?12,?12,0,?13)",
+                output_dir, manga_path, chapter_path, batch_id, pack_format, status, error, created_at, updated_at, retry_count, position
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'pending','',?13,?13,0,?14)",
             params![
                 item.manga_title,
                 item.root_url,
@@ -758,6 +769,7 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
                 item.manga_path,
                 item.chapter_path,
                 item.batch_id,
+                item.pack_format,
                 ts,
                 max_pos
             ],
@@ -962,6 +974,33 @@ pub fn queue_retry(db: &Db, id: i64) -> Result<(), String> {
     if n == 0 {
         return Err("solo se puede reintentar ítems cancelled o failed".into());
     }
+    Ok(())
+}
+
+/// Re-queue a completed item after files were wiped (force re-download).
+pub fn queue_redownload(db: &Db, id: i64) -> Result<(), String> {
+    let conn = db.lock();
+    let n = conn
+        .execute(
+            "UPDATE queue_items SET status='pending', error='', retry_count=0, updated_at=?1
+             WHERE id=?2 AND status='done'",
+            params![now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("solo se puede redescargar ítems completados".into());
+    }
+    Ok(())
+}
+
+/// Persist pack format on a queue row (e.g. freeze from disk before redownload).
+pub fn queue_set_pack_format(db: &Db, id: i64, pack_format: &str) -> Result<(), String> {
+    let conn = db.lock();
+    conn.execute(
+        "UPDATE queue_items SET pack_format=?1, updated_at=?2 WHERE id=?3",
+        params![pack_format.trim(), now(), id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1215,6 +1254,7 @@ mod tests {
                 manga_path TEXT NOT NULL DEFAULT '',
                 chapter_path TEXT NOT NULL DEFAULT '',
                 batch_id TEXT NOT NULL DEFAULT '',
+                pack_format TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
                 error TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT '',

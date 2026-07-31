@@ -5,6 +5,8 @@ export type ChapterInfo = {
   /** Frozen at enqueue; when set on queueAdd, skip live path resolve. */
   manga_path?: string;
   chapter_path?: string;
+  /** Pack format frozen at enqueue / undo. */
+  pack_format?: string;
 };
 
 export type MangaInfoResult = {
@@ -36,6 +38,8 @@ export type QueueItem = {
   manga_path?: string;
   /** Chapter folder frozen at enqueue (empty = legacy). */
   chapter_path?: string;
+  /** Pack format frozen at enqueue (`none`/`pdf`/`cbz`/…). */
+  pack_format?: string;
   /** Split-download batch; empty = group by manga only. */
   batch_id?: string;
   status: string;
