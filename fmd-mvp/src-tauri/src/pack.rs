@@ -166,6 +166,8 @@ struct JpegInfo {
     /// The SOF marker byte. Only C0/C1 (sequential Huffman) are safe to hand to
     /// `/DCTDecode` across viewers; progressive and arithmetic are not.
     sof: u8,
+    /// A start-of-scan marker was reached, so the file claims to hold image data.
+    has_sos: bool,
     /// Estimated encoding quality, absent when no luma DQT was found.
     quality: Option<u8>,
 }
@@ -219,11 +221,12 @@ fn probe_jpeg(buf: &[u8]) -> Option<JpegInfo> {
     }
     let mut luma: Option<[u16; 64]> = None;
     let mut sof_info: Option<(u8, u32, u32, u8, u8)> = None;
+    let mut has_sos = false;
     let mut i = 2usize;
 
     while i + 1 < buf.len() {
         if buf[i] != 0xFF {
-            return sof_info.map(|s| finish_probe(s, luma));
+            break; // not at a marker: nothing further can be trusted
         }
         let marker = buf[i + 1];
         // Fill bytes and standalone markers carry no length field.
@@ -236,7 +239,11 @@ fn probe_jpeg(buf: &[u8]) -> Option<JpegInfo> {
             continue;
         }
         // SOS: scan data starts, nothing left to learn. EOI: done.
-        if marker == 0xDA || marker == 0xD9 {
+        if marker == 0xDA {
+            has_sos = true;
+            break;
+        }
+        if marker == 0xD9 {
             break;
         }
         if i + 3 >= buf.len() {
@@ -295,32 +302,31 @@ fn probe_jpeg(buf: &[u8]) -> Option<JpegInfo> {
         i = end;
     }
 
-    sof_info.map(|s| finish_probe(s, luma))
-}
-
-fn finish_probe(
-    (precision, width, height, components, sof): (u8, u32, u32, u8, u8),
-    luma: Option<[u16; 64]>,
-) -> JpegInfo {
-    JpegInfo {
+    let (precision, width, height, components, sof) = sof_info?;
+    Some(JpegInfo {
         width,
         height,
         components,
         precision,
         sof,
+        has_sos,
         quality: luma.as_ref().map(estimate_jpeg_quality),
-    }
+    })
 }
 
-/// Embed untouched only when the bytes are safe for `/DCTDecode` *and*
-/// re-encoding would not actually honor the requested quality.
-fn should_embed(info: &JpegInfo, requested: u8) -> bool {
+/// Whether the raw bytes can go into the PDF verbatim. Says nothing about
+/// quality — that is [`meets_requested_quality`].
+fn is_embeddable(info: &JpegInfo) -> bool {
     info.precision == 8
         && info.is_sequential_huffman()
         && info.colorspace().is_some()
-        && info
-            .quality
-            .is_some_and(|q| q <= requested.saturating_add(PDF_EMBED_QUALITY_SLACK))
+        && info.has_sos
+}
+
+/// Re-encoding would not actually shrink the page enough to be worth it.
+fn meets_requested_quality(info: &JpegInfo, requested: u8) -> bool {
+    info.quality
+        .is_some_and(|q| q <= requested.saturating_add(PDF_EMBED_QUALITY_SLACK))
 }
 
 fn read_prefix(path: &Path, max: u64) -> Result<Vec<u8>, String> {
@@ -328,6 +334,27 @@ fn read_prefix(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     f.take(max).read_to_end(&mut buf).map_err(|e| e.to_string())?;
     Ok(buf)
+}
+
+/// Cheap integrity check for the part of the file the header probe never sees:
+/// the entropy-coded scan must be terminated by an EOI marker. This catches the
+/// dominant corruption mode — an interrupted download — without paying for a
+/// full decode. Encoders may pad after EOI, so scan the tail rather than
+/// requiring an exact suffix.
+fn jpeg_scan_is_terminated(path: &Path, len: u64) -> bool {
+    use std::io::{Seek, SeekFrom};
+    const TAIL: u64 = 64;
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    if f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).is_err() {
+        return false;
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    buf.windows(2).any(|w| w == [0xFF, 0xD9])
 }
 
 /// Flatten transparency onto white. `to_rgb8` alone drops alpha against black,
@@ -362,11 +389,21 @@ fn reencode_as_jpeg(path: &Path, quality: u8) -> Result<(u32, u32, Vec<u8>), Str
     Ok((w, h, cursor.into_inner()))
 }
 
+/// Everything needed to copy an original file into the PDF verbatim.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EmbedInfo {
+    len: u64,
+    colorspace: &'static str,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PageMode {
-    /// Copy the file's bytes straight into the PDF; `len` is the `/Length`.
-    Embed { len: u64 },
-    Reencode,
+    /// Copy the file's bytes straight into the PDF.
+    Embed(EmbedInfo),
+    /// Decode and re-encode to `/DeviceRGB`. `fallback` is set when the source
+    /// is *also* safe to embed verbatim, so a re-encode that fails or that comes
+    /// out larger than the original can still produce the page.
+    Reencode { fallback: Option<EmbedInfo> },
 }
 
 #[derive(Debug, Clone)]
@@ -374,7 +411,6 @@ struct PageSource {
     path: PathBuf,
     w: u32,
     h: u32,
-    colorspace: &'static str,
     mode: PageMode,
 }
 
@@ -403,27 +439,27 @@ fn plan_pdf_pages(
         };
 
         if let Some(info) = probed {
-            if should_embed(&info, quality) {
-                match std::fs::metadata(path).map(|m| m.len()) {
-                    Ok(len) if len > 0 => {
-                        pages.push(PageSource {
-                            path: path.clone(),
-                            w: info.width,
-                            h: info.height,
-                            colorspace: info.colorspace().unwrap_or("/DeviceRGB"),
-                            mode: PageMode::Embed { len },
-                        });
-                        continue;
-                    }
-                    _ => {} // fall through to re-encode
-                }
-            }
+            // The probe only reads the header, so a truncated scan would sail
+            // through. Verify the tail before trusting the bytes verbatim.
+            let embeddable = is_embeddable(&info)
+                && match std::fs::metadata(path).map(|m| m.len()) {
+                    Ok(len) if len > 0 => jpeg_scan_is_terminated(path, len),
+                    _ => false,
+                };
+            let embed = embeddable.then(|| EmbedInfo {
+                len: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+                colorspace: info.colorspace().unwrap_or("/DeviceRGB"),
+            });
+
+            let mode = match embed {
+                Some(e) if meets_requested_quality(&info, quality) => PageMode::Embed(e),
+                fallback => PageMode::Reencode { fallback },
+            };
             pages.push(PageSource {
                 path: path.clone(),
                 w: info.width,
                 h: info.height,
-                colorspace: "/DeviceRGB",
-                mode: PageMode::Reencode,
+                mode,
             });
             continue;
         }
@@ -434,8 +470,7 @@ fn plan_pdf_pages(
                 path: path.clone(),
                 w,
                 h,
-                colorspace: "/DeviceRGB",
-                mode: PageMode::Reencode,
+                mode: PageMode::Reencode { fallback: None },
             }),
             Ok(_) => eprintln!("pack pdf: se omite {} — dimensiones 0", path.display()),
             Err(e) => eprintln!("pack pdf: se omite {} — {e}", path.display()),
@@ -461,6 +496,87 @@ fn pdf_worker_threads() -> usize {
 
 /// A re-encoded page: dimensions plus JPEG bytes, or why it failed.
 type EncodedPage = Result<(u32, u32, Vec<u8>), String>;
+
+/// Where a page's `/DCTDecode` payload comes from at write time.
+enum PagePayload {
+    /// Freshly encoded bytes, always `/DeviceRGB`.
+    Bytes(Vec<u8>),
+    /// Copy the original file verbatim.
+    Verbatim(EmbedInfo),
+}
+
+struct ResolvedPage {
+    w: u32,
+    h: u32,
+    colorspace: &'static str,
+    payload: PagePayload,
+}
+
+/// Pick the payload for one page. A re-encode that failed, or that came out no
+/// smaller than the original, falls back to embedding the original whenever that
+/// is safe: neither a bad encode nor a mis-estimated source quality can then
+/// make the page bigger or cost the chapter.
+fn resolve_page(page: &PageSource, encoded: Option<EncodedPage>) -> Result<ResolvedPage, String> {
+    let verbatim = |e: EmbedInfo| ResolvedPage {
+        w: page.w,
+        h: page.h,
+        colorspace: e.colorspace,
+        payload: PagePayload::Verbatim(e),
+    };
+
+    match (page.mode, encoded) {
+        (PageMode::Embed(e), _) => Ok(verbatim(e)),
+
+        // Trust the re-encoder's own dimensions here, not the probe's.
+        (PageMode::Reencode { fallback }, Some(Ok((rw, rh, bytes)))) => match fallback {
+            Some(e) if bytes.len() as u64 >= e.len => {
+                eprintln!(
+                    "pack pdf: recomprimir {} no reduce el tamaño, se embebe el original",
+                    page.path.display()
+                );
+                Ok(verbatim(e))
+            }
+            _ => Ok(ResolvedPage {
+                w: rw,
+                h: rh,
+                colorspace: "/DeviceRGB",
+                payload: PagePayload::Bytes(bytes),
+            }),
+        },
+
+        (PageMode::Reencode { fallback: Some(e) }, Some(Err(err))) => {
+            eprintln!(
+                "pack pdf: recompresión falló en {} ({err}), se embebe el original",
+                page.path.display()
+            );
+            Ok(verbatim(e))
+        }
+        (PageMode::Reencode { fallback: None }, Some(Err(err))) => Err(err),
+        (PageMode::Reencode { .. }, None) => Err("página sin datos".into()),
+    }
+}
+
+/// Re-encode a chunk's pages concurrently. Embedded pages need nothing here and
+/// stay out of RAM entirely.
+fn reencode_chunk(chunk: &[PageSource], quality: u8) -> Vec<Option<EncodedPage>> {
+    let mut out: Vec<Option<EncodedPage>> = vec![None; chunk.len()];
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for (i, page) in chunk.iter().enumerate() {
+            if matches!(page.mode, PageMode::Reencode { .. }) {
+                let path = page.path.as_path();
+                handles.push((i, s.spawn(move || reencode_as_jpeg(path, quality))));
+            }
+        }
+        for (i, h) in handles {
+            out[i] = Some(
+                h.join()
+                    .unwrap_or_else(|_| Err("pánico al recomprimir".into())),
+            );
+        }
+    });
+    out
+}
 
 /// Counts bytes written so xref offsets can be recorded while streaming.
 struct CountingWriter<W: Write> {
@@ -510,12 +626,6 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
         let pages = plan_pdf_pages(&images, quality, cancel)?;
         abort_if_cancelled(cancel)?;
 
-        let n = pages.len();
-        // Object ids: 1 Catalog, 2 Pages, then Page/Contents/XObject per page.
-        let page_ids: Vec<usize> = (0..n).map(|i| 3 + i * 3).collect();
-        let total_objects = 3 + n * 3;
-        let mut offsets = vec![0u64; total_objects];
-
         let file = File::create(crate::paths::fs_path(&partial)).map_err(|e| e.to_string())?;
         let mut w = CountingWriter::new(BufWriter::new(file));
 
@@ -524,12 +634,22 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
         w.write_all(b"%\xE2\xE3\xCF\xD3\n")
             .map_err(|e| e.to_string())?;
 
+        // `offsets[id]` is an object's byte offset. Ids 1 and 2 are reserved for
+        // Catalog and Pages, which are written *last*: objects may appear in any
+        // order, and deferring them means the page list does not have to be final
+        // before we start writing — so a page that dies in the re-encoder can be
+        // dropped instead of costing the whole chapter.
+        let mut offsets: Vec<u64> = vec![0; 3];
+        let mut kids: Vec<usize> = Vec::new();
+        let mut skipped: Vec<(PathBuf, String)> = Vec::new();
+
         let write_obj = |w: &mut CountingWriter<BufWriter<File>>,
-                             offsets: &mut Vec<u64>,
-                             id: usize,
-                             body: &[u8]|
+                         offsets: &mut Vec<u64>,
+                         id: usize,
+                         body: &[u8]|
          -> Result<(), String> {
-            offsets[id] = w.offset();
+            debug_assert_eq!(id, offsets.len(), "objects are written in id order");
+            offsets.push(w.offset());
             w.write_all(format!("{id} 0 obj\n").as_bytes())
                 .map_err(|e| e.to_string())?;
             w.write_all(body).map_err(|e| e.to_string())?;
@@ -537,78 +657,28 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
             Ok(())
         };
 
-        write_obj(
-            &mut w,
-            &mut offsets,
-            1,
-            b"<< /Type /Catalog /Pages 2 0 R >>",
-        )?;
-        let kids = page_ids
-            .iter()
-            .map(|id| format!("{id} 0 R"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        write_obj(
-            &mut w,
-            &mut offsets,
-            2,
-            format!("<< /Type /Pages /Kids [{kids}] /Count {n} >>").as_bytes(),
-        )?;
-
         let threads = pdf_worker_threads();
-        let mut index = 0usize;
 
         for chunk in pages.chunks(threads) {
             abort_if_cancelled(cancel)?;
-
-            // Re-encode this chunk's pages concurrently; embedded pages need
-            // nothing here and stay out of RAM entirely.
-            let mut encoded: Vec<Option<EncodedPage>> = vec![None; chunk.len()];
-            std::thread::scope(|s| {
-                let mut handles = Vec::new();
-                for (i, page) in chunk.iter().enumerate() {
-                    if page.mode == PageMode::Reencode {
-                        let path = page.path.as_path();
-                        handles.push((i, s.spawn(move || reencode_as_jpeg(path, quality))));
-                    }
-                }
-                for (i, h) in handles {
-                    encoded[i] = Some(
-                        h.join()
-                            .unwrap_or_else(|_| Err("pánico al recomprimir".into())),
-                    );
-                }
-            });
+            let mut encoded = reencode_chunk(chunk, quality);
 
             for (i, page) in chunk.iter().enumerate() {
                 abort_if_cancelled(cancel)?;
 
-                let page_id = page_ids[index];
+                // Resolve before reserving ids, so a skip consumes nothing.
+                let resolved = match resolve_page(page, encoded[i].take()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        skipped.push((page.path.clone(), e));
+                        continue;
+                    }
+                };
+                let (pw, ph) = (resolved.w, resolved.h);
+
+                let page_id = offsets.len();
                 let content_id = page_id + 1;
                 let image_id = page_id + 2;
-                index += 1;
-
-                let reencoded = match encoded[i].take() {
-                    Some(Ok(v)) => Some(v),
-                    Some(Err(e)) => {
-                        return Err(format!("recompresión falló en {}: {e}", page.path.display()))
-                    }
-                    None => None,
-                };
-
-                // Dimensions must match what pass 1 recorded, or MediaBox lies.
-                let (pw, ph) = match &reencoded {
-                    Some((rw, rh, _)) => (*rw, *rh),
-                    None => (page.w, page.h),
-                };
-                if (pw, ph) != (page.w, page.h) {
-                    return Err(format!(
-                        "dimensiones inconsistentes en {}: {}x{} vs {pw}x{ph}",
-                        page.path.display(),
-                        page.w,
-                        page.h
-                    ));
-                }
 
                 let content = format!("q\n{pw} 0 0 {ph} 0 0 cm\n/Im0 Do\nQ\n");
                 write_obj(
@@ -634,31 +704,29 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
                 )?;
 
                 // Image object: header, then the payload streamed in.
-                let stream_len = match (&reencoded, page.mode) {
-                    (Some((_, _, bytes)), _) => bytes.len() as u64,
-                    (None, PageMode::Embed { len }) => len,
-                    (None, PageMode::Reencode) => {
-                        return Err(format!("página sin datos: {}", page.path.display()))
-                    }
+                let stream_len = match &resolved.payload {
+                    PagePayload::Bytes(bytes) => bytes.len() as u64,
+                    PagePayload::Verbatim(e) => e.len,
                 };
-                offsets[image_id] = w.offset();
+                offsets.push(w.offset());
                 w.write_all(
                     format!(
                         "{image_id} 0 obj\n<< /Type /XObject /Subtype /Image /Width {pw} \
                          /Height {ph} /ColorSpace {} /BitsPerComponent 8 /Filter /DCTDecode \
                          /Length {stream_len} >>\nstream\n",
-                        page.colorspace
+                        resolved.colorspace
                     )
                     .as_bytes(),
                 )
                 .map_err(|e| e.to_string())?;
 
-                match &reencoded {
-                    Some((_, _, bytes)) => w.write_all(bytes).map_err(|e| e.to_string())?,
-                    None => {
+                match &resolved.payload {
+                    PagePayload::Bytes(bytes) => w.write_all(bytes).map_err(|e| e.to_string())?,
+                    PagePayload::Verbatim(_) => {
                         let mut f = File::open(&page.path).map_err(|e| e.to_string())?;
                         let copied = std::io::copy(&mut f, &mut w).map_err(|e| e.to_string())?;
-                        // The file changed under us; /Length would be wrong.
+                        // The file changed under us; /Length would be wrong. The
+                        // stream is already half written, so the PDF is doomed.
                         if copied != stream_len {
                             return Err(format!(
                                 "{} cambió durante el empaquetado ({copied} != {stream_len})",
@@ -669,11 +737,38 @@ fn pack_pdf(dir: &Path, cancel: Option<&AtomicBool>) -> Result<PathBuf, String> 
                 }
                 w.write_all(b"\nendstream\nendobj\n")
                     .map_err(|e| e.to_string())?;
+
+                kids.push(page_id);
             }
         }
 
         abort_if_cancelled(cancel)?;
 
+        for (path, reason) in &skipped {
+            eprintln!("pack pdf: se omite {} — {reason}", path.display());
+        }
+        if kids.is_empty() {
+            return Err("no hay imágenes válidas para PDF".into());
+        }
+
+        // Now that the surviving pages are known, close the page tree.
+        let n = kids.len();
+        offsets[1] = w.offset();
+        w.write_all(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+            .map_err(|e| e.to_string())?;
+        let kid_refs = kids
+            .iter()
+            .map(|id| format!("{id} 0 R"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        offsets[2] = w.offset();
+        w.write_all(
+            format!("2 0 obj\n<< /Type /Pages /Kids [{kid_refs}] /Count {n} >>\nendobj\n")
+                .as_bytes(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        let total_objects = offsets.len();
         let xref_pos = w.offset();
         w.write_all(format!("xref\n0 {total_objects}\n").as_bytes())
             .map_err(|e| e.to_string())?;
@@ -1027,14 +1122,24 @@ mod tests {
         let original = write_jpeg(&path, 60);
         let len = original.len() as u64;
 
-        // Source ~60, asked for 85: re-encoding would only lose quality.
-        let pages = plan_pdf_pages(std::slice::from_ref(&path),85, None).unwrap();
-        assert_eq!(pages[0].mode, PageMode::Embed { len });
-        assert_eq!(pages[0].colorspace, "/DeviceRGB");
+        let rgb = EmbedInfo {
+            len,
+            colorspace: "/DeviceRGB",
+        };
 
-        // Source ~60, asked for 40: honor the setting and re-encode.
-        let pages = plan_pdf_pages(std::slice::from_ref(&path),40, None).unwrap();
-        assert_eq!(pages[0].mode, PageMode::Reencode);
+        // Source ~60, asked for 85: re-encoding would only lose quality.
+        let pages = plan_pdf_pages(std::slice::from_ref(&path), 85, None).unwrap();
+        assert_eq!(pages[0].mode, PageMode::Embed(rgb));
+
+        // Source ~60, asked for 40: honor the setting and re-encode — but keep
+        // the original as a fallback, since it is safe to embed verbatim.
+        let pages = plan_pdf_pages(std::slice::from_ref(&path), 40, None).unwrap();
+        assert_eq!(
+            pages[0].mode,
+            PageMode::Reencode {
+                fallback: Some(rgb)
+            }
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1045,12 +1150,100 @@ mod tests {
         let path = dir.join("001.jpg");
         write_jpeg(&path, 95);
 
-        let pages = plan_pdf_pages(std::slice::from_ref(&path),50, None).unwrap();
-        assert_eq!(pages[0].mode, PageMode::Reencode);
+        let pages = plan_pdf_pages(std::slice::from_ref(&path), 50, None).unwrap();
+        assert!(matches!(pages[0].mode, PageMode::Reencode { .. }));
 
         // Within the slack, so still embedded rather than pointlessly redone.
-        let pages = plan_pdf_pages(std::slice::from_ref(&path),95, None).unwrap();
-        assert!(matches!(pages[0].mode, PageMode::Embed { .. }));
+        let pages = plan_pdf_pages(std::slice::from_ref(&path), 95, None).unwrap();
+        assert!(matches!(pages[0].mode, PageMode::Embed(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_refuses_to_embed_a_truncated_jpeg() {
+        let dir = temp_dir("plan_trunc");
+        let path = dir.join("001.jpg");
+        let full = write_jpeg(&path, 60);
+        // Header intact, scan data cut short: the probe alone cannot see this.
+        std::fs::write(&path, &full[..full.len() * 2 / 3]).unwrap();
+
+        let info = probe_jpeg(&std::fs::read(&path).unwrap()).expect("header still parses");
+        assert!(is_embeddable(&info), "the header looks perfectly fine");
+
+        // ...but the missing EOI must keep it off the verbatim path.
+        let pages = plan_pdf_pages(std::slice::from_ref(&path), 85, None).unwrap();
+        assert_eq!(pages[0].mode, PageMode::Reencode { fallback: None });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn truncated_jpeg_is_normalized_not_passed_through() {
+        let dir = temp_dir("pdf_trunc");
+        write_jpeg(&dir.join("001.jpg"), 60);
+        // A different quality, so the truncated prefix cannot coincide with the
+        // bytes page 001 embeds and make the assertion below vacuous.
+        let full = write_jpeg(&dir.join("002.jpg"), 95);
+        let truncated = &full[..full.len() * 2 / 3];
+        std::fs::write(dir.join("002.jpg"), truncated).unwrap();
+
+        let out = pack_chapter_dir(&dir, "pdf", None).unwrap();
+        let pdf = std::fs::read(&out).unwrap();
+
+        // The decoder recovers what it can, so the page survives — but it goes in
+        // re-encoded, never as the broken bytes.
+        assert!(String::from_utf8_lossy(&pdf).contains("/Count 2"));
+        assert!(
+            !pdf.windows(truncated.len())
+                .any(|w| w == truncated),
+            "a truncated JPEG must never be embedded verbatim"
+        );
+        assert_xref_consistent(&pdf);
+
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reencode_failure_falls_back_to_the_original() {
+        let dir = temp_dir("fallback");
+        let path = dir.join("001.jpg");
+        let original = write_jpeg(&path, 60);
+        let embed = EmbedInfo {
+            len: original.len() as u64,
+            colorspace: "/DeviceRGB",
+        };
+        let page = PageSource {
+            path: path.clone(),
+            w: 64,
+            h: 64,
+            mode: PageMode::Reencode {
+                fallback: Some(embed),
+            },
+        };
+
+        // A dead re-encoder must not cost the page when the source is embeddable.
+        let r = resolve_page(&page, Some(Err("boom".into()))).unwrap();
+        assert!(matches!(r.payload, PagePayload::Verbatim(e) if e == embed));
+
+        // Nor may a re-encode that came out larger than the original be used.
+        let bigger = vec![0u8; original.len() + 1];
+        let r = resolve_page(&page, Some(Ok((64, 64, bigger)))).unwrap();
+        assert!(matches!(r.payload, PagePayload::Verbatim(_)));
+
+        // A genuinely smaller re-encode is used, as /DeviceRGB.
+        let smaller = vec![0u8; original.len() - 1];
+        let r = resolve_page(&page, Some(Ok((64, 64, smaller)))).unwrap();
+        assert!(matches!(r.payload, PagePayload::Bytes(_)));
+        assert_eq!(r.colorspace, "/DeviceRGB");
+
+        // With no safe fallback there is nothing to do but drop the page.
+        let orphan = PageSource {
+            mode: PageMode::Reencode { fallback: None },
+            ..page
+        };
+        assert!(resolve_page(&orphan, Some(Err("boom".into()))).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
