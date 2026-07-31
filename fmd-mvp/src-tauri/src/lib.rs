@@ -348,6 +348,7 @@ pub fn run() {
             commands::queue_delete_chapter_files,
             commands::queue_clear_finished,
             commands::queue_open_item_folder,
+            commands::queue_open_item_content,
             commands::queue_open_manga_folder,
             commands::downloaded_chapters_list,
             commands::queue_active_chapter_links,

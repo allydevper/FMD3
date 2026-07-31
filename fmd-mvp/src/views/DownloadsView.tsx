@@ -588,14 +588,6 @@ export function DownloadsView() {
     ? allGroups.find((g) => g.key === focusKey) || null
     : null;
 
-  function titleTwinHint(g: MangaGroup): string | null {
-    const twins = allGroups.filter(
-      (x) => x.title === g.title && x.key !== g.key,
-    ).length;
-    if (!twins) return null;
-    return "Existe otro grupo de la misma obra en distinto sitio: corren por separado y guardan en carpetas distintas.";
-  }
-
   function chapterIdsOfGroups(keys: string[]): number[] {
     return allGroups
       .filter((g) => keys.includes(g.key))
@@ -786,6 +778,14 @@ export function DownloadsView() {
   async function handleOpenFolder(itemId: number, preferChapter = false) {
     try {
       await api.queueOpenItemFolder(itemId, preferChapter);
+    } catch (e) {
+      log(String(e), "err");
+    }
+  }
+
+  async function handleOpenContent(itemId: number) {
+    try {
+      await api.queueOpenItemContent(itemId);
     } catch (e) {
       log(String(e), "err");
     }
@@ -1447,9 +1447,6 @@ export function DownloadsView() {
                     <div className="ell mono dl-panel-path" title={focusGroup.outputDir}>
                       {focusGroup.outputDir || "—"}
                     </div>
-                    {titleTwinHint(focusGroup) ? (
-                      <div className="dl-panel-hint">{titleTwinHint(focusGroup)}</div>
-                    ) : null}
                     <div className="dl-panel-actions">
                       <button
                         type="button"
@@ -1601,6 +1598,10 @@ export function DownloadsView() {
                           key={c.id}
                           className={`dl-crow${on ? " sel" : ""}`}
                           onClick={() => toggleSelC(c.id)}
+                          onDoubleClick={(ev) => {
+                            ev.stopPropagation();
+                            void handleOpenContent(c.id);
+                          }}
                           onContextMenu={(ev) => {
                             if (!selC[c.id]) setSelC({ [c.id]: true });
                             openCtx(ev, [c.id]);

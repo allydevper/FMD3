@@ -611,13 +611,6 @@
   margin-top: 6px;
 }
 
-.dl-panel-hint {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 6px;
-  line-height: 1.4;
-}
-
 .dl-panel-actions {
   display: flex;
   gap: 5px;

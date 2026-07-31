@@ -266,6 +266,11 @@ export function queueOpenItemFolder(id: number, preferChapter = false) {
   });
 }
 
+/** Open chapter content: packed file (pdf/cbz/…) if present, else chapter folder. */
+export function queueOpenItemContent(id: number) {
+  return invoke<string>("queue_open_item_content", { id });
+}
+
 /** Open the manga work folder (base + rename pattern), not just the download root. */
 export function queueOpenMangaFolder(req: {
   outputDir: string;

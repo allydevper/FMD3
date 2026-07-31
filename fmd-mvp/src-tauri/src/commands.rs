@@ -806,6 +806,43 @@ pub fn queue_open_item_folder(
     Ok(path_str)
 }
 
+/// Open chapter content: packed archive (pdf/cbz/…) if present, else chapter folder.
+/// Does not create missing paths.
+#[tauri::command]
+pub fn queue_open_item_content(state: State<QueueState>, id: i64) -> Result<String, String> {
+    let item = db::queue_get(&state.db, id)?;
+    let (_manga_path, chapter_path) = resolve_item_open_paths(&item)?;
+    let open_path = resolve_chapter_content_path(&chapter_path).ok_or_else(|| {
+        format!(
+            "no hay archivo ni carpeta para «{}»",
+            if item.chapter_name.trim().is_empty() {
+                format!("capítulo {}", item.chapter_index + 1)
+            } else {
+                item.chapter_name.trim().to_string()
+            }
+        )
+    })?;
+    let path_str = crate::paths::strip_long_prefix(&open_path)
+        .display()
+        .to_string();
+    shell_open_external(path_str.clone(), None)?;
+    Ok(path_str)
+}
+
+/// Prefer packed archive next to `chapter_path`, else the chapter directory itself.
+fn resolve_chapter_content_path(chapter_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    for ext in ["pdf", "cbz", "zip", "epub"] {
+        let archive = chapter_path.with_extension(ext);
+        if crate::paths::fs_path(&archive).is_file() {
+            return Some(archive);
+        }
+    }
+    if crate::paths::fs_path(chapter_path).is_dir() {
+        return Some(chapter_path.to_path_buf());
+    }
+    None
+}
+
 fn resolve_item_open_paths(
     item: &crate::db::QueueItem,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
