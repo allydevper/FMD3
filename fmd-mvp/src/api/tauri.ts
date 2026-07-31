@@ -271,6 +271,13 @@ export function queueOpenItemContent(id: number) {
   return invoke<string>("queue_open_item_content", { id });
 }
 
+/** Probe on-disk format for queue items: pdf | cbz | zip | epub | folder. */
+export function queueItemsContentFormat(ids: number[]) {
+  return invoke<{ id: number; format: string }[]>("queue_items_content_format", {
+    ids,
+  });
+}
+
 /** Open the manga work folder (base + rename pattern), not just the download root. */
 export function queueOpenMangaFolder(req: {
   outputDir: string;

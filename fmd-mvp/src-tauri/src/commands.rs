@@ -843,6 +843,56 @@ fn resolve_chapter_content_path(chapter_path: &std::path::Path) -> Option<std::p
     None
 }
 
+fn chapter_content_format(chapter_path: &std::path::Path) -> Option<&'static str> {
+    let path = resolve_chapter_content_path(chapter_path)?;
+    if crate::paths::fs_path(&path).is_dir() {
+        return Some("folder");
+    }
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("pdf") => Some("pdf"),
+        Some("cbz") => Some("cbz"),
+        Some("zip") => Some("zip"),
+        Some("epub") => Some("epub"),
+        _ => Some("folder"),
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueContentFormat {
+    pub id: i64,
+    pub format: String,
+}
+
+/// Probe on-disk content format for queue items (pdf/cbz/zip/epub/folder).
+#[tauri::command]
+pub fn queue_items_content_format(
+    state: State<QueueState>,
+    ids: Vec<i64>,
+) -> Result<Vec<QueueContentFormat>, String> {
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Ok(item) = db::queue_get(&state.db, id) else {
+            continue;
+        };
+        let Ok((_manga, chapter_path)) = resolve_item_open_paths(&item) else {
+            continue;
+        };
+        if let Some(fmt) = chapter_content_format(&chapter_path) {
+            out.push(QueueContentFormat {
+                id,
+                format: fmt.to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 fn resolve_item_open_paths(
     item: &crate::db::QueueItem,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {

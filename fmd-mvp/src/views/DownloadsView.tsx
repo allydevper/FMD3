@@ -82,6 +82,25 @@ function dlFmtAdded(item: QueueItem): string {
   return `${(h / 8760).toFixed(1)} a`;
 }
 
+function dlContentFormatLabel(fmt: string | undefined | null): string | null {
+  if (!fmt) return null;
+  switch (fmt.toLowerCase()) {
+    case "pdf":
+      return "PDF";
+    case "cbz":
+      return "CBZ";
+    case "zip":
+      return "ZIP";
+    case "epub":
+      return "EPUB";
+    case "folder":
+    case "none":
+      return "carpeta";
+    default:
+      return fmt.toUpperCase();
+  }
+}
+
 function formatBytesPerSec(bps: number | undefined): string {
   if (bps == null || !Number.isFinite(bps) || bps <= 0) return "";
   if (bps < 1024) return `${Math.round(bps)} B/s`;
@@ -410,6 +429,8 @@ export function DownloadsView() {
     label: string;
   } | null>(null);
   const [removeDeleteFiles, setRemoveDeleteFiles] = useState(false);
+  const [contentFmt, setContentFmt] = useState<Record<number, string>>({});
+  const [packFmt, setPackFmt] = useState("none");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const lastProgressLogRef = useRef<{ itemId: number; message: string } | null>(null);
 
@@ -427,6 +448,8 @@ export function DownloadsView() {
       // Reuse legacy key: true = panel visible (expanded).
       setLeftCollapsed(!(await settingBool(SK.UI_DL_LEFT_BAR, true)));
       setParallelTasks(await settingNumber(SK.PARALLEL_TASKS, 1));
+      const pack = ((await api.settingsGet(SK.PACK)) ?? "none").trim().toLowerCase();
+      setPackFmt(pack || "none");
     })();
   }, [activeNav]);
 
@@ -587,6 +610,37 @@ export function DownloadsView() {
   const focusGroup = focusKey
     ? allGroups.find((g) => g.key === focusKey) || null
     : null;
+
+  const focusFmtKey = focusGroup
+    ? focusGroup.items.map((i) => `${i.id}:${i.status}`).join("|")
+    : "";
+
+  useEffect(() => {
+    if (!focusGroup) {
+      setContentFmt({});
+      return;
+    }
+    const ids = focusGroup.items.map((i) => i.id);
+    let cancelled = false;
+    void api.queueItemsContentFormat(ids).then((rows) => {
+      if (cancelled) return;
+      const next: Record<number, string> = {};
+      for (const row of rows) next[row.id] = row.format;
+      setContentFmt(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // focusFmtKey tracks status changes so we re-probe when chapters finish.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusKey, focusFmtKey]);
+
+  function chapterFormatLabel(c: QueueItem): string | null {
+    const detected = dlContentFormatLabel(contentFmt[c.id]);
+    if (detected) return detected;
+    if (c.status === "done") return null;
+    return dlContentFormatLabel(packFmt === "none" ? "folder" : packFmt);
+  }
 
   function chapterIdsOfGroups(keys: string[]): number[] {
     return allGroups
@@ -1593,6 +1647,7 @@ export function DownloadsView() {
                               liveProgress.get(c.id)?.bytes_per_sec,
                             ) || "…"
                           : prog.pages || "—";
+                      const fmtLabel = chapterFormatLabel(c);
                       return (
                         <div
                           key={c.id}
@@ -1645,6 +1700,11 @@ export function DownloadsView() {
                               >
                                 {isProcessing ? prog.label : st.label}
                               </span>
+                              {fmtLabel ? (
+                                <span className="mono dl-tag" title="Formato">
+                                  {fmtLabel}
+                                </span>
+                              ) : null}
                               <span className="mono" style={{ fontSize: "10.5px", color: "var(--muted)" }}>
                                 {meta}
                               </span>
