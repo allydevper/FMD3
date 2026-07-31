@@ -11,7 +11,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { appConfirm } from "../components/AppConfirm";
 import { Icon } from "../components/Icon";
 import { ICO } from "../icons";
-import { DEFAULT_USER_AGENT, RENAME_SAMPLE, PACK_EXT, SK } from "../constants";
+import { DEFAULT_USER_AGENT, PACK_EXT, SK } from "../constants";
 import * as api from "../api/tauri";
 import { useApp, type AppTheme } from "../context/AppContext";
 import type { ModuleMeta } from "../types";
@@ -244,12 +244,24 @@ function deriveConvertTo(_convertTo: string, _pngAsJpeg: boolean, _webpAs: strin
   return "keep";
 }
 
-function resolveRenamePattern(pattern: string): string {
-  let out = pattern || "";
-  for (const [token, value] of Object.entries(RENAME_SAMPLE)) {
-    out = out.split(token).join(value);
+/** Aviso (no bloqueante) cuando un patrón se queda sin el token que lo hace único. */
+function patternMissingRequired(kind: "manga" | "chapter" | "page", pattern: string): string | null {
+  const upper = pattern.toUpperCase();
+  if (kind === "manga" && !upper.includes("%MANGA%")) {
+    return "Debe incluir al menos %MANGA%.";
   }
-  return out;
+  if (
+    kind === "chapter" &&
+    !upper.includes("%CHAPTER%") &&
+    !upper.includes("%NUMBERING%") &&
+    !upper.includes("%CHAPTERINDEX%")
+  ) {
+    return "Debe incluir %CHAPTER% o %NUMBERING%.";
+  }
+  if (kind === "page" && !upper.includes("%FILENAME%")) {
+    return "Debe incluir al menos %FILENAME%.";
+  }
+  return null;
 }
 
 function parseProxyUrl(raw: string): {
@@ -1030,32 +1042,66 @@ export function OptionsView() {
 
   /* ---- Vista previa de renombrado ---- */
 
-  const renamePreview = useMemo(() => {
-    const root = (s.outputDirField.trim() || outputDirRef.current.trim() || ".").replace(
-      /[\\/]+$/,
-      "",
-    );
-    const parts = [root];
-    if (s.mangaFolderOn) parts.push(resolveRenamePattern(s.patManga || "%MANGA%") || "Manga");
-    if (s.chapterFolderOn) parts.push(resolveRenamePattern(s.patChapter || "%CHAPTER%") || "003");
-    const leaf = resolveRenamePattern(s.patPage || "%FILENAME%") || "003";
-    let out = `${parts.join("\\")}\\${leaf}${PACK_EXT[s.packFormat] ?? ""}`;
-    if (s.asciiOn) {
-      const repl = s.asciiChar || "_";
-      out = out.replace(/[^\x00-\x7F]/g, repl);
-    }
-    return out;
-  }, [
-    s.outputDirField,
-    s.mangaFolderOn,
-    s.patManga,
-    s.chapterFolderOn,
-    s.patChapter,
-    s.patPage,
-    s.packFormat,
-    s.asciiOn,
-    s.asciiChar,
-  ]);
+  // El backend arma la ruta de ejemplo con el mismo código que nombra las
+  // descargas reales, así que la vista previa no puede desviarse.
+  const renameOpts = useMemo<api.RenameOpts>(
+    () => ({
+      mangaFolderOn: s.mangaFolderOn,
+      chapterFolderOn: s.chapterFolderOn,
+      patManga: s.patManga,
+      patChapter: s.patChapter,
+      patPage: s.patPage,
+      asciiOn: s.asciiOn,
+      asciiChar: s.asciiChar,
+      removeMangaFromChapter: s.removeMangaFromChapter,
+      volDigits: s.volPadOn ? s.volDigits : 0,
+      chapDigits: s.chapPadOn ? s.chapDigits : 0,
+    }),
+    [
+      s.mangaFolderOn,
+      s.chapterFolderOn,
+      s.patManga,
+      s.patChapter,
+      s.patPage,
+      s.asciiOn,
+      s.asciiChar,
+      s.removeMangaFromChapter,
+      s.volPadOn,
+      s.chapPadOn,
+      s.volDigits,
+      s.chapDigits,
+    ],
+  );
+
+  const [renamePreview, setRenamePreview] = useState("");
+
+  useEffect(() => {
+    const root = s.outputDirField.trim() || outputDirRef.current.trim() || ".";
+    const packExt = PACK_EXT[s.packFormat] ?? "";
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      api
+        .renamePreview(renameOpts, root, packExt)
+        .then((out) => {
+          if (!cancelled) setRenamePreview(out);
+        })
+        .catch(() => {});
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [renameOpts, s.outputDirField, s.packFormat]);
+
+  const mangaPatHint = useMemo(
+    () => (s.mangaFolderOn ? patternMissingRequired("manga", s.patManga) : null),
+    [s.mangaFolderOn, s.patManga],
+  );
+  const chapterPatHint = useMemo(
+    () => (s.chapterFolderOn ? patternMissingRequired("chapter", s.patChapter) : null),
+    [s.chapterFolderOn, s.patChapter],
+  );
+  const pagePatHint = useMemo(() => patternMissingRequired("page", s.patPage), [s.patPage]);
 
   const patMangaRef = useRef<HTMLInputElement>(null);
   const patChapterRef = useRef<HTMLInputElement>(null);
@@ -1850,6 +1896,11 @@ export function OptionsView() {
                           onChange={(e) => update("patManga", e.target.value)}
                         />
                         <TokenInsert tokens={TOKENS_MANGA} onInsert={(t) => insertTokenInto(patMangaRef, "patManga", t)} />
+                        {mangaPatHint ? (
+                          <div className="st-pat-hint">
+                            {mangaPatHint}
+                          </div>
+                        ) : null}
                       </div>
 
                       <SwitchRow
@@ -1875,6 +1926,11 @@ export function OptionsView() {
                           onChange={(e) => update("patChapter", e.target.value)}
                         />
                         <TokenInsert tokens={TOKENS_CHAPTER} onInsert={(t) => insertTokenInto(patChapterRef, "patChapter", t)} />
+                        {chapterPatHint ? (
+                          <div className="st-pat-hint">
+                            {chapterPatHint}
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="st-row st-row-stack">
@@ -1893,6 +1949,11 @@ export function OptionsView() {
                           onChange={(e) => update("patPage", e.target.value)}
                         />
                         <TokenInsert tokens={TOKENS_PAGE} onInsert={(t) => insertTokenInto(patPageRef, "patPage", t)} />
+                        {pagePatHint ? (
+                          <div className="st-pat-hint">
+                            {pagePatHint}
+                          </div>
+                        ) : null}
                       </div>
 
                       <SwitchRow

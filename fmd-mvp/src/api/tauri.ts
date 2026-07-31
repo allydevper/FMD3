@@ -31,6 +31,27 @@ export function defaultSaveDir() {
   return invoke<string>("default_save_dir");
 }
 
+/** Opciones de renombrado tal como las espera el backend (`RenameOpts`). */
+export type RenameOpts = {
+  mangaFolderOn: boolean;
+  chapterFolderOn: boolean;
+  patManga: string;
+  patChapter: string;
+  patPage: string;
+  asciiOn: boolean;
+  asciiChar: string;
+  removeMangaFromChapter: boolean;
+  /** 0 = sin padding. */
+  volDigits: number;
+  /** 0 = sin padding. */
+  chapDigits: number;
+};
+
+/** Ruta de ejemplo generada por el mismo código que nombra las descargas reales. */
+export function renamePreview(opts: RenameOpts, outputDir: string, packExt: string) {
+  return invoke<string>("rename_preview", { opts, outputDir, packExt });
+}
+
 export function modulesList() {
   return invoke<ModuleMeta[]>("modules_list_cmd");
 }

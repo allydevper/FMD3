@@ -5,6 +5,7 @@ use crate::lua_host::{
     MangaInfoResult, ModuleMeta, UpdateListProgress, UpdateListStats,
 };
 use crate::queue::{self, QueueState};
+use crate::rename_patterns::RenameOpts;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -299,6 +300,13 @@ pub fn settings_set(state: State<QueueState>, key: String, value: String) -> Res
 #[tauri::command]
 pub fn default_save_dir() -> Result<String, String> {
     Ok(db::exe_dir().to_string_lossy().into_owned())
+}
+
+/// Ruta de ejemplo para la vista previa de Ajustes, construida con los valores
+/// del formulario (aún sin guardar) por el mismo código que nombra las descargas.
+#[tauri::command]
+pub fn rename_preview(opts: RenameOpts, output_dir: String, pack_ext: String) -> String {
+    crate::rename_patterns::build_preview(&opts, &output_dir, &pack_ext)
 }
 
 #[tauri::command]

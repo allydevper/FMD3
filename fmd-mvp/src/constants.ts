@@ -218,16 +218,6 @@ export const DL_ST: Record<
   },
 };
 
-export const RENAME_SAMPLE: Record<string, string> = {
-  "%MANGA%": "One Piece",
-  "%WEBSITE%": "MangaDex",
-  "%AUTHOR%": "Eiichiro Oda",
-  "%ARTIST%": "Eiichiro Oda",
-  "%NUMBERING%": "003",
-  "%CHAPTER%": "Chapter 3",
-  "%FILENAME%": "003",
-};
-
 export const PACK_EXT: Record<string, string> = {
   none: "",
   zip: ".zip",

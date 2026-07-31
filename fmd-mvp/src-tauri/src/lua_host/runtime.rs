@@ -1589,23 +1589,12 @@ pub fn manga_output_dir(
     authors: &str,
     artists: &str,
 ) -> PathBuf {
-    use crate::rename_patterns::apply_pattern;
-    use crate::settings_keys::{manga_folder_on, manga_folder_pattern};
-    let tokens = [
-        ("%MANGA%", manga_title),
-        ("%Manga%", manga_title),
-        ("%WEBSITE%", website),
-        ("%Website%", website),
-        ("%CHAPTER%", ""),
-        ("%Chapter%", ""),
-        ("%AUTHOR%", authors),
-        ("%ARTIST%", artists),
-        ("%NUMBERING%", ""),
-        ("%ChapterIndex%", ""),
-    ];
+    use crate::rename_patterns::{chapter_tokens, RenameOpts};
+    let opts = RenameOpts::from_settings();
+    let tokens = chapter_tokens(manga_title, website, "", "", authors, artists);
     let mut path = output_dir.to_path_buf();
-    if manga_folder_on() {
-        path = path.join(apply_pattern(&manga_folder_pattern(), &tokens));
+    if opts.manga_folder_on {
+        path = path.join(opts.apply_pattern(opts.manga_pattern(), &tokens));
     }
     crate::paths::fit_download_path(&path)
 }
@@ -1619,31 +1608,16 @@ pub fn chapter_output_dir(
     authors: &str,
     artists: &str,
 ) -> PathBuf {
-    use crate::rename_patterns::{apply_pattern, format_chapter_index, strip_manga_from_chapter};
-    use crate::settings_keys::{
-        chapter_folder_on, chapter_folder_pattern, remove_manga_from_chapter,
-    };
-    let idx = format_chapter_index(chapter_index + 1);
-    let chapter_display = if remove_manga_from_chapter() {
-        strip_manga_from_chapter(chapter_name, manga_title)
-    } else {
-        chapter_name.to_string()
-    };
-    let tokens = [
-        ("%MANGA%", manga_title),
-        ("%Manga%", manga_title),
-        ("%WEBSITE%", website),
-        ("%Website%", website),
-        ("%CHAPTER%", chapter_display.as_str()),
-        ("%Chapter%", chapter_display.as_str()),
-        ("%AUTHOR%", authors),
-        ("%ARTIST%", artists),
-        ("%NUMBERING%", &idx),
-        ("%ChapterIndex%", &idx),
-    ];
+    use crate::rename_patterns::{chapter_tokens, ensure_chapter_pattern_numbering, RenameOpts};
+    let opts = RenameOpts::from_settings();
+    let idx = opts.format_chapter_index(chapter_index + 1);
+    let chapter_display = opts.prepare_chapter_display(chapter_name, manga_title);
+    let tokens = chapter_tokens(manga_title, website, &chapter_display, &idx, authors, artists);
     let mut path = manga_output_dir(output_dir, manga_title, website, authors, artists);
-    if chapter_folder_on() {
-        path = path.join(apply_pattern(&chapter_folder_pattern(), &tokens));
+    if opts.chapter_folder_on {
+        // FMD2: sin %CHAPTER% ni %NUMBERING% el patrón antepone el numbering.
+        let pat = ensure_chapter_pattern_numbering(opts.chapter_pattern(), &idx);
+        path = path.join(opts.apply_pattern(&pat, &tokens));
     }
     crate::paths::fit_download_path(&path)
 }
@@ -1686,7 +1660,22 @@ pub fn resolve_queue_item_paths(
     (manga, chapter)
 }
 
-fn work_basename(file_names: &LuaStringList, work_id: usize, page_count: usize) -> String {
+/// Todo lo que `work_basename` necesita además del índice de página, resuelto
+/// una sola vez por capítulo.
+struct NameCtx<'a> {
+    manga: &'a str,
+    /// Título ya con strip + pad, es decir lo que expande `%CHAPTER%`.
+    chapter: &'a str,
+    website: &'a str,
+    opts: crate::rename_patterns::RenameOpts,
+}
+
+fn work_basename(
+    file_names: &LuaStringList,
+    work_id: usize,
+    page_count: usize,
+    ctx: &NameCtx<'_>,
+) -> String {
     if file_names.len() == page_count {
         if let Some(n) = file_names.get(work_id) {
             let n = n.trim();
@@ -1695,12 +1684,11 @@ fn work_basename(file_names: &LuaStringList, work_id: usize, page_count: usize) 
             }
         }
     }
-    use crate::rename_patterns::{apply_pattern, format_page};
-    use crate::settings_keys::page_name_pattern;
+    use crate::rename_patterns::{format_page, page_tokens};
     let page = format_page(work_id + 1);
-    apply_pattern(
-        &page_name_pattern(),
-        &[("%FILENAME%", &page), ("%Page%", &page)],
+    ctx.opts.apply_pattern(
+        ctx.opts.page_pattern(),
+        &page_tokens(&page, ctx.manga, ctx.chapter, ctx.website),
     )
 }
 
@@ -1964,6 +1952,14 @@ pub fn download_chapter(
         .and_then(|mu| crate::catalog::manga_cache_get(&meta.id, mu).ok().flatten())
         .map(|row| (row.authors, row.artists))
         .unwrap_or_default();
+    let rename_opts = crate::rename_patterns::RenameOpts::from_settings();
+    let chapter_display = rename_opts.prepare_chapter_display(chapter_name, manga_title);
+    let name_ctx = NameCtx {
+        manga: manga_title,
+        chapter: &chapter_display,
+        website: &website_name,
+        opts: rename_opts,
+    };
     let chapter_dir = if let Some(p) = chapter_dir_override.filter(|p| !p.as_os_str().is_empty()) {
         p.to_path_buf()
     } else {
@@ -2019,7 +2015,7 @@ pub fn download_chapter(
             let work_url = task.page_links.get(i).unwrap_or_default();
             let trimmed = work_url.trim().to_string();
             if trimmed == "D" || (!trimmed.is_empty() && trimmed != "W") {
-                let base_name = work_basename(&task.file_names, i, page_count);
+                let base_name = work_basename(&task.file_names, i, page_count, &name_ctx);
                 let base_path = chapter_dir.join(&base_name);
                 if let Some(existing) = find_complete_image(&base_path) {
                     if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(&existing)) {
@@ -2037,9 +2033,8 @@ pub fn download_chapter(
                 errors.push(format!("Página {}: URL vacía (W)", i + 1));
                 continue;
             }
-            if find_complete_image(&chapter_dir.join(work_basename(&task.file_names, i, page_count)))
-                .is_some()
-            {
+            let base_name = work_basename(&task.file_names, i, page_count, &name_ctx);
+            if find_complete_image(&chapter_dir.join(base_name)).is_some() {
                 continue;
             }
             pending.push((i, absolute_url(&root, &work_url)));
@@ -2067,6 +2062,7 @@ pub fn download_chapter(
                 let part = part.to_vec();
                 let http0 = &http;
                 let chapter_dir = &chapter_dir;
+                let name_ctx = &name_ctx;
                 let task = &task;
                 let files_m = &files_m;
                 let errors_m = &errors_m;
@@ -2082,7 +2078,7 @@ pub fn download_chapter(
                             client.set_terminated(true);
                             return;
                         }
-                        let base_name = work_basename(&task.file_names, i, page_count);
+                        let base_name = work_basename(&task.file_names, i, page_count, name_ctx);
                         let base_path = chapter_dir.join(&base_name);
                         if let Some(existing) = find_complete_image(&base_path) {
                             if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(&existing)) {
@@ -2170,7 +2166,7 @@ pub fn download_chapter(
         let mut work_url = task.page_links.get(i).unwrap_or_default();
         let trimmed = work_url.trim().to_string();
         if trimmed == "D" {
-            let base = chapter_dir.join(work_basename(&task.file_names, i, page_count));
+            let base = chapter_dir.join(work_basename(&task.file_names, i, page_count, &name_ctx));
             if let Some(existing) = find_complete_image(&base) {
                 files.push(existing.display().to_string());
             }
@@ -2182,7 +2178,7 @@ pub fn download_chapter(
         }
 
         // Resume: skip pages already on disk before any network I/O (EXTRAS #4).
-        let base_name = work_basename(&task.file_names, i, page_count);
+        let base_name = work_basename(&task.file_names, i, page_count, &name_ctx);
         let base_path = chapter_dir.join(&base_name);
         if let Some(existing) = find_complete_image(&base_path) {
             if let Ok(meta) = std::fs::metadata(crate::paths::fs_path(&existing)) {

@@ -309,6 +309,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_manga_info,
+            commands::rename_preview,
             commands::modules_list_cmd,
             commands::modules_refresh_cmd,
             commands::modules_match_url_cmd,
