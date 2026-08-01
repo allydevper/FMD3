@@ -2755,9 +2755,21 @@ export function InfoView() {
         ? visibleCatalog.length === 0
         : catalogTotal === 0;
     if (isEmpty) {
+      const filterMiss =
+        advFilterApplied && catalogTotal > 0 && visibleCatalog.length === 0;
       return (
         <div className="catalog-results" id="catalog-list">
-          <div className="catalog-empty">Sin resultados.</div>
+          <div className="catalog-empty">
+            {filterMiss ? (
+              "Sin coincidencias con el filtro."
+            ) : (
+              <>
+                Sin resultados.
+                <br />
+                Actualiza la lista con el icono junto a Fuente.
+              </>
+            )}
+          </div>
         </div>
       );
     }

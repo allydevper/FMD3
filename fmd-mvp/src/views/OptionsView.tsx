@@ -2315,21 +2315,21 @@ export function OptionsView() {
                       <SwitchRow
                         id="opt-confirm-exit"
                         label="Salir"
-                        desc="Pedir confirmación antes de cerrar"
+                        desc="Pedir confirmación al cerrar la app"
                         checked={s.confirmExit}
                         onChange={(v) => update("confirmExit", v)}
                       />
                       <SwitchRow
                         id="opt-confirm-delete"
-                        label="Borrar descarga / manga / favorito"
+                        label="Borrar descarga / favorito"
                         desc="Confirmar eliminaciones"
                         checked={s.confirmDelete}
                         onChange={(v) => update("confirmDelete", v)}
                       />
                       <SwitchRow
                         id="opt-confirm-empty"
-                        label="Descargar lista si está vacía"
-                        desc="Preguntar antes de Update List"
+                        label="Vaciar terminados"
+                        desc="Confirmar al borrar descargas finalizadas"
                         checked={s.confirmEmptyList}
                         onChange={(v) => update("confirmEmptyList", v)}
                       />

@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 
 /// Keeps the tray icon alive for the process lifetime (dropping it removes the icon).
@@ -117,6 +117,17 @@ fn ensure_tray(app: &AppHandle) -> bool {
 /// Set once the user has confirmed the exit dialog, so the follow-up
 /// `window.close()` call doesn't re-trigger the confirmation prompt.
 static EXIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
+/// Avoid stacking multiple in-app exit prompts if the user keeps clicking X.
+static EXIT_PROMPT_OPEN: AtomicBool = AtomicBool::new(false);
+
+pub fn mark_exit_confirmed() {
+    EXIT_CONFIRMED.store(true, Ordering::SeqCst);
+    EXIT_PROMPT_OPEN.store(false, Ordering::SeqCst);
+}
+
+pub fn clear_exit_prompt() {
+    EXIT_PROMPT_OPEN.store(false, Ordering::SeqCst);
+}
 
 /// Exposed for smoke binaries / tests.
 pub fn download_chapter_for_test(
@@ -278,22 +289,13 @@ pub fn run() {
                 );
                 if confirm && !EXIT_CONFIRMED.load(Ordering::SeqCst) {
                     api.prevent_close();
-                    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-                    let window = window.clone();
-                    let app_handle = window.app_handle().clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        let yes = app_handle
-                            .dialog()
-                            .message("¿Seguro que deseas salir de FMD3?")
-                            .title("Confirmar salida")
-                            .kind(MessageDialogKind::Warning)
-                            .buttons(MessageDialogButtons::OkCancel)
-                            .blocking_show();
-                        if yes {
-                            EXIT_CONFIRMED.store(true, Ordering::SeqCst);
-                            let _ = window.close();
-                        }
-                    });
+                    // Frontend shows the same in-app confirm modal as other dialogs.
+                    if EXIT_PROMPT_OPEN
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        let _ = window.emit("ask-exit-confirm", ());
+                    }
                     return;
                 }
                 if crate::settings_keys::bool_setting(crate::settings_keys::VACUUM_ON_EXIT, false) {
@@ -364,6 +366,8 @@ pub fn run() {
             commands::db_vacuum,
             commands::modules_update_github,
             commands::catalog_download_fmd2db,
+            commands::app_confirm_exit,
+            commands::app_cancel_exit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

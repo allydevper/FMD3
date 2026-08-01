@@ -1321,3 +1321,23 @@ pub async fn catalog_download_fmd2db(url: String) -> Result<String, String> {
     .await
     .map_err(|e| format!("tarea cancelada: {e}"))?
 }
+
+/// User confirmed exit in the in-app modal — allow the next close through.
+#[tauri::command]
+pub fn app_confirm_exit(app: AppHandle) -> Result<(), String> {
+    crate::mark_exit_confirmed();
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.close();
+        return Ok(());
+    }
+    if let Some((_, w)) = app.webview_windows().into_iter().next() {
+        let _ = w.close();
+    }
+    Ok(())
+}
+
+/// User cancelled the in-app exit modal.
+#[tauri::command]
+pub fn app_cancel_exit() {
+    crate::clear_exit_prompt();
+}

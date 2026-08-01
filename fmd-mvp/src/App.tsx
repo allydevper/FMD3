@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { CatalogJobBar } from "./components/CatalogJobBar";
 import { Icon } from "./components/Icon";
 import { ICO } from "./icons";
-import { AppConfirmProvider } from "./components/AppConfirm";
+import { AppConfirmProvider, appConfirm } from "./components/AppConfirm";
 import { AppToastProvider } from "./components/AppToast";
 import { AppProvider, useApp } from "./context/AppContext";
 import type { NavId } from "./types";
@@ -37,6 +37,46 @@ function LogDrawer() {
       </pre>
     </div>
   );
+}
+
+function ExitConfirmBridge() {
+  useEffect(() => {
+    let cancelled = false;
+    let busy = false;
+    let un: (() => void) | undefined;
+    void api.onAskExitConfirm(() => {
+      if (busy || cancelled) return;
+      busy = true;
+      void (async () => {
+        try {
+          const ok = await appConfirm({
+            title: "Confirmar salida",
+            message: "¿Seguro que deseas salir de FMD3?",
+            okLabel: "Salir",
+            cancelLabel: "Cancelar",
+          });
+          if (cancelled) {
+            await api.appCancelExit();
+            return;
+          }
+          if (ok) await api.appConfirmExit();
+          else await api.appCancelExit();
+        } catch {
+          await api.appCancelExit().catch(() => {});
+        } finally {
+          busy = false;
+        }
+      })();
+    }).then((u) => {
+      if (cancelled) u();
+      else un = u;
+    });
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, []);
+  return null;
 }
 
 function Shell() {
@@ -92,6 +132,7 @@ function Shell() {
     <div className={appClass}>
       <AppConfirmProvider>
       <AppToastProvider>
+      <ExitConfirmBridge />
       <svg className="svg-filters" aria-hidden="true" focusable="false" width={0} height={0}>
         <filter id="cover-sharpen" colorInterpolationFilters="sRGB">
           <feConvolveMatrix

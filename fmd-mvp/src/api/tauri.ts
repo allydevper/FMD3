@@ -365,3 +365,15 @@ export function onCatalogFetchProgress(
 export function onLuaLog(handler: (msg: string) => Promise<void> | void): Promise<UnlistenFn> {
   return listen<string>("lua-log", (e) => handler(e.payload));
 }
+
+export function onAskExitConfirm(handler: () => void): Promise<UnlistenFn> {
+  return listen("ask-exit-confirm", () => handler());
+}
+
+export function appConfirmExit() {
+  return invoke("app_confirm_exit");
+}
+
+export function appCancelExit() {
+  return invoke("app_cancel_exit");
+}
