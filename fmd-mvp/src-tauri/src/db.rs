@@ -286,6 +286,12 @@ pub fn open_db() -> Result<Db, String> {
             PRIMARY KEY (module_id, link)
         );
         CREATE INDEX IF NOT EXISTS idx_manga_cache_module ON manga_cache(module_id);
+        CREATE TABLE IF NOT EXISTS catalog_hidden (
+            module_id TEXT NOT NULL,
+            link TEXT NOT NULL,
+            hidden_at TEXT NOT NULL,
+            PRIMARY KEY (module_id, link)
+        );
         "#,
     )
     .map_err(|e| e.to_string())?;

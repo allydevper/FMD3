@@ -189,7 +189,7 @@ pub fn today_jdn() -> i64 {
     date_to_jdn(d.year(), d.month(), d.day())
 }
 
-/// Open shared app DB and ensure `manga_cache` exists (regenerates empty file if deleted).
+/// Open shared app DB and ensure `manga_cache` / `catalog_hidden` exist.
 fn open_app_db() -> Result<Connection, String> {
     let dir = crate::db::db_path();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -213,6 +213,12 @@ fn open_app_db() -> Result<Connection, String> {
             PRIMARY KEY (module_id, link)
         );
         CREATE INDEX IF NOT EXISTS idx_manga_cache_module ON manga_cache(module_id);
+        CREATE TABLE IF NOT EXISTS catalog_hidden (
+            module_id TEXT NOT NULL,
+            link TEXT NOT NULL,
+            hidden_at TEXT NOT NULL,
+            PRIMARY KEY (module_id, link)
+        );
         "#,
     )
     .map_err(|e| e.to_string())?;
@@ -402,6 +408,13 @@ LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = ?1
 const MASTERLIST_USABLE: &str =
     "lower(trim(IFNULL(m.title,''))) NOT IN ('', 'n/a')";
 
+/// Exclude user-hidden titles (`catalog_hidden`). `module_id_sql` is `?1` or a quoted literal.
+fn not_hidden_sql(module_id_sql: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM appdb.catalog_hidden h WHERE h.module_id = {module_id_sql} AND h.link = m.link)"
+    )
+}
+
 pub fn search(
     module_id: &str,
     query: &str,
@@ -419,8 +432,9 @@ pub fn search(
     let q = query.trim();
     let mut out = Vec::new();
     if q.is_empty() {
+        let nh = not_hidden_sql("?1");
         let sql = format!(
-            "{SEARCH_SELECT} WHERE {MASTERLIST_USABLE} ORDER BY m.title COLLATE NATCMP, m.link LIMIT ?2 OFFSET ?3"
+            "{SEARCH_SELECT} WHERE {MASTERLIST_USABLE} AND {nh} ORDER BY m.title COLLATE NATCMP, m.link LIMIT ?2 OFFSET ?3"
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
@@ -438,9 +452,11 @@ pub fn search(
                 .replace('%', "\\%")
                 .replace('_', "\\_")
         );
+        let nh = not_hidden_sql("?1");
         let sql = format!(
             "{SEARCH_SELECT}
              WHERE {MASTERLIST_USABLE}
+               AND {nh}
                AND (
                  lower(m.title) LIKE lower(?2) ESCAPE '\\'
                  OR lower(m.alttitles) LIKE lower(?2) ESCAPE '\\'
@@ -461,17 +477,21 @@ pub fn search(
     Ok(out)
 }
 
-/// Count usable masterlist rows matching the same filters as `search` (no cache JOIN).
+/// Count usable masterlist rows matching the same filters as `search` (excludes hidden).
 pub fn count(module_id: &str, query: &str) -> Result<i64, String> {
     let path = catalog_db_path(module_id);
     if !path.exists() {
         return Ok(0);
     }
     let conn = open_catalog(module_id)?;
+    let _attach = AppDbAttach::attach(&conn)?;
+    let nh = not_hidden_sql("?1");
     let q = query.trim();
     if q.is_empty() {
-        let sql = format!("SELECT COUNT(*) FROM masterlist m WHERE {MASTERLIST_USABLE}");
-        conn.query_row(&sql, [], |r| r.get(0))
+        let sql = format!(
+            "SELECT COUNT(*) FROM masterlist m WHERE {MASTERLIST_USABLE} AND {nh}"
+        );
+        conn.query_row(&sql, params![module_id], |r| r.get(0))
             .map_err(|e| e.to_string())
     } else {
         let like = format!(
@@ -483,12 +503,13 @@ pub fn count(module_id: &str, query: &str) -> Result<i64, String> {
         let sql = format!(
             "SELECT COUNT(*) FROM masterlist m
              WHERE {MASTERLIST_USABLE}
+               AND {nh}
                AND (
-                 lower(m.title) LIKE lower(?1) ESCAPE '\\'
-                 OR lower(m.alttitles) LIKE lower(?1) ESCAPE '\\'
+                 lower(m.title) LIKE lower(?2) ESCAPE '\\'
+                 OR lower(m.alttitles) LIKE lower(?2) ESCAPE '\\'
                )"
         );
-        conn.query_row(&sql, params![like], |r| r.get(0))
+        conn.query_row(&sql, params![module_id, like], |r| r.get(0))
             .map_err(|e| e.to_string())
     }
 }
@@ -744,6 +765,7 @@ fn existing_module_ids(module_ids: &[String]) -> Vec<String> {
 
 fn branch_select_sql(table_prefix: &str, module_id: &str, where_sql: &str) -> String {
     let mid_lit = module_id.replace('\'', "''");
+    let nh = not_hidden_sql(&format!("'{mid_lit}'"));
     format!(
         r#"SELECT
   m.link AS link,
@@ -765,17 +787,20 @@ fn branch_select_sql(table_prefix: &str, module_id: &str, where_sql: &str) -> St
   '{mid_lit}' AS module_id
 FROM {table_prefix}masterlist m
 LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = '{mid_lit}'
-{where_sql}"#
+{where_sql}
+AND {nh}"#
     )
 }
 
 fn branch_count_sql(table_prefix: &str, module_id: &str, where_sql: &str) -> String {
     let mid_lit = module_id.replace('\'', "''");
+    let nh = not_hidden_sql(&format!("'{mid_lit}'"));
     format!(
         r#"SELECT m.link
 FROM {table_prefix}masterlist m
 LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = '{mid_lit}'
-{where_sql}"#
+{where_sql}
+AND {nh}"#
     )
 }
 
@@ -990,6 +1015,7 @@ fn search_filtered_module(
     let filter_sql = FilterSql::from_adv(filter, query);
     let where_sql = filter_sql.where_sql();
     let mid_lit = module_id.replace('\'', "''");
+    let nh = not_hidden_sql(&format!("'{mid_lit}'"));
     let sql = format!(
         r#"SELECT
   m.link,
@@ -1012,6 +1038,7 @@ fn search_filtered_module(
 FROM masterlist m
 LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = '{mid_lit}'
 {where_sql}
+AND {nh}
 ORDER BY m.title COLLATE NATCMP, m.link
 LIMIT ? OFFSET ?"#,
     );
@@ -1046,11 +1073,13 @@ fn count_filtered_module(
     let filter_sql = FilterSql::from_adv(filter, query);
     let where_sql = filter_sql.where_sql();
     let mid_lit = module_id.replace('\'', "''");
+    let nh = not_hidden_sql(&format!("'{mid_lit}'"));
     let sql = format!(
         r#"SELECT COUNT(*)
 FROM masterlist m
 LEFT JOIN appdb.manga_cache c ON c.link = m.link AND c.module_id = '{mid_lit}'
-{where_sql}"#
+{where_sql}
+AND {nh}"#
     );
     conn.query_row(&sql, params_from_iter(filter_sql.params), |r| r.get(0))
         .map_err(|e| e.to_string())
@@ -1122,7 +1151,9 @@ fn map_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
 
 /// Insert title+link rows (FMD UpdateList “no info” style). Returns inserted count.
 /// New rows get `jdn = today` (FMD2); existing rows keep their jdn via INSERT OR IGNORE.
+/// Skips links the user hid via `catalog_hide`.
 pub fn upsert_links(module_id: &str, pairs: &[(String, String)]) -> Result<usize, String> {
+    let hidden = hidden_link_set(module_id)?;
     let conn = open_catalog(module_id)?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let jdn = today_jdn();
@@ -1136,7 +1167,7 @@ pub fn upsert_links(module_id: &str, pairs: &[(String, String)]) -> Result<usize
             .map_err(|e| e.to_string())?;
         for (link, title) in pairs {
             let link = normalize_manga_link(link);
-            if link.is_empty() {
+            if link.is_empty() || hidden.contains(&link) {
                 continue;
             }
             let n = stmt
@@ -1147,6 +1178,182 @@ pub fn upsert_links(module_id: &str, pairs: &[(String, String)]) -> Result<usize
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(inserted)
+}
+
+/// Normalized links currently in `catalog_hidden` for a module.
+pub fn hidden_link_set(module_id: &str) -> Result<std::collections::HashSet<String>, String> {
+    let mut out = std::collections::HashSet::new();
+    if module_id.trim().is_empty() {
+        return Ok(out);
+    }
+    let conn = open_app_db()?;
+    let mut stmt = conn
+        .prepare("SELECT link FROM catalog_hidden WHERE module_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![module_id], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let link = row.map_err(|e| e.to_string())?;
+        let n = normalize_manga_link(&link);
+        if !n.is_empty() {
+            out.insert(n);
+        }
+    }
+    Ok(out)
+}
+
+pub fn is_hidden(module_id: &str, link: &str) -> Result<bool, String> {
+    let link = normalize_manga_link(link);
+    if module_id.trim().is_empty() || link.is_empty() {
+        return Ok(false);
+    }
+    let conn = open_app_db()?;
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM catalog_hidden WHERE module_id = ?1 AND link = ?2",
+            params![module_id, link],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
+/// Hide catalog rows: mark in `catalog_hidden`, remove from masterlist + manga_cache.
+/// Returns snapshots suitable for `unhide_entries` (Undo).
+pub fn hide_entries(entries: &[CatalogEntry]) -> Result<Vec<CatalogEntry>, String> {
+    let mut snapshots = Vec::new();
+    // Group by module to open each catalog once.
+    let mut by_module: std::collections::HashMap<String, Vec<&CatalogEntry>> =
+        std::collections::HashMap::new();
+    for e in entries {
+        let mid = e.module_id.trim();
+        if mid.is_empty() {
+            continue;
+        }
+        by_module
+            .entry(mid.to_string())
+            .or_default()
+            .push(e);
+    }
+    let app = open_app_db()?;
+    let now = chrono_now();
+    for (module_id, group) in by_module {
+        let cat = open_catalog(&module_id)?;
+        for e in group {
+            let link = normalize_manga_link(&e.link);
+            if link.is_empty() {
+                continue;
+            }
+            let snap = cat
+                .query_row(
+                    r#"SELECT link,
+                              COALESCE(title,''), COALESCE(alttitles,''),
+                              COALESCE(authors,''), COALESCE(artists,''), COALESCE(genres,''),
+                              COALESCE(status,''), COALESCE(summary,''),
+                              COALESCE(numchapter,0), COALESCE(jdn,0)
+                       FROM masterlist WHERE link = ?1"#,
+                    params![link],
+                    |r| {
+                        Ok(CatalogEntry {
+                            link: r.get(0)?,
+                            title: r.get(1)?,
+                            alttitles: r.get(2)?,
+                            authors: r.get(3)?,
+                            artists: r.get(4)?,
+                            genres: r.get(5)?,
+                            status: r.get(6)?,
+                            summary: r.get(7)?,
+                            numchapter: r.get(8)?,
+                            jdn: r.get(9)?,
+                            cover: String::new(),
+                            info_failed: false,
+                            module_id: module_id.clone(),
+                            module_name: e.module_name.clone(),
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_else(|| CatalogEntry {
+                    link: link.clone(),
+                    title: e.title.clone(),
+                    alttitles: e.alttitles.clone(),
+                    authors: e.authors.clone(),
+                    artists: e.artists.clone(),
+                    genres: e.genres.clone(),
+                    status: e.status.clone(),
+                    summary: e.summary.clone(),
+                    numchapter: e.numchapter,
+                    jdn: e.jdn,
+                    cover: String::new(),
+                    info_failed: false,
+                    module_id: module_id.clone(),
+                    module_name: e.module_name.clone(),
+                });
+
+            app.execute(
+                r#"INSERT INTO catalog_hidden(module_id, link, hidden_at)
+                   VALUES(?1, ?2, ?3)
+                   ON CONFLICT(module_id, link) DO UPDATE SET hidden_at=excluded.hidden_at"#,
+                params![module_id, link, now],
+            )
+            .map_err(|e| e.to_string())?;
+            let _ = cat.execute("DELETE FROM masterlist WHERE link = ?1", params![link]);
+            let _ = app.execute(
+                "DELETE FROM manga_cache WHERE module_id = ?1 AND link = ?2",
+                params![module_id, link],
+            );
+            snapshots.push(snap);
+        }
+    }
+    Ok(snapshots)
+}
+
+/// Restore previously hidden catalog rows (Undo).
+pub fn unhide_entries(snapshots: &[CatalogEntry]) -> Result<(), String> {
+    let app = open_app_db()?;
+    let jdn_today = today_jdn();
+    for snap in snapshots {
+        let module_id = snap.module_id.trim();
+        if module_id.is_empty() {
+            continue;
+        }
+        let link = normalize_manga_link(&snap.link);
+        if link.is_empty() {
+            continue;
+        }
+        let _ = app.execute(
+            "DELETE FROM catalog_hidden WHERE module_id = ?1 AND link = ?2",
+            params![module_id, link],
+        );
+        let cat = open_catalog(module_id)?;
+        let jdn = if snap.jdn > 0 { snap.jdn } else { jdn_today };
+        let title = if snap.title.trim().is_empty() {
+            link.as_str()
+        } else {
+            snap.title.as_str()
+        };
+        cat.execute(
+            r#"INSERT OR IGNORE INTO masterlist(
+                 link, title, alttitles, authors, artists, genres, status, summary, numchapter, jdn
+               ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
+            params![
+                link,
+                title,
+                snap.alttitles,
+                snap.authors,
+                snap.artists,
+                snap.genres,
+                snap.status,
+                snap.summary,
+                snap.numchapter,
+                jdn
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// All normalized links currently in masterlist (for Update List staging).
@@ -1174,6 +1381,7 @@ pub fn masterlist_link_set(module_id: &str) -> Result<std::collections::HashSet<
 }
 
 /// Full masterlist row insert (GetInfo path). Returns true if a new row was inserted.
+/// No-op when the link is user-hidden.
 pub fn insert_full(
     module_id: &str,
     link: &str,
@@ -1188,6 +1396,9 @@ pub fn insert_full(
 ) -> Result<bool, String> {
     let link = normalize_manga_link(link);
     if link.is_empty() {
+        return Ok(false);
+    }
+    if is_hidden(module_id, &link)? {
         return Ok(false);
     }
     let conn = open_catalog(module_id)?;
@@ -1780,5 +1991,73 @@ mod tests {
 
         let _ = std::fs::remove_file(catalog_db_path(a));
         let _ = std::fs::remove_file(catalog_db_path(b));
+    }
+
+    #[test]
+    fn hide_excludes_from_search_and_upsert_until_unhide() {
+        let mid = "__test_catalog_hide__";
+        let link = "/series/hidden_title/";
+        let path = catalog_db_path(mid);
+        let _ = std::fs::remove_file(&path);
+        if let Ok(conn) = open_app_db() {
+            let _ = conn.execute(
+                "DELETE FROM catalog_hidden WHERE module_id = ?1",
+                params![mid],
+            );
+            let _ = conn.execute(
+                "DELETE FROM manga_cache WHERE module_id = ?1",
+                params![mid],
+            );
+        }
+        upsert_links(mid, &[(link.into(), "Hidden Title".into())]).expect("insert");
+        assert_eq!(search(mid, "", 10, 0).expect("s0").len(), 1);
+        assert_eq!(count(mid, "").expect("c0"), 1);
+
+        let snaps = hide_entries(&[CatalogEntry {
+            link: link.into(),
+            title: "Hidden Title".into(),
+            alttitles: String::new(),
+            authors: String::new(),
+            artists: String::new(),
+            genres: String::new(),
+            status: String::new(),
+            summary: String::new(),
+            numchapter: 0,
+            jdn: 0,
+            cover: String::new(),
+            info_failed: false,
+            module_id: mid.into(),
+            module_name: String::new(),
+        }])
+        .expect("hide");
+        assert_eq!(snaps.len(), 1);
+        assert!(search(mid, "", 10, 0).expect("s1").is_empty());
+        assert_eq!(count(mid, "").expect("c1"), 0);
+        assert!(is_hidden(mid, link).expect("hidden"));
+
+        // Update List style upsert must not resurrect.
+        let n = upsert_links(mid, &[(link.into(), "Hidden Title".into())]).expect("upsert");
+        assert_eq!(n, 0);
+        assert!(search(mid, "", 10, 0).expect("s2").is_empty());
+        assert!(!insert_full(mid, link, "Hidden Title", "", "", "", "", "", "", 0).expect("full"));
+
+        unhide_entries(&snaps).expect("unhide");
+        assert!(!is_hidden(mid, link).expect("not hidden"));
+        let hits = search(mid, "", 10, 0).expect("s3");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Hidden Title");
+        assert_eq!(count(mid, "").expect("c3"), 1);
+
+        let _ = std::fs::remove_file(path);
+        if let Ok(conn) = open_app_db() {
+            let _ = conn.execute(
+                "DELETE FROM catalog_hidden WHERE module_id = ?1",
+                params![mid],
+            );
+            let _ = conn.execute(
+                "DELETE FROM manga_cache WHERE module_id = ?1",
+                params![mid],
+            );
+        }
     }
 }

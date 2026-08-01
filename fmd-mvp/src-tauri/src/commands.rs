@@ -128,6 +128,16 @@ pub fn catalog_import(module_id: String, path: String) -> Result<CatalogStats, S
 }
 
 #[tauri::command]
+pub fn catalog_hide(entries: Vec<CatalogEntry>) -> Result<Vec<CatalogEntry>, String> {
+    catalog::hide_entries(&entries)
+}
+
+#[tauri::command]
+pub fn catalog_unhide(snapshots: Vec<CatalogEntry>) -> Result<(), String> {
+    catalog::unhide_entries(&snapshots)
+}
+
+#[tauri::command]
 pub fn manga_cache_upsert(
     module_id: String,
     link: String,

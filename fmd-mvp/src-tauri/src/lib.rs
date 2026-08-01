@@ -323,6 +323,8 @@ pub fn run() {
             commands::catalog_search_all,
             commands::catalog_count_all,
             commands::catalog_import,
+            commands::catalog_hide,
+            commands::catalog_unhide,
             commands::manga_cache_upsert,
             commands::manga_cache_get,
             commands::cache_clear,

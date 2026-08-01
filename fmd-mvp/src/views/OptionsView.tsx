@@ -2321,7 +2321,7 @@ export function OptionsView() {
                       />
                       <SwitchRow
                         id="opt-confirm-delete"
-                        label="Borrar descarga / favorito"
+                        label="Borrar descarga / favorito / lista"
                         desc="Confirmar eliminaciones"
                         checked={s.confirmDelete}
                         onChange={(v) => update("confirmDelete", v)}

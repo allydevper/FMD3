@@ -118,6 +118,16 @@ export function catalogImport(moduleId: string, path: string) {
   return invoke<CatalogStats>("catalog_import", { moduleId, path });
 }
 
+/** Hide catalog rows permanently (until unhide). Returns snapshots for Undo. */
+export function catalogHide(entries: CatalogEntry[]) {
+  return invoke<CatalogEntry[]>("catalog_hide", { entries });
+}
+
+/** Restore previously hidden catalog rows (Undo). */
+export function catalogUnhide(snapshots: CatalogEntry[]) {
+  return invoke("catalog_unhide", { snapshots });
+}
+
 export function catalogUpdate(moduleId: string) {
   return invoke<UpdateListStats>("catalog_update", { moduleId });
 }

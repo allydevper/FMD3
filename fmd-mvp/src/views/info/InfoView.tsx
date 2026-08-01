@@ -35,6 +35,7 @@ import {
 } from "../../constants";
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
+import { confirmIfEnabled } from "../../utils/settings";
 import { catalogLinkKey, maybeFillHost, normalizeMangaUrl, resolveCover, urlsReferToSameManga } from "../../utils/url";
 import {
   favoritesCacheRemove,
@@ -220,6 +221,7 @@ export function InfoView() {
   const downloadAllFromCatalogBulkRef = useRef<(entries?: CatalogEntry[]) => void>(
     () => {},
   );
+  const removeFromCatalogRef = useRef<(entries: CatalogEntry[]) => void>(() => {});
 
   function bumpCatalogReset() {
     setCatalogResetSeq((s) => s + 1);
@@ -1896,8 +1898,8 @@ export function InfoView() {
 
     const pad = 8;
     const menuW = 232;
-    /* Single: Ver info + 3 acciones; bulk: título + Descargar todo + fav. */
-    const menuH = isBulk ? 120 : 168;
+    /* Single: Ver info + dl + fav + quitar; bulk: título + dl + fav + quitar. */
+    const menuH = isBulk ? 156 : 200;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     const bulkCount = isBulk ? catalogSelectedKeys.size : 1;
@@ -2137,6 +2139,72 @@ export function InfoView() {
     }
   }
 
+  async function removeFromCatalog(entries: CatalogEntry[]) {
+    setCatalogCtxMenu(null);
+    const prepared = entries
+      .map((e) => {
+        const { moduleId, mod } = catalogEntryModule(e);
+        if (!moduleId) return null;
+        return {
+          ...e,
+          module_id: moduleId,
+          module_name: e.module_name || mod?.name || "",
+        };
+      })
+      .filter((e): e is CatalogEntry => e != null);
+    if (!prepared.length) {
+      log("Selecciona al menos un título del catálogo.", "err");
+      return;
+    }
+    const n = prepared.length;
+    const ok = await confirmIfEnabled(
+      SK.CONFIRM_DELETE,
+      n === 1
+        ? `¿Quitar «${prepared[0].title || prepared[0].link}» de la lista? No volverá al actualizar el catálogo.`
+        : `¿Quitar ${n} títulos de la lista? No volverán al actualizar el catálogo.`,
+      true,
+      "Quitar de la lista",
+    );
+    if (!ok) return;
+    try {
+      const snapshots = await api.catalogHide(prepared);
+      if (!snapshots.length) {
+        log("No se pudo quitar de la lista.", "err");
+        return;
+      }
+      clearCatalogSelection();
+      await loadCatalog(true, true);
+      const label =
+        snapshots.length === 1
+          ? "Se quitó de la lista"
+          : `Se quitaron ${snapshots.length} títulos de la lista`;
+      appToastUndo({
+        message: label,
+        durationMs: 6000,
+        onUndo: async () => {
+          try {
+            await api.catalogUnhide(snapshots);
+            await loadCatalog(true, true);
+            log(
+              snapshots.length === 1
+                ? `Restaurado: ${snapshots[0].title || snapshots[0].link}`
+                : `Restaurados ${snapshots.length} títulos`,
+              "ok",
+            );
+          } catch (e) {
+            log(String(e), "err");
+          }
+        },
+      });
+      log(label, "ok");
+    } catch (e) {
+      log(String(e), "err");
+    }
+  }
+  removeFromCatalogRef.current = (entries) => {
+    void removeFromCatalog(entries);
+  };
+
   useEffect(() => {
     if (!catalogCtxMenu) return;
     const onKey = (ev: KeyboardEvent) => {
@@ -2288,7 +2356,6 @@ export function InfoView() {
   useEffect(() => {
     if (activeNav !== "info") return;
     const onKey = (ev: KeyboardEvent) => {
-      if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "d") return;
       const t = ev.target as HTMLElement | null;
       if (
         t &&
@@ -2299,13 +2366,22 @@ export function InfoView() {
       ) {
         return;
       }
-      ev.preventDefault();
-      const selected = [...catalogSelectedEntriesRef.current.values()];
-      if (selected.length > 0) {
-        downloadAllFromCatalogBulkRef.current(selected);
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "d") {
+        ev.preventDefault();
+        const selected = [...catalogSelectedEntriesRef.current.values()];
+        if (selected.length > 0) {
+          downloadAllFromCatalogBulkRef.current(selected);
+          return;
+        }
+        log("Selecciona al menos un título del catálogo (Ctrl+D).", "err");
         return;
       }
-      log("Selecciona al menos un título del catálogo (Ctrl+D).", "err");
+      if (ev.key === "Delete") {
+        const selected = [...catalogSelectedEntriesRef.current.values()];
+        if (!selected.length) return;
+        ev.preventDefault();
+        removeFromCatalogRef.current(selected);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -3690,6 +3766,18 @@ export function InfoView() {
                     label: `Agregar a favoritos (${catalogCtxMenu.bulkCount})`,
                     onClick: () => void addFavoritesFromCatalogBulk(),
                   },
+                  {
+                    id: "remove",
+                    icon: "x" as IconName,
+                    label: `Quitar de la lista (${catalogCtxMenu.bulkCount})`,
+                    hint: "Supr",
+                    sep: true,
+                    danger: true,
+                    onClick: () =>
+                      void removeFromCatalog([
+                        ...catalogSelectedEntriesRef.current.values(),
+                      ]),
+                  },
                 ]
               : [
                   {
@@ -3738,7 +3826,7 @@ export function InfoView() {
                     hint: "Supr",
                     sep: true,
                     danger: true,
-                    off: true,
+                    onClick: () => void removeFromCatalog([catalogCtxMenu.entry]),
                   },
                 ]
             ).map((m) => (
