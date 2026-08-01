@@ -140,15 +140,28 @@ pub fn catalog_unhide(snapshots: Vec<CatalogEntry>) -> Result<(), String> {
     catalog::unhide_entries(&snapshots)
 }
 
-/// Papelera: títulos quitados de la lista (todos, o los de un módulo).
+/// Papelera: página de títulos quitados de la lista. `limit <= 0` = sin tope.
 #[tauri::command]
-pub fn catalog_hidden_list(module_id: Option<String>) -> Result<Vec<HiddenEntry>, String> {
-    catalog::hidden_list(module_id.as_deref())
+pub fn catalog_hidden_list(
+    module_id: Option<String>,
+    query: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<HiddenEntry>, String> {
+    catalog::hidden_list(
+        module_id.as_deref(),
+        query.as_deref().unwrap_or(""),
+        limit.unwrap_or(0),
+        offset.unwrap_or(0),
+    )
 }
 
 #[tauri::command]
-pub fn catalog_hidden_count(module_id: Option<String>) -> Result<i64, String> {
-    catalog::hidden_count(module_id.as_deref())
+pub fn catalog_hidden_count(
+    module_id: Option<String>,
+    query: Option<String>,
+) -> Result<i64, String> {
+    catalog::hidden_count(module_id.as_deref(), query.as_deref().unwrap_or(""))
 }
 
 /// Restaura títulos concretos de la papelera. Devuelve cuántos.
@@ -157,10 +170,13 @@ pub fn catalog_unhide_links(module_id: String, links: Vec<String>) -> Result<usi
     catalog::unhide_links(&module_id, &links)
 }
 
-/// Vacía la papelera (de un módulo o entera) restaurando todo. Devuelve cuántos.
+/// Restaura todo lo que coincida con el filtro actual. Devuelve cuántos.
 #[tauri::command]
-pub fn catalog_unhide_all(module_id: Option<String>) -> Result<usize, String> {
-    catalog::unhide_all(module_id.as_deref())
+pub fn catalog_unhide_all(
+    module_id: Option<String>,
+    query: Option<String>,
+) -> Result<usize, String> {
+    catalog::unhide_all(module_id.as_deref(), query.as_deref().unwrap_or(""))
 }
 
 #[tauri::command]

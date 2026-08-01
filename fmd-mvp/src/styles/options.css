@@ -1377,21 +1377,31 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* Lista virtual: alto fijo (lo mide VirtualList) y filas posicionadas. */
 .trash-list {
-  max-height: 52vh;
+  height: 52vh;
   overflow-y: auto;
 }
 
+.trash-virtual {
+  position: relative;
+}
+
 .trash-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 48px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 14px;
+  padding: 5px 14px;
   border-bottom: 1px solid var(--border);
 }
 
-.trash-row:last-child {
-  border-bottom: none;
+.trash-row.is-loading {
+  opacity: 0.4;
 }
 
 .trash-main {

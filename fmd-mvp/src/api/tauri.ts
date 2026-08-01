@@ -129,13 +129,23 @@ export function catalogUnhide(snapshots: CatalogEntry[]) {
   return invoke("catalog_unhide", { snapshots });
 }
 
-/** Papelera: títulos quitados de la lista (todos, o los de un módulo). */
-export function catalogHiddenList(moduleId?: string) {
-  return invoke<HiddenEntry[]>("catalog_hidden_list", { moduleId: moduleId ?? null });
+/** Papelera: página de títulos quitados de la lista. `limit = 0` = sin tope. */
+export function catalogHiddenList(
+  moduleId: string | null,
+  query: string,
+  limit: number,
+  offset: number,
+) {
+  return invoke<HiddenEntry[]>("catalog_hidden_list", {
+    moduleId: moduleId ?? null,
+    query,
+    limit,
+    offset,
+  });
 }
 
-export function catalogHiddenCount(moduleId?: string) {
-  return invoke<number>("catalog_hidden_count", { moduleId: moduleId ?? null });
+export function catalogHiddenCount(moduleId: string | null, query: string) {
+  return invoke<number>("catalog_hidden_count", { moduleId: moduleId ?? null, query });
 }
 
 /** Restaura títulos concretos de la papelera. Devuelve cuántos. */
@@ -143,9 +153,9 @@ export function catalogUnhideLinks(moduleId: string, links: string[]) {
   return invoke<number>("catalog_unhide_links", { moduleId, links });
 }
 
-/** Vacía la papelera (de un módulo o entera) restaurando todo. Devuelve cuántos. */
-export function catalogUnhideAll(moduleId?: string) {
-  return invoke<number>("catalog_unhide_all", { moduleId: moduleId ?? null });
+/** Restaura todo lo que coincida con el filtro actual. Devuelve cuántos. */
+export function catalogUnhideAll(moduleId: string | null, query: string) {
+  return invoke<number>("catalog_unhide_all", { moduleId: moduleId ?? null, query });
 }
 
 export function catalogUpdate(moduleId: string) {

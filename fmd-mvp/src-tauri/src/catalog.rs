@@ -243,6 +243,9 @@ fn open_app_db() -> Result<Connection, String> {
             link TEXT NOT NULL,
             hidden_at TEXT NOT NULL,
             snapshot TEXT,
+            title TEXT,
+            module_name TEXT,
+            cover TEXT,
             PRIMARY KEY (module_id, link)
         );
         "#,
@@ -252,7 +255,51 @@ fn open_app_db() -> Result<Connection, String> {
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN alt_titles TEXT", []);
     // Papelera: filas ocultas antes de esta versión no tienen snapshot.
     let _ = conn.execute("ALTER TABLE catalog_hidden ADD COLUMN snapshot TEXT", []);
+    // Columnas de listado: evitan deserializar el snapshot para pintar la papelera.
+    let _ = conn.execute("ALTER TABLE catalog_hidden ADD COLUMN title TEXT", []);
+    let _ = conn.execute("ALTER TABLE catalog_hidden ADD COLUMN module_name TEXT", []);
+    let _ = conn.execute("ALTER TABLE catalog_hidden ADD COLUMN cover TEXT", []);
+    backfill_hidden_columns(&conn);
     Ok(conn)
+}
+
+/// Rellena las columnas de listado de filas guardadas antes de que existieran,
+/// leyendo su snapshot. Una vez por proceso: la papelera no cambia sola.
+fn backfill_hidden_columns(conn: &Connection) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT module_id, link, snapshot FROM catalog_hidden
+             WHERE title IS NULL AND snapshot IS NOT NULL",
+        ) else {
+            return;
+        };
+        let Ok(rows) = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        }) else {
+            return;
+        };
+        let pending: Vec<_> = rows.flatten().collect();
+        for (module_id, link, json) in pending {
+            let Ok(snap) = serde_json::from_str::<HiddenSnapshot>(&json) else {
+                continue;
+            };
+            let cover = if snap.entry.cover.trim().is_empty() {
+                snap.cache.as_ref().map(|c| c.cover.clone()).unwrap_or_default()
+            } else {
+                snap.entry.cover.clone()
+            };
+            let _ = conn.execute(
+                "UPDATE catalog_hidden SET title = ?3, module_name = ?4, cover = ?5
+                 WHERE module_id = ?1 AND link = ?2",
+                params![module_id, link, snap.entry.title, snap.entry.module_name, cover],
+            );
+        }
+    });
 }
 
 /// ATTACH shared `fmd-mvp.db` as `appdb`; DETACH on drop.
@@ -1334,12 +1381,24 @@ pub fn hide_entries(entries: &[CatalogEntry]) -> Result<Vec<CatalogEntry>, Strin
             };
             let json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
             app.execute(
-                r#"INSERT INTO catalog_hidden(module_id, link, hidden_at, snapshot)
-                   VALUES(?1, ?2, ?3, ?4)
+                r#"INSERT INTO catalog_hidden(
+                     module_id, link, hidden_at, snapshot, title, module_name, cover
+                   ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
                    ON CONFLICT(module_id, link) DO UPDATE SET
                      hidden_at=excluded.hidden_at,
-                     snapshot=excluded.snapshot"#,
-                params![module_id, link, now, json],
+                     snapshot=excluded.snapshot,
+                     title=excluded.title,
+                     module_name=excluded.module_name,
+                     cover=excluded.cover"#,
+                params![
+                    module_id,
+                    link,
+                    now,
+                    json,
+                    snap.title,
+                    snap.module_name,
+                    snap.cover
+                ],
             )
             .map_err(|e| e.to_string())?;
             let _ = cat.execute("DELETE FROM masterlist WHERE link = ?1", params![link]);
@@ -1462,73 +1521,88 @@ pub fn unhide_entries(snapshots: &[CatalogEntry]) -> Result<(), String> {
     Ok(())
 }
 
-/// Papelera: filas ocultas, opcionalmente de un solo módulo. Más recientes primero.
-pub fn hidden_list(module_id: Option<&str>) -> Result<Vec<HiddenEntry>, String> {
+/// Papelera: filas ocultas, opcionalmente de un solo módulo y filtradas por
+/// texto. Más recientes primero. `limit <= 0` = sin tope.
+/// Lee solo las columnas de listado: nunca deserializa el snapshot.
+pub fn hidden_list(
+    module_id: Option<&str>,
+    query: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<HiddenEntry>, String> {
     let app = open_app_db()?;
-    let filter = module_id.map(str::trim).filter(|m| !m.is_empty());
-    let sql = if filter.is_some() {
-        "SELECT module_id, link, hidden_at, snapshot FROM catalog_hidden
-         WHERE module_id = ?1 ORDER BY hidden_at DESC, link"
-    } else {
-        "SELECT module_id, link, hidden_at, snapshot FROM catalog_hidden
-         ORDER BY hidden_at DESC, link"
-    };
-    let mut stmt = app.prepare(sql).map_err(|e| e.to_string())?;
-    let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(String, String, String, Option<String>)> {
-        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-    };
-    let rows: Vec<_> = match filter {
-        Some(m) => stmt
-            .query_map(params![m], map_row)
-            .map_err(|e| e.to_string())?
-            .collect(),
-        None => stmt
-            .query_map([], map_row)
-            .map_err(|e| e.to_string())?
-            .collect(),
-    };
+    let mut sql = String::from(
+        "SELECT module_id, link, hidden_at,
+                COALESCE(title,''), COALESCE(module_name,''), COALESCE(cover,''),
+                snapshot IS NOT NULL
+         FROM catalog_hidden WHERE 1=1",
+    );
+    let mut args: Vec<SqlValue> = Vec::new();
+    if let Some(m) = module_id.map(str::trim).filter(|m| !m.is_empty()) {
+        sql.push_str(" AND module_id = ?");
+        args.push(SqlValue::Text(m.to_string()));
+    }
+    let q = query.trim();
+    if !q.is_empty() {
+        sql.push_str(
+            " AND (title LIKE ? ESCAPE '\\' OR link LIKE ? ESCAPE '\\'
+                   OR module_name LIKE ? ESCAPE '\\')",
+        );
+        let like = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
+        args.push(SqlValue::Text(like.clone()));
+        args.push(SqlValue::Text(like.clone()));
+        args.push(SqlValue::Text(like));
+    }
+    sql.push_str(" ORDER BY hidden_at DESC, link");
+    if limit > 0 {
+        sql.push_str(" LIMIT ? OFFSET ?");
+        args.push(SqlValue::Integer(limit));
+        args.push(SqlValue::Integer(offset.max(0)));
+    }
+
+    let mut stmt = app.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params_from_iter(args), |r| {
+            Ok(HiddenEntry {
+                module_id: r.get(0)?,
+                link: r.get(1)?,
+                hidden_at: r.get(2)?,
+                title: r.get(3)?,
+                module_name: r.get(4)?,
+                cover: r.get(5)?,
+                has_snapshot: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
-        let (mid, link, hidden_at, json) = row.map_err(|e| e.to_string())?;
-        let snap: Option<HiddenSnapshot> = json
-            .filter(|s| !s.trim().is_empty())
-            .and_then(|s| serde_json::from_str(&s).ok());
-        let (title, cover, module_name) = match &snap {
-            Some(s) => (
-                s.entry.title.clone(),
-                if s.entry.cover.trim().is_empty() {
-                    s.cache.as_ref().map(|c| c.cover.clone()).unwrap_or_default()
-                } else {
-                    s.entry.cover.clone()
-                },
-                s.entry.module_name.clone(),
-            ),
-            None => (String::new(), String::new(), String::new()),
-        };
-        out.push(HiddenEntry {
-            module_id: mid,
-            module_name,
-            link,
-            title,
-            cover,
-            hidden_at,
-            has_snapshot: snap.is_some(),
-        });
+        out.push(row.map_err(|e| e.to_string())?);
     }
     Ok(out)
 }
 
-pub fn hidden_count(module_id: Option<&str>) -> Result<i64, String> {
+/// Total de la papelera con el mismo filtro que `hidden_list` (para el scroll virtual).
+pub fn hidden_count(module_id: Option<&str>, query: &str) -> Result<i64, String> {
     let app = open_app_db()?;
-    let n = match module_id.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) => app.query_row(
-            "SELECT COUNT(*) FROM catalog_hidden WHERE module_id = ?1",
-            params![m],
-            |r| r.get(0),
-        ),
-        None => app.query_row("SELECT COUNT(*) FROM catalog_hidden", [], |r| r.get(0)),
-    };
-    n.map_err(|e| e.to_string())
+    let mut sql = String::from("SELECT COUNT(*) FROM catalog_hidden WHERE 1=1");
+    let mut args: Vec<SqlValue> = Vec::new();
+    if let Some(m) = module_id.map(str::trim).filter(|m| !m.is_empty()) {
+        sql.push_str(" AND module_id = ?");
+        args.push(SqlValue::Text(m.to_string()));
+    }
+    let q = query.trim();
+    if !q.is_empty() {
+        sql.push_str(
+            " AND (title LIKE ? ESCAPE '\\' OR link LIKE ? ESCAPE '\\'
+                   OR module_name LIKE ? ESCAPE '\\')",
+        );
+        let like = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
+        args.push(SqlValue::Text(like.clone()));
+        args.push(SqlValue::Text(like.clone()));
+        args.push(SqlValue::Text(like));
+    }
+    app.query_row(&sql, params_from_iter(args), |r| r.get(0))
+        .map_err(|e| e.to_string())
 }
 
 /// Restaura por (module_id, link) leyendo el snapshot guardado. Devuelve cuántas.
@@ -1559,11 +1633,12 @@ pub fn unhide_links(module_id: &str, links: &[String]) -> Result<usize, String> 
     Ok(n)
 }
 
-/// Vacía la papelera (de un módulo o entera) restaurando todo lo que tenga snapshot.
-/// Las filas sin snapshot (ocultadas antes de esta versión) solo pierden el veto:
-/// reaparecen en el siguiente Update List.
-pub fn unhide_all(module_id: Option<&str>) -> Result<usize, String> {
-    let entries = hidden_list(module_id)?;
+/// Vacía la papelera restaurando todo lo que coincida con el mismo filtro que
+/// `hidden_list` (módulo y búsqueda), para que «Restaurar todo» actúe justo
+/// sobre lo que el usuario está viendo. Las filas sin snapshot solo pierden el
+/// veto: reaparecen en el siguiente Update List.
+pub fn unhide_all(module_id: Option<&str>, query: &str) -> Result<usize, String> {
+    let entries = hidden_list(module_id, query, 0, 0)?;
     let mut by_module: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for e in entries {
@@ -2347,18 +2422,24 @@ mod tests {
         }])
         .expect("hide");
 
-        let rows = hidden_list(Some(mid)).expect("list");
+        let rows = hidden_list(Some(mid), "", 0, 0).expect("list");
         assert_eq!(rows.len(), 1, "la papelera lista el título oculto");
         assert_eq!(rows[0].title, "Trashed Title");
         assert!(rows[0].has_snapshot);
         assert_eq!(rows[0].cover, "https://example.test/cover.jpg");
-        assert_eq!(hidden_count(Some(mid)).expect("count"), 1);
+        assert_eq!(hidden_count(Some(mid), "").expect("count"), 1);
         assert!(manga_cache_get(mid, link).expect("cache gone").is_none());
+
+        // Filtro y paginación se resuelven en SQL, sin tocar el snapshot.
+        assert_eq!(hidden_list(Some(mid), "trashed", 0, 0).expect("q").len(), 1);
+        assert_eq!(hidden_list(Some(mid), "nada", 0, 0).expect("q0").len(), 0);
+        assert_eq!(hidden_count(Some(mid), "trashed").expect("cq"), 1);
+        assert_eq!(hidden_list(Some(mid), "", 10, 1).expect("off").len(), 0);
 
         let n = unhide_links(mid, &[link.to_string()]).expect("unhide");
         assert_eq!(n, 1);
         assert!(!is_hidden(mid, link).expect("not hidden"));
-        assert!(hidden_list(Some(mid)).expect("empty").is_empty());
+        assert!(hidden_list(Some(mid), "", 0, 0).expect("empty").is_empty());
         let hits = search(mid, "", 10, 0).expect("search");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Trashed Title");

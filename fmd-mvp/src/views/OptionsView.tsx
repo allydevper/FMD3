@@ -10,6 +10,7 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import { appConfirm } from "../components/AppConfirm";
 import { Icon } from "../components/Icon";
+import { VirtualList } from "../components/VirtualList";
 import { ICO } from "../icons";
 import { DEFAULT_USER_AGENT, PACK_EXT, SK } from "../constants";
 import * as api from "../api/tauri";
@@ -41,6 +42,10 @@ const OPTIONS_CATS: { id: OptTabId; label: string; icon: string }[] = [
   { id: "hidden", label: "Papelera", icon: ICO.trash },
   { id: "websites", label: "Sitios Web", icon: ICO.globe },
 ];
+
+/** Papelera: tamaño de página del backend y alto de fila (lista virtual). */
+const HIDDEN_PAGE = 200;
+const HIDDEN_ROW_H = 48;
 
 const PACK_FORMATS = ["none", "zip", "cbz", "pdf", "epub"] as const;
 const PACK_OPTIONS: { value: (typeof PACK_FORMATS)[number]; label: string }[] = [
@@ -1242,37 +1247,100 @@ export function OptionsView() {
 
   /* ---- Panel Papelera (títulos quitados de la lista) ---- */
 
-  const [hiddenRows, setHiddenRows] = useState<HiddenEntry[]>([]);
+  /** Filas cargadas: array disperso de longitud `hiddenTotal` (huecos = sin pedir). */
+  const [hiddenRows, setHiddenRows] = useState<(HiddenEntry | undefined)[]>([]);
+  const [hiddenTotal, setHiddenTotal] = useState(0);
   const [hiddenLoading, setHiddenLoading] = useState(false);
   const [hiddenQuery, setHiddenQuery] = useState("");
+  /** `hiddenQuery` con debounce: es lo que se consulta al backend. */
+  const [hiddenApplied, setHiddenApplied] = useState("");
   const [hiddenBusy, setHiddenBusy] = useState(false);
+  const [hiddenResetSeq, setHiddenResetSeq] = useState(0);
+  const hiddenRowsRef = useRef<(HiddenEntry | undefined)[]>([]);
+  const hiddenPagesRef = useRef<Set<number>>(new Set());
+  const hiddenInflightRef = useRef<Set<number>>(new Set());
+  const hiddenGenRef = useRef(0);
 
-  const loadHidden = useCallback(async () => {
-    setHiddenLoading(true);
-    try {
-      setHiddenRows(await api.catalogHiddenList());
-    } catch (e) {
-      log(String(e), "err");
-    } finally {
-      setHiddenLoading(false);
-    }
-  }, [log]);
+  const setHiddenRowsBoth = useCallback((rows: (HiddenEntry | undefined)[]) => {
+    hiddenRowsRef.current = rows;
+    setHiddenRows(rows);
+  }, []);
+
+  const loadHidden = useCallback(
+    async (query: string) => {
+      const gen = ++hiddenGenRef.current;
+      hiddenPagesRef.current = new Set();
+      hiddenInflightRef.current = new Set();
+      setHiddenLoading(true);
+      try {
+        const [total, page0] = await Promise.all([
+          api.catalogHiddenCount(null, query),
+          api.catalogHiddenList(null, query, HIDDEN_PAGE, 0),
+        ]);
+        if (gen !== hiddenGenRef.current) return;
+        const rows: (HiddenEntry | undefined)[] = Array.from({ length: total });
+        for (let i = 0; i < page0.length && i < total; i++) rows[i] = page0[i];
+        if (total > 0) hiddenPagesRef.current.add(0);
+        setHiddenTotal(total);
+        setHiddenRowsBoth(rows);
+        setHiddenResetSeq((n) => n + 1);
+      } catch (e) {
+        if (gen !== hiddenGenRef.current) return;
+        setHiddenTotal(0);
+        setHiddenRowsBoth([]);
+        log(String(e), "err");
+      } finally {
+        if (gen === hiddenGenRef.current) setHiddenLoading(false);
+      }
+    },
+    [log, setHiddenRowsBoth],
+  );
+
+  /** Trae las páginas que cubren el rango visible de la lista virtual. */
+  const requestHiddenRange = useCallback(
+    (start: number, end: number) => {
+      if (end <= start) return;
+      const gen = hiddenGenRef.current;
+      const first = Math.floor(start / HIDDEN_PAGE);
+      const last = Math.floor(Math.max(start, end - 1) / HIDDEN_PAGE);
+      for (let page = first; page <= last; page++) {
+        if (hiddenPagesRef.current.has(page) || hiddenInflightRef.current.has(page)) continue;
+        hiddenInflightRef.current.add(page);
+        void (async () => {
+          try {
+            const rows = await api.catalogHiddenList(
+              null,
+              hiddenApplied,
+              HIDDEN_PAGE,
+              page * HIDDEN_PAGE,
+            );
+            if (gen !== hiddenGenRef.current) return;
+            const next = hiddenRowsRef.current.slice();
+            const base = page * HIDDEN_PAGE;
+            for (let i = 0; i < rows.length; i++) next[base + i] = rows[i];
+            hiddenPagesRef.current.add(page);
+            setHiddenRowsBoth(next);
+          } catch (e) {
+            if (gen === hiddenGenRef.current) log(String(e), "err");
+          } finally {
+            hiddenInflightRef.current.delete(page);
+          }
+        })();
+      }
+    },
+    [hiddenApplied, log, setHiddenRowsBoth],
+  );
+
+  // Debounce del buscador: la búsqueda la resuelve SQL, no el cliente.
+  useEffect(() => {
+    const t = window.setTimeout(() => setHiddenApplied(hiddenQuery.trim()), 250);
+    return () => window.clearTimeout(t);
+  }, [hiddenQuery]);
 
   useEffect(() => {
     if (activeNav !== "options" || optTab !== "hidden") return;
-    void loadHidden();
-  }, [activeNav, optTab, loadHidden]);
-
-  const hiddenFiltered = useMemo(() => {
-    const q = hiddenQuery.trim().toLowerCase();
-    if (!q) return hiddenRows;
-    return hiddenRows.filter(
-      (r) =>
-        r.title.toLowerCase().includes(q) ||
-        r.link.toLowerCase().includes(q) ||
-        r.module_name.toLowerCase().includes(q),
-    );
-  }, [hiddenRows, hiddenQuery]);
+    void loadHidden(hiddenApplied);
+  }, [activeNav, optTab, hiddenApplied, loadHidden]);
 
   const moduleNameOf = useCallback(
     (row: HiddenEntry) =>
@@ -1297,7 +1365,7 @@ export function OptionsView() {
           n += await api.catalogUnhideLinks(moduleId, links);
         }
         const stale = rows.filter((r) => !r.has_snapshot).length;
-        await loadHidden();
+        await loadHidden(hiddenApplied);
         notifyCatalogChanged([...byModule.keys()]);
         log(
           n === 1 ? "1 título restaurado." : `${n} títulos restaurados.`,
@@ -1316,20 +1384,34 @@ export function OptionsView() {
         setHiddenBusy(false);
       }
     },
-    [hiddenBusy, loadHidden, log, notifyCatalogChanged],
+    [hiddenApplied, hiddenBusy, loadHidden, log, notifyCatalogChanged],
   );
 
+  /** Restaura todo lo que coincida con el filtro actual (lo que se está viendo). */
   const restoreAllHidden = useCallback(async () => {
-    if (!hiddenRows.length || hiddenBusy) return;
+    if (!hiddenTotal || hiddenBusy) return;
+    const scope = hiddenApplied ? ` que coinciden con "${hiddenApplied}"` : "";
     const ok = await appConfirm({
-      title: "Vaciar papelera",
-      message: `Se restaurarán ${hiddenRows.length} títulos a sus catálogos.\n\n¿Continuar?`,
+      title: "Restaurar de la papelera",
+      message: `Se restaurarán ${hiddenTotal} títulos${scope} a sus catálogos.\n\n¿Continuar?`,
       okLabel: "Restaurar todo",
       cancelLabel: "Cancelar",
     });
     if (!ok) return;
-    await restoreHidden(hiddenRows);
-  }, [hiddenRows, hiddenBusy, restoreHidden]);
+    setHiddenBusy(true);
+    try {
+      // Sin traerse la lista entera al cliente: el backend resuelve el filtro.
+      // Puede tocar cualquier módulo, así que se avisa por todos.
+      const n = await api.catalogUnhideAll(null, hiddenApplied);
+      await loadHidden(hiddenApplied);
+      notifyCatalogChanged(modules.map((m) => m.id));
+      log(n === 1 ? "1 título restaurado." : `${n} títulos restaurados.`, "ok");
+    } catch (e) {
+      log(String(e), "err");
+    } finally {
+      setHiddenBusy(false);
+    }
+  }, [hiddenApplied, hiddenBusy, hiddenTotal, loadHidden, log, modules, notifyCatalogChanged]);
 
   /* ---- Panel Sitios Web ---- */
 
@@ -2488,7 +2570,7 @@ export function OptionsView() {
                             type="button"
                             className="sites-tbtn"
                             disabled={hiddenLoading || hiddenBusy}
-                            onClick={() => void loadHidden()}
+                            onClick={() => void loadHidden(hiddenApplied)}
                           >
                             <Icon ico={ICO.refresh} className="ico ico-sm" />
                             Recargar
@@ -2496,61 +2578,71 @@ export function OptionsView() {
                           <button
                             type="button"
                             className="sites-tbtn"
-                            disabled={!hiddenRows.length || hiddenBusy}
+                            disabled={!hiddenTotal || hiddenBusy}
                             onClick={() => void restoreAllHidden()}
                           >
                             <Icon ico={ICO.retry} className="ico ico-sm" />
-                            Restaurar todo ({hiddenRows.length})
+                            Restaurar todo ({hiddenTotal})
                           </button>
                         </div>
                       </div>
 
-                      <div className="trash-list">
-                        {hiddenLoading ? (
-                          <div className="sites-tree-empty">
-                            <div className="sites-empty-title">Cargando…</div>
+                      {hiddenLoading && !hiddenTotal ? (
+                        <div className="sites-tree-empty">
+                          <div className="sites-empty-title">Cargando…</div>
+                        </div>
+                      ) : !hiddenTotal ? (
+                        <div className="sites-tree-empty">
+                          <div className="sites-empty-title">
+                            {hiddenApplied ? "Sin coincidencias" : "Papelera vacía"}
                           </div>
-                        ) : !hiddenRows.length ? (
-                          <div className="sites-tree-empty">
-                            <div className="sites-empty-title">Papelera vacía</div>
-                            <div className="sites-empty-desc">
-                              Los títulos que quites de la lista (Supr en el catálogo) aparecerán
-                              aquí y podrás devolverlos cuando quieras.
-                            </div>
+                          <div className="sites-empty-desc">
+                            {hiddenApplied
+                              ? `Ningún título coincide con "${hiddenApplied}".`
+                              : "Los títulos que quites de la lista (Supr en el catálogo) aparecerán aquí y podrás devolverlos cuando quieras."}
                           </div>
-                        ) : !hiddenFiltered.length ? (
-                          <div className="sites-tree-empty">
-                            <div className="sites-empty-title">Sin coincidencias</div>
-                            <div className="sites-empty-desc">
-                              Ningún título coincide con "{hiddenQuery}".
-                            </div>
-                          </div>
-                        ) : (
-                          hiddenFiltered.map((row) => (
-                            <div className="trash-row" key={`${row.module_id}||${row.link}`}>
-                              <div className="trash-main">
-                                <span className="trash-title" title={row.link}>
-                                  {row.title || row.link}
-                                </span>
-                                <span className="trash-meta">
-                                  {moduleNameOf(row)}
-                                  {row.hidden_at ? ` · ${row.hidden_at.slice(0, 16).replace("T", " ")}` : ""}
-                                  {row.has_snapshot ? "" : " · sin metadatos"}
-                                </span>
+                        </div>
+                      ) : (
+                        <VirtualList
+                          className="trash-list"
+                          innerClassName="trash-virtual"
+                          items={hiddenRows}
+                          itemHeight={HIDDEN_ROW_H}
+                          resetKey={hiddenResetSeq}
+                          onRange={requestHiddenRange}
+                          getKey={(row, i) => (row ? `${row.module_id}||${row.link}` : `ph:${i}`)}
+                          renderItem={(row, _i, style) => {
+                            if (!row) {
+                              return <div className="trash-row is-loading" style={style} aria-hidden />;
+                            }
+                            return (
+                              <div className="trash-row" style={style}>
+                                <div className="trash-main">
+                                  <span className="trash-title" title={row.link}>
+                                    {row.title || row.link}
+                                  </span>
+                                  <span className="trash-meta">
+                                    {moduleNameOf(row)}
+                                    {row.hidden_at
+                                      ? ` · ${row.hidden_at.slice(0, 16).replace("T", " ")}`
+                                      : ""}
+                                    {row.has_snapshot ? "" : " · sin metadatos"}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="sites-tbtn"
+                                  disabled={hiddenBusy}
+                                  onClick={() => void restoreHidden([row])}
+                                >
+                                  <Icon ico={ICO.retry} className="ico ico-sm" />
+                                  Restaurar
+                                </button>
                               </div>
-                              <button
-                                type="button"
-                                className="sites-tbtn"
-                                disabled={hiddenBusy}
-                                onClick={() => void restoreHidden([row])}
-                              >
-                                <Icon ico={ICO.retry} className="ico ico-sm" />
-                                Restaurar
-                              </button>
-                            </div>
-                          ))
-                        )}
-                      </div>
+                            );
+                          }}
+                        />
+                      )}
                     </div>
                   </section>
                 </div>
