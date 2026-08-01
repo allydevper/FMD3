@@ -14,6 +14,11 @@ dist-ssr
 smoke_out/
 src-tauri/smoke_out/
 
+# Updater signing private key (public .pub may be committed)
+.tauri/*.key
+.tauri/signer-out.txt
+!.tauri/*.key.pub
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -223,6 +223,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             restore_main_window(app);
         }))
@@ -360,7 +362,6 @@ pub fn run() {
             commands::log_open,
             commands::log_clear,
             commands::db_vacuum,
-            commands::app_check_update,
             commands::modules_update_github,
             commands::catalog_download_fmd2db,
         ])

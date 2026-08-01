@@ -31,6 +31,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -43,6 +44,17 @@
       "../../lua/templates": "lua/templates/",
       "../../lua/websitebypass": "lua/websitebypass/",
       "../../lua/utils": "lua/utils/"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlEQkM1QjE4QUYyQUQyRjkKUldUNTBpcXZHRnU4bmNnOGhjK0JxdHNVZncreHZvamsyMTQxV1JCd0o4Z3ZpY0ZpQUx1a2t0WW0K",
+      "endpoints": [
+        "https://github.com/allydevper/FMD3/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

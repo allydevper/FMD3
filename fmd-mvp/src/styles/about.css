@@ -85,7 +85,12 @@
   white-space: nowrap;
 }
 
-.about-btn-p:hover {
+.about-btn-p:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.about-btn-p:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 

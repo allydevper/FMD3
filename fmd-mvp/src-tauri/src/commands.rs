@@ -1271,46 +1271,6 @@ pub fn db_vacuum(state: State<QueueState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn app_check_update() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("FMD-MVP/0.1")
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let urls = [
-            "https://api.github.com/repos/allydevper/FMD3/releases/latest",
-            "https://api.github.com/repos/dazedcat19/FMD2/releases/latest",
-        ];
-        let mut last_err = String::from("sin respuesta");
-        for url in urls {
-            match client
-                .get(url)
-                .header("Accept", "application/vnd.github+json")
-                .send()
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
-                    if let Some(tag) = v.get("tag_name").and_then(|t| t.as_str()) {
-                        return Ok(format!("Última versión: {tag}"));
-                    }
-                    last_err = "respuesta sin tag_name".into();
-                }
-                Ok(resp) => {
-                    last_err = format!("HTTP {}", resp.status());
-                }
-                Err(e) => {
-                    last_err = e.to_string();
-                }
-            }
-        }
-        Err(format!("No se pudo comprobar actualizaciones: {last_err}"))
-    })
-    .await
-    .map_err(|e| format!("tarea cancelada: {e}"))?
-}
-
-#[tauri::command]
 pub async fn modules_update_github() -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(modules_refresh)
         .await

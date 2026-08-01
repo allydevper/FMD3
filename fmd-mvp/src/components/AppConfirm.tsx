@@ -13,6 +13,8 @@ export type AppConfirmOptions = {
   message: string;
   okLabel?: string;
   cancelLabel?: string;
+  /** Only show OK (informational). */
+  alert?: boolean;
 };
 
 type ConfirmFn = (opts: AppConfirmOptions) => Promise<boolean>;
@@ -87,20 +89,22 @@ export function AppConfirmProvider({ children }: { children: ReactNode }) {
               </p>
             </div>
             <footer className="info-modal-foot">
-              <button
-                type="button"
-                className="info-modal-btn"
-                onClick={() => finish(false)}
-              >
-                {pending.cancelLabel?.trim() || "Cancelar"}
-              </button>
+              {!pending.alert ? (
+                <button
+                  type="button"
+                  className="info-modal-btn"
+                  onClick={() => finish(false)}
+                >
+                  {pending.cancelLabel?.trim() || "Cancelar"}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="info-modal-btn info-modal-btn-primary"
                 autoFocus
                 onClick={() => finish(true)}
               >
-                {pending.okLabel?.trim() || "Continuar"}
+                {pending.okLabel?.trim() || (pending.alert ? "Entendido" : "Continuar")}
               </button>
             </footer>
           </div>

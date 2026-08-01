@@ -1,0 +1,112 @@
+import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { appConfirm } from "../components/AppConfirm";
+
+export type AppUpdateLog = (msg: string, kind?: "ok" | "err" | "") => void;
+
+export type AppUpdateCheckOptions = {
+  /** Show a modal for “up to date” / errors (manual check). Startup stays log-only. */
+  notifyResult?: boolean;
+};
+
+function friendlyCheckError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("404") ||
+    lower.includes("not found") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("error sending request") ||
+    lower.includes("no release") ||
+    lower.includes("could not fetch")
+  ) {
+    return "No hay release de actualización publicado (latest.json).";
+  }
+  return raw;
+}
+
+async function notify(title: string, message: string): Promise<void> {
+  await appConfirm({ title, message, alert: true, okLabel: "Entendido" });
+}
+
+/**
+ * Check allydevper/FMD3 updater endpoint. If newer, confirm → download/install → relaunch.
+ * Returns a short status message for the log.
+ */
+export async function runAppUpdateCheck(
+  log?: AppUpdateLog,
+  opts?: AppUpdateCheckOptions,
+): Promise<string> {
+  const notifyResult = opts?.notifyResult === true;
+  const current = await getVersion();
+  let update;
+  try {
+    update = await check();
+  } catch (e) {
+    const msg = friendlyCheckError(e);
+    log?.(`Comprobar actualización: ${msg}`, "err");
+    if (notifyResult) {
+      await notify("Actualizaciones", msg);
+    }
+    throw new Error(msg);
+  }
+
+  if (!update) {
+    const msg = `Al día (v${current})`;
+    log?.(msg, "ok");
+    if (notifyResult) {
+      await notify("Actualizaciones", `Ya tienes la última versión (v${current}).`);
+    }
+    return msg;
+  }
+
+  const notes = (update.body || "").trim();
+  const noteBlock = notes ? `\n\n${notes.slice(0, 800)}${notes.length > 800 ? "…" : ""}` : "";
+  const ok = await appConfirm({
+    title: "Actualización disponible",
+    message: `Hay una versión nueva.\n\nActual: v${current}\nNueva: v${update.version}${noteBlock}\n\n¿Descargar e instalar ahora? La app se reiniciará.`,
+    okLabel: "Actualizar",
+    cancelLabel: "Más tarde",
+  });
+
+  if (!ok) {
+    const msg = `Actualización v${update.version} pospuesta`;
+    log?.(msg, "");
+    return msg;
+  }
+
+  log?.(`Descargando v${update.version}…`, "");
+  let downloaded = 0;
+  let contentLength = 0;
+  try {
+    await update.downloadAndInstall((event) => {
+      switch (event.event) {
+        case "Started":
+          contentLength = event.data.contentLength ?? 0;
+          break;
+        case "Progress":
+          downloaded += event.data.chunkLength;
+          if (contentLength > 0 && downloaded % (512 * 1024) < event.data.chunkLength) {
+            const pct = Math.min(100, Math.round((downloaded / contentLength) * 100));
+            log?.(`Descarga ${pct}%`, "");
+          }
+          break;
+        case "Finished":
+          log?.("Descarga terminada; instalando…", "");
+          break;
+      }
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log?.(`Error al instalar actualización: ${msg}`, "err");
+    if (notifyResult) {
+      await notify("Error al actualizar", msg);
+    }
+    throw new Error(msg);
+  }
+
+  log?.("Reiniciando…", "ok");
+  await relaunch();
+  return `Actualizado a v${update.version}`;
+}

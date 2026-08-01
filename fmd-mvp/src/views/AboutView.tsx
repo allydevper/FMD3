@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Icon } from "../components/Icon";
 import { ICO } from "../icons";
-import * as api from "../api/tauri";
 import { useApp } from "../context/AppContext";
+import { runAppUpdateCheck } from "../utils/appUpdate";
 
-const GITHUB_URL = "https://github.com/dazedcat19/FMD2";
+const GITHUB_URL = "https://github.com/allydevper/FMD3";
+const FMD2_URL = "https://github.com/dazedcat19/FMD2";
 const GPL_URL = "https://www.gnu.org/licenses/gpl-2.0.html";
 
 const CHANGELOG = `FMD Host
@@ -21,6 +23,7 @@ Changelog:
 [+] Catálogo + filtro avanzado (UI) + GetInfo
 [+] Opciones alineadas a FMD2 (guardar en, renombrado, sitios, módulos)
 [+] Bypass Cloudflare básico / websitebypass de FMD2
+[+] Self-updater (GitHub Releases allydevper/FMD3)
 [*] Mismos módulos Lua que FMD2 (recursos empaquetados)
 
 — Historial completo de FMD2 —
@@ -39,6 +42,14 @@ function AboutLink({ url, children }: { url: string; children: string }) {
 export function AboutView() {
   const { modules, log, activeNav } = useApp();
   const [tab, setTab] = useState<AboutTab>("fmd");
+  const [version, setVersion] = useState("…");
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    void getVersion()
+      .then(setVersion)
+      .catch(() => setVersion("0.1.0"));
+  }, []);
 
   const modulesCount = modules.length;
   const modulesLabel = modulesCount === 1 ? "1 módulo" : `${modulesCount} módulos`;
@@ -56,7 +67,7 @@ export function AboutView() {
             <div className="about-meta-block">
               <div className="about-meta-row">
                 <span className="about-meta-k">Versión</span>
-                <span className="mono">0.1.0</span>
+                <span className="mono">{version}</span>
               </div>
               <div className="about-meta-row">
                 <span className="about-meta-k">Revisión</span>
@@ -67,23 +78,27 @@ export function AboutView() {
             <button
               type="button"
               className="about-btn-p"
+              disabled={checking}
               onClick={() => {
+                if (checking) return;
+                setChecking(true);
                 void (async () => {
                   try {
-                    const msg = await api.checkAppUpdate();
-                    log(msg || "Sin actualizaciones disponibles", "ok");
-                  } catch (e) {
-                    log(String(e), "err");
+                    await runAppUpdateCheck(log, { notifyResult: true });
+                  } catch {
+                    // already logged
+                  } finally {
+                    setChecking(false);
                   }
                 })();
               }}
             >
               <Icon ico={ICO.refresh} className="ico ico-sm" />
-              Revisar última versión
+              {checking ? "Comprobando…" : "Revisar última versión"}
             </button>
             <button type="button" className="about-btn-ghost" onClick={() => void openUrl(GITHUB_URL)}>
               <Icon ico={ICO.globe} className="ico ico-sm" />
-              Proyecto FMD2
+              Proyecto FMD3
             </button>
           </div>
         </header>
@@ -124,6 +139,10 @@ export function AboutView() {
                 <div className="about-kv">
                   <span className="about-kv-k">Página</span>
                   <AboutLink url={GITHUB_URL}>{GITHUB_URL}</AboutLink>
+                </div>
+                <div className="about-kv">
+                  <span className="about-kv-k">Lua (FMD2)</span>
+                  <AboutLink url={FMD2_URL}>{FMD2_URL}</AboutLink>
                 </div>
                 <div className="about-kv">
                   <span className="about-kv-k">Licencia</span>

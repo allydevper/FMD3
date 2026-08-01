@@ -17,6 +17,7 @@ import type {
   NavId,
 } from "../types";
 import * as api from "../api/tauri";
+import { runAppUpdateCheck } from "../utils/appUpdate";
 
 export type LogKind = "ok" | "err" | "";
 export type AppTheme = "system" | "light" | "dark";
@@ -513,10 +514,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const checkUpdate = parseBool(await api.settingsGet(SK.CHECK_UPDATE_START), true);
         if (!cancelled && checkUpdate) {
           try {
-            const msg = await api.checkAppUpdate();
-            log(msg || "Sin actualizaciones disponibles", "ok");
-          } catch (e) {
-            log(`Comprobar actualización: ${e}`, "err");
+            await runAppUpdateCheck(log);
+          } catch {
+            // runAppUpdateCheck already logged
           }
         }
       } catch (e) {

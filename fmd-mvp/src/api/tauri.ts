@@ -332,10 +332,6 @@ export function vacuumDb() {
   return invoke("db_vacuum");
 }
 
-export function checkAppUpdate() {
-  return invoke<string>("app_check_update");
-}
-
 export function updateModulesFromGithub() {
   return invoke<number>("modules_update_github");
 }
