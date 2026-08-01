@@ -222,6 +222,8 @@ export function InfoView() {
     () => {},
   );
   const removeFromCatalogRef = useRef<(entries: CatalogEntry[]) => void>(() => {});
+  /** Último rango visible de la lista virtual, para repoblarlo tras recargar. */
+  const catalogRangeRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
 
   function bumpCatalogReset() {
     setCatalogResetSeq((s) => s + 1);
@@ -988,6 +990,9 @@ export function InfoView() {
     if (!force && key === catalogLoadedKeyRef.current && loadedPagesRef.current.size > 0) {
       return;
     }
+    // Mismo conjunto de resultados (refresco tras ocultar/restaurar, no una
+    // búsqueda nueva): conservar la posición del scroll.
+    const sameResultSet = key === catalogLoadedKeyRef.current;
 
     const gen = ++catalogLoadGenRef.current;
     resetFillQueues();
@@ -1019,8 +1024,15 @@ export function InfoView() {
       setCatalogRows(rows);
       catalogLoadedKeyRef.current = key;
       setCatalogFetched(true);
-      if (silent) bumpCatalogReset();
+      if (silent && !sameResultSet) bumpCatalogReset();
       if (!silent && actualTotal > 0) log(`Catálogo: ${actualTotal} títulos`, "ok");
+      // El refresco tira las páginas ya cargadas: pedir primero las de la zona
+      // visible, o se ven filas vacías hasta que el relleno secuencial llega.
+      // Con filtro avanzado local los índices visibles no son los de las filas.
+      if (sameResultSet && !advFilterAppliedRef.current) {
+        const r = catalogRangeRef.current;
+        requestRange(r.start, Math.min(r.end, actualTotal));
+      }
       void startFill(gen);
     } catch (e) {
       if (gen !== catalogLoadGenRef.current) return;
@@ -1075,6 +1087,7 @@ export function InfoView() {
     if (!force && key === catalogLoadedKeyRef.current && loadedPagesRef.current.size > 0) {
       return;
     }
+    const sameResultSet = key === catalogLoadedKeyRef.current;
 
     const gen = ++catalogLoadGenRef.current;
     resetFillQueues();
@@ -1106,7 +1119,11 @@ export function InfoView() {
       setCatalogRows(rows);
       catalogLoadedKeyRef.current = key;
       setCatalogFetched(true);
-      bumpCatalogReset();
+      if (!sameResultSet) bumpCatalogReset();
+      if (sameResultSet) {
+        const r = catalogRangeRef.current;
+        requestRange(r.start, Math.min(r.end, actualTotal));
+      }
       void startFill(gen);
     } catch (e) {
       if (gen !== catalogLoadGenRef.current) return;
@@ -2142,7 +2159,7 @@ export function InfoView() {
   async function removeFromCatalog(entries: CatalogEntry[]) {
     setCatalogCtxMenu(null);
     const prepared = entries
-      .map((e) => {
+      .map((e): CatalogEntry | null => {
         const { moduleId, mod } = catalogEntryModule(e);
         if (!moduleId) return null;
         return {
@@ -2860,6 +2877,7 @@ export function InfoView() {
         overscan={CAT_OVERSCAN}
         resetKey={catalogResetSeq}
         onRange={(s, e) => {
+          catalogRangeRef.current = { start: s, end: e };
           if (!advFilterApplied || appliedAdvFilter.allSites) requestRange(s, e);
         }}
         getKey={(e, i) =>

@@ -9,6 +9,7 @@ import type {
   Favorite,
   FavoriteAddRequest,
   FavoriteCheckResult,
+  HiddenEntry,
   MangaCacheRow,
   MangaInfoResult,
   ModuleMeta,
@@ -126,6 +127,25 @@ export function catalogHide(entries: CatalogEntry[]) {
 /** Restore previously hidden catalog rows (Undo). */
 export function catalogUnhide(snapshots: CatalogEntry[]) {
   return invoke("catalog_unhide", { snapshots });
+}
+
+/** Papelera: títulos quitados de la lista (todos, o los de un módulo). */
+export function catalogHiddenList(moduleId?: string) {
+  return invoke<HiddenEntry[]>("catalog_hidden_list", { moduleId: moduleId ?? null });
+}
+
+export function catalogHiddenCount(moduleId?: string) {
+  return invoke<number>("catalog_hidden_count", { moduleId: moduleId ?? null });
+}
+
+/** Restaura títulos concretos de la papelera. Devuelve cuántos. */
+export function catalogUnhideLinks(moduleId: string, links: string[]) {
+  return invoke<number>("catalog_unhide_links", { moduleId, links });
+}
+
+/** Vacía la papelera (de un módulo o entera) restaurando todo. Devuelve cuántos. */
+export function catalogUnhideAll(moduleId?: string) {
+  return invoke<number>("catalog_unhide_all", { moduleId: moduleId ?? null });
 }
 
 export function catalogUpdate(moduleId: string) {

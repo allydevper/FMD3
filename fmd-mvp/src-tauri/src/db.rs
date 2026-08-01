@@ -290,12 +290,14 @@ pub fn open_db() -> Result<Db, String> {
             module_id TEXT NOT NULL,
             link TEXT NOT NULL,
             hidden_at TEXT NOT NULL,
+            snapshot TEXT,
             PRIMARY KEY (module_id, link)
         );
         "#,
     )
     .map_err(|e| e.to_string())?;
     // Migrations for older DBs
+    let _ = conn.execute("ALTER TABLE catalog_hidden ADD COLUMN snapshot TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE queue_items ADD COLUMN module_id TEXT NOT NULL DEFAULT ''",
         [],

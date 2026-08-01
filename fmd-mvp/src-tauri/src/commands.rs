@@ -1,4 +1,7 @@
-use crate::catalog::{self, CatalogAdvFilter, CatalogEntry, CatalogStats, MangaCacheRow, MangaCacheUpsert};
+use crate::catalog::{
+    self, CatalogAdvFilter, CatalogEntry, CatalogStats, HiddenEntry, MangaCacheRow,
+    MangaCacheUpsert,
+};
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
     get_info, modules_list, modules_match_url, modules_refresh, update_list, ChapterInfo,
@@ -135,6 +138,29 @@ pub fn catalog_hide(entries: Vec<CatalogEntry>) -> Result<Vec<CatalogEntry>, Str
 #[tauri::command]
 pub fn catalog_unhide(snapshots: Vec<CatalogEntry>) -> Result<(), String> {
     catalog::unhide_entries(&snapshots)
+}
+
+/// Papelera: títulos quitados de la lista (todos, o los de un módulo).
+#[tauri::command]
+pub fn catalog_hidden_list(module_id: Option<String>) -> Result<Vec<HiddenEntry>, String> {
+    catalog::hidden_list(module_id.as_deref())
+}
+
+#[tauri::command]
+pub fn catalog_hidden_count(module_id: Option<String>) -> Result<i64, String> {
+    catalog::hidden_count(module_id.as_deref())
+}
+
+/// Restaura títulos concretos de la papelera. Devuelve cuántos.
+#[tauri::command]
+pub fn catalog_unhide_links(module_id: String, links: Vec<String>) -> Result<usize, String> {
+    catalog::unhide_links(&module_id, &links)
+}
+
+/// Vacía la papelera (de un módulo o entera) restaurando todo. Devuelve cuántos.
+#[tauri::command]
+pub fn catalog_unhide_all(module_id: Option<String>) -> Result<usize, String> {
+    catalog::unhide_all(module_id.as_deref())
 }
 
 #[tauri::command]

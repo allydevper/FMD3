@@ -14,13 +14,21 @@ import { ICO } from "../icons";
 import { DEFAULT_USER_AGENT, PACK_EXT, SK } from "../constants";
 import * as api from "../api/tauri";
 import { useApp, type AppTheme } from "../context/AppContext";
-import type { ModuleMeta } from "../types";
+import type { HiddenEntry, ModuleMeta } from "../types";
 
 /* ---------------------------------------------------------------------- */
 /* Tipos y constantes                                                      */
 /* ---------------------------------------------------------------------- */
 
-type OptTabId = "general" | "view" | "connections" | "saveto" | "updates" | "dialogs" | "websites";
+type OptTabId =
+  | "general"
+  | "view"
+  | "connections"
+  | "saveto"
+  | "updates"
+  | "dialogs"
+  | "hidden"
+  | "websites";
 type SitesTabId = "list" | "mods";
 
 const OPTIONS_CATS: { id: OptTabId; label: string; icon: string }[] = [
@@ -30,6 +38,7 @@ const OPTIONS_CATS: { id: OptTabId; label: string; icon: string }[] = [
   { id: "saveto", label: "Guardar en", icon: ICO.folder },
   { id: "updates", label: "Actualizaciones", icon: ICO.refresh },
   { id: "dialogs", label: "Diálogos", icon: ICO.message },
+  { id: "hidden", label: "Papelera", icon: ICO.trash },
   { id: "websites", label: "Sitios Web", icon: ICO.globe },
 ];
 
@@ -702,8 +711,18 @@ function TokenInsert({ tokens, onInsert }: { tokens: string[]; onInsert: (token:
 /* ---------------------------------------------------------------------- */
 
 export function OptionsView() {
-  const { activeNav, log, outputDir, setOutputDir, modules, refreshModules, setTheme, refreshEnabledModules, setFavAutoCheck } =
-    useApp();
+  const {
+    activeNav,
+    log,
+    outputDir,
+    setOutputDir,
+    modules,
+    refreshModules,
+    setTheme,
+    refreshEnabledModules,
+    setFavAutoCheck,
+    notifyCatalogChanged,
+  } = useApp();
 
   const [optTab, setOptTab] = useState<OptTabId>("general");
   const [dirty, setDirty] = useState(false);
@@ -1220,6 +1239,97 @@ export function OptionsView() {
     },
     [s, update],
   );
+
+  /* ---- Panel Papelera (títulos quitados de la lista) ---- */
+
+  const [hiddenRows, setHiddenRows] = useState<HiddenEntry[]>([]);
+  const [hiddenLoading, setHiddenLoading] = useState(false);
+  const [hiddenQuery, setHiddenQuery] = useState("");
+  const [hiddenBusy, setHiddenBusy] = useState(false);
+
+  const loadHidden = useCallback(async () => {
+    setHiddenLoading(true);
+    try {
+      setHiddenRows(await api.catalogHiddenList());
+    } catch (e) {
+      log(String(e), "err");
+    } finally {
+      setHiddenLoading(false);
+    }
+  }, [log]);
+
+  useEffect(() => {
+    if (activeNav !== "options" || optTab !== "hidden") return;
+    void loadHidden();
+  }, [activeNav, optTab, loadHidden]);
+
+  const hiddenFiltered = useMemo(() => {
+    const q = hiddenQuery.trim().toLowerCase();
+    if (!q) return hiddenRows;
+    return hiddenRows.filter(
+      (r) =>
+        r.title.toLowerCase().includes(q) ||
+        r.link.toLowerCase().includes(q) ||
+        r.module_name.toLowerCase().includes(q),
+    );
+  }, [hiddenRows, hiddenQuery]);
+
+  const moduleNameOf = useCallback(
+    (row: HiddenEntry) =>
+      row.module_name || modules.find((m) => m.id === row.module_id)?.name || row.module_id,
+    [modules],
+  );
+
+  /** Restaura filas concretas y refresca el catálogo de Info. */
+  const restoreHidden = useCallback(
+    async (rows: HiddenEntry[]) => {
+      if (!rows.length || hiddenBusy) return;
+      setHiddenBusy(true);
+      try {
+        const byModule = new Map<string, string[]>();
+        for (const r of rows) {
+          const list = byModule.get(r.module_id) ?? [];
+          list.push(r.link);
+          byModule.set(r.module_id, list);
+        }
+        let n = 0;
+        for (const [moduleId, links] of byModule) {
+          n += await api.catalogUnhideLinks(moduleId, links);
+        }
+        const stale = rows.filter((r) => !r.has_snapshot).length;
+        await loadHidden();
+        notifyCatalogChanged([...byModule.keys()]);
+        log(
+          n === 1 ? "1 título restaurado." : `${n} títulos restaurados.`,
+          "ok",
+        );
+        if (stale) {
+          log(
+            stale === 1
+              ? "1 título se ocultó antes de la papelera: volverá al actualizar la lista."
+              : `${stale} títulos se ocultaron antes de la papelera: volverán al actualizar la lista.`,
+          );
+        }
+      } catch (e) {
+        log(String(e), "err");
+      } finally {
+        setHiddenBusy(false);
+      }
+    },
+    [hiddenBusy, loadHidden, log, notifyCatalogChanged],
+  );
+
+  const restoreAllHidden = useCallback(async () => {
+    if (!hiddenRows.length || hiddenBusy) return;
+    const ok = await appConfirm({
+      title: "Vaciar papelera",
+      message: `Se restaurarán ${hiddenRows.length} títulos a sus catálogos.\n\n¿Continuar?`,
+      okLabel: "Restaurar todo",
+      cancelLabel: "Cancelar",
+    });
+    if (!ok) return;
+    await restoreHidden(hiddenRows);
+  }, [hiddenRows, hiddenBusy, restoreHidden]);
 
   /* ---- Panel Sitios Web ---- */
 
@@ -2333,6 +2443,114 @@ export function OptionsView() {
                         checked={s.confirmEmptyList}
                         onChange={(v) => update("confirmEmptyList", v)}
                       />
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </div>
+
+            {/* ---- Papelera ---- */}
+            <div className={`options-panel${optTab === "hidden" ? " active" : ""}`} role="tabpanel" hidden={optTab !== "hidden"}>
+              <div className="opt-scroll">
+                <div className="st-wrap">
+                  <section className="st-section">
+                    <div className="st-section-head">
+                      <Icon ico={ICO.trash} className="ico ico-sm" />
+                      <h2>Quitados de la lista</h2>
+                    </div>
+                    <div className="st-card">
+                      <div className="trash-toolbar">
+                        <div className="sites-search-wrap">
+                          <Icon ico={ICO.search} className="ico ico-sm sites-search-ico" />
+                          <input
+                            id="trash-q"
+                            className="st-field"
+                            type="text"
+                            placeholder="Buscar título..."
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={hiddenQuery}
+                            onChange={(e) => setHiddenQuery(e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            className="sites-clear"
+                            hidden={!hiddenQuery.trim()}
+                            title="Limpiar"
+                            onClick={() => setHiddenQuery("")}
+                          >
+                            <Icon ico={ICO.x} className="ico ico-sm" />
+                          </button>
+                        </div>
+                        <div className="sites-toolbar-spacer" />
+                        <div className="sites-toolbar-actions">
+                          <button
+                            type="button"
+                            className="sites-tbtn"
+                            disabled={hiddenLoading || hiddenBusy}
+                            onClick={() => void loadHidden()}
+                          >
+                            <Icon ico={ICO.refresh} className="ico ico-sm" />
+                            Recargar
+                          </button>
+                          <button
+                            type="button"
+                            className="sites-tbtn"
+                            disabled={!hiddenRows.length || hiddenBusy}
+                            onClick={() => void restoreAllHidden()}
+                          >
+                            <Icon ico={ICO.retry} className="ico ico-sm" />
+                            Restaurar todo ({hiddenRows.length})
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="trash-list">
+                        {hiddenLoading ? (
+                          <div className="sites-tree-empty">
+                            <div className="sites-empty-title">Cargando…</div>
+                          </div>
+                        ) : !hiddenRows.length ? (
+                          <div className="sites-tree-empty">
+                            <div className="sites-empty-title">Papelera vacía</div>
+                            <div className="sites-empty-desc">
+                              Los títulos que quites de la lista (Supr en el catálogo) aparecerán
+                              aquí y podrás devolverlos cuando quieras.
+                            </div>
+                          </div>
+                        ) : !hiddenFiltered.length ? (
+                          <div className="sites-tree-empty">
+                            <div className="sites-empty-title">Sin coincidencias</div>
+                            <div className="sites-empty-desc">
+                              Ningún título coincide con "{hiddenQuery}".
+                            </div>
+                          </div>
+                        ) : (
+                          hiddenFiltered.map((row) => (
+                            <div className="trash-row" key={`${row.module_id}||${row.link}`}>
+                              <div className="trash-main">
+                                <span className="trash-title" title={row.link}>
+                                  {row.title || row.link}
+                                </span>
+                                <span className="trash-meta">
+                                  {moduleNameOf(row)}
+                                  {row.hidden_at ? ` · ${row.hidden_at.slice(0, 16).replace("T", " ")}` : ""}
+                                  {row.has_snapshot ? "" : " · sin metadatos"}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                className="sites-tbtn"
+                                disabled={hiddenBusy}
+                                onClick={() => void restoreHidden([row])}
+                              >
+                                <Icon ico={ICO.retry} className="ico ico-sm" />
+                                Restaurar
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
                   </section>
                 </div>

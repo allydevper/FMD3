@@ -135,6 +135,18 @@ export type CatalogEntry = {
   module_name?: string;
 };
 
+/** Fila de la papelera del catálogo (títulos quitados de la lista). */
+export type HiddenEntry = {
+  module_id: string;
+  module_name: string;
+  link: string;
+  title: string;
+  cover: string;
+  hidden_at: string;
+  /** `false` para filas ocultadas antes de la papelera: se restauran sin metadatos. */
+  has_snapshot: boolean;
+};
+
 export type MangaCacheRow = {
   link: string;
   title?: string;

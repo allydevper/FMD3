@@ -48,6 +48,31 @@ pub struct MangaCacheRow {
     pub updated_at: String,
 }
 
+/// Lo que se guarda en `catalog_hidden.snapshot`: fila de `masterlist` más la de
+/// `manga_cache` (portada incluida), para restaurar sin volver a bajar nada.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiddenSnapshot {
+    pub entry: CatalogEntry,
+    #[serde(default)]
+    pub cache: Option<MangaCacheRow>,
+}
+
+/// Fila de la papelera tal como la lista Opciones.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiddenEntry {
+    pub module_id: String,
+    #[serde(default)]
+    pub module_name: String,
+    pub link: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub cover: String,
+    pub hidden_at: String,
+    /// `false` para filas ocultas antes de la papelera: se restauran sin metadatos.
+    pub has_snapshot: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MangaCacheUpsert {
     #[serde(default)]
@@ -217,6 +242,7 @@ fn open_app_db() -> Result<Connection, String> {
             module_id TEXT NOT NULL,
             link TEXT NOT NULL,
             hidden_at TEXT NOT NULL,
+            snapshot TEXT,
             PRIMARY KEY (module_id, link)
         );
         "#,
@@ -224,6 +250,8 @@ fn open_app_db() -> Result<Connection, String> {
     .map_err(|e| e.to_string())?;
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN alt_titles TEXT", []);
+    // Papelera: filas ocultas antes de esta versión no tienen snapshot.
+    let _ = conn.execute("ALTER TABLE catalog_hidden ADD COLUMN snapshot TEXT", []);
     Ok(conn)
 }
 
@@ -1245,7 +1273,7 @@ pub fn hide_entries(entries: &[CatalogEntry]) -> Result<Vec<CatalogEntry>, Strin
             if link.is_empty() {
                 continue;
             }
-            let snap = cat
+            let mut snap = cat
                 .query_row(
                     r#"SELECT link,
                               COALESCE(title,''), COALESCE(alttitles,''),
@@ -1292,11 +1320,26 @@ pub fn hide_entries(entries: &[CatalogEntry]) -> Result<Vec<CatalogEntry>, Strin
                     module_name: e.module_name.clone(),
                 });
 
+            // La portada y demás metadatos viven en manga_cache: van al snapshot
+            // antes de borrarlos, para que restaurar no obligue a rebajar la info.
+            let cache = manga_cache_row_on(&app, &module_id, &link)?;
+            if let Some(c) = &cache {
+                if snap.cover.trim().is_empty() {
+                    snap.cover = c.cover.clone();
+                }
+            }
+            let payload = HiddenSnapshot {
+                entry: snap.clone(),
+                cache,
+            };
+            let json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
             app.execute(
-                r#"INSERT INTO catalog_hidden(module_id, link, hidden_at)
-                   VALUES(?1, ?2, ?3)
-                   ON CONFLICT(module_id, link) DO UPDATE SET hidden_at=excluded.hidden_at"#,
-                params![module_id, link, now],
+                r#"INSERT INTO catalog_hidden(module_id, link, hidden_at, snapshot)
+                   VALUES(?1, ?2, ?3, ?4)
+                   ON CONFLICT(module_id, link) DO UPDATE SET
+                     hidden_at=excluded.hidden_at,
+                     snapshot=excluded.snapshot"#,
+                params![module_id, link, now, json],
             )
             .map_err(|e| e.to_string())?;
             let _ = cat.execute("DELETE FROM masterlist WHERE link = ?1", params![link]);
@@ -1310,50 +1353,227 @@ pub fn hide_entries(entries: &[CatalogEntry]) -> Result<Vec<CatalogEntry>, Strin
     Ok(snapshots)
 }
 
+/// Snapshot guardado en `catalog_hidden` para (module_id, link), si lo hay.
+fn stored_snapshot(
+    app: &Connection,
+    module_id: &str,
+    link: &str,
+) -> Result<Option<HiddenSnapshot>, String> {
+    let json: Option<String> = app
+        .query_row(
+            "SELECT snapshot FROM catalog_hidden WHERE module_id = ?1 AND link = ?2",
+            params![module_id, link],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let Some(json) = json.filter(|s| !s.trim().is_empty()) else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str(&json).ok())
+}
+
+/// Devuelve una fila a `masterlist` (+ `manga_cache` si el snapshot la trae) y la
+/// saca de `catalog_hidden`. `fallback` se usa cuando no hay snapshot guardado.
+fn restore_hidden(app: &Connection, module_id: &str, fallback: &CatalogEntry) -> Result<bool, String> {
+    let module_id = module_id.trim();
+    if module_id.is_empty() {
+        return Ok(false);
+    }
+    let link = normalize_manga_link(&fallback.link);
+    if link.is_empty() {
+        return Ok(false);
+    }
+    let stored = stored_snapshot(app, module_id, &link)?;
+    let entry = stored.as_ref().map(|s| &s.entry).unwrap_or(fallback);
+
+    app.execute(
+        "DELETE FROM catalog_hidden WHERE module_id = ?1 AND link = ?2",
+        params![module_id, link],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Sin snapshot ni título (ocultada antes de la papelera): quitar el veto basta;
+    // meter una fila con el link como título ensuciaría el catálogo. Update List la repone.
+    if entry.title.trim().is_empty() {
+        return Ok(true);
+    }
+
+    let cat = open_catalog(module_id)?;
+    let jdn = if entry.jdn > 0 { entry.jdn } else { today_jdn() };
+    let title = entry.title.as_str();
+    cat.execute(
+        r#"INSERT OR IGNORE INTO masterlist(
+             link, title, alttitles, authors, artists, genres, status, summary, numchapter, jdn
+           ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
+        params![
+            link,
+            title,
+            entry.alttitles,
+            entry.authors,
+            entry.artists,
+            entry.genres,
+            entry.status,
+            entry.summary,
+            entry.numchapter,
+            jdn
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Portada y metadatos de manga_cache, si el snapshot los guardó.
+    if let Some(c) = stored.as_ref().and_then(|s| s.cache.as_ref()) {
+        let _ = app.execute(
+            r#"INSERT OR IGNORE INTO manga_cache(
+                 module_id, link, title, alt_titles, authors, artists, genres,
+                 status, summary, numchapter, cover, updated_at
+               ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
+            params![
+                module_id,
+                link,
+                c.title,
+                c.alt_titles,
+                c.authors,
+                c.artists,
+                c.genres,
+                c.status,
+                c.summary,
+                c.numchapter,
+                c.cover,
+                if c.updated_at.trim().is_empty() {
+                    chrono_now()
+                } else {
+                    c.updated_at.clone()
+                }
+            ],
+        );
+    }
+    Ok(true)
+}
+
 /// Restore previously hidden catalog rows (Undo).
 pub fn unhide_entries(snapshots: &[CatalogEntry]) -> Result<(), String> {
     let app = open_app_db()?;
-    let jdn_today = today_jdn();
     for snap in snapshots {
-        let module_id = snap.module_id.trim();
-        if module_id.is_empty() {
-            continue;
-        }
-        let link = normalize_manga_link(&snap.link);
-        if link.is_empty() {
-            continue;
-        }
-        let _ = app.execute(
-            "DELETE FROM catalog_hidden WHERE module_id = ?1 AND link = ?2",
-            params![module_id, link],
-        );
-        let cat = open_catalog(module_id)?;
-        let jdn = if snap.jdn > 0 { snap.jdn } else { jdn_today };
-        let title = if snap.title.trim().is_empty() {
-            link.as_str()
-        } else {
-            snap.title.as_str()
-        };
-        cat.execute(
-            r#"INSERT OR IGNORE INTO masterlist(
-                 link, title, alttitles, authors, artists, genres, status, summary, numchapter, jdn
-               ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
-            params![
-                link,
-                title,
-                snap.alttitles,
-                snap.authors,
-                snap.artists,
-                snap.genres,
-                snap.status,
-                snap.summary,
-                snap.numchapter,
-                jdn
-            ],
-        )
-        .map_err(|e| e.to_string())?;
+        let module_id = snap.module_id.clone();
+        restore_hidden(&app, &module_id, snap)?;
     }
     Ok(())
+}
+
+/// Papelera: filas ocultas, opcionalmente de un solo módulo. Más recientes primero.
+pub fn hidden_list(module_id: Option<&str>) -> Result<Vec<HiddenEntry>, String> {
+    let app = open_app_db()?;
+    let filter = module_id.map(str::trim).filter(|m| !m.is_empty());
+    let sql = if filter.is_some() {
+        "SELECT module_id, link, hidden_at, snapshot FROM catalog_hidden
+         WHERE module_id = ?1 ORDER BY hidden_at DESC, link"
+    } else {
+        "SELECT module_id, link, hidden_at, snapshot FROM catalog_hidden
+         ORDER BY hidden_at DESC, link"
+    };
+    let mut stmt = app.prepare(sql).map_err(|e| e.to_string())?;
+    let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(String, String, String, Option<String>)> {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    };
+    let rows: Vec<_> = match filter {
+        Some(m) => stmt
+            .query_map(params![m], map_row)
+            .map_err(|e| e.to_string())?
+            .collect(),
+        None => stmt
+            .query_map([], map_row)
+            .map_err(|e| e.to_string())?
+            .collect(),
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        let (mid, link, hidden_at, json) = row.map_err(|e| e.to_string())?;
+        let snap: Option<HiddenSnapshot> = json
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| serde_json::from_str(&s).ok());
+        let (title, cover, module_name) = match &snap {
+            Some(s) => (
+                s.entry.title.clone(),
+                if s.entry.cover.trim().is_empty() {
+                    s.cache.as_ref().map(|c| c.cover.clone()).unwrap_or_default()
+                } else {
+                    s.entry.cover.clone()
+                },
+                s.entry.module_name.clone(),
+            ),
+            None => (String::new(), String::new(), String::new()),
+        };
+        out.push(HiddenEntry {
+            module_id: mid,
+            module_name,
+            link,
+            title,
+            cover,
+            hidden_at,
+            has_snapshot: snap.is_some(),
+        });
+    }
+    Ok(out)
+}
+
+pub fn hidden_count(module_id: Option<&str>) -> Result<i64, String> {
+    let app = open_app_db()?;
+    let n = match module_id.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => app.query_row(
+            "SELECT COUNT(*) FROM catalog_hidden WHERE module_id = ?1",
+            params![m],
+            |r| r.get(0),
+        ),
+        None => app.query_row("SELECT COUNT(*) FROM catalog_hidden", [], |r| r.get(0)),
+    };
+    n.map_err(|e| e.to_string())
+}
+
+/// Restaura por (module_id, link) leyendo el snapshot guardado. Devuelve cuántas.
+pub fn unhide_links(module_id: &str, links: &[String]) -> Result<usize, String> {
+    let app = open_app_db()?;
+    let mut n = 0usize;
+    for link in links {
+        let fallback = CatalogEntry {
+            link: link.clone(),
+            title: String::new(),
+            alttitles: String::new(),
+            authors: String::new(),
+            artists: String::new(),
+            genres: String::new(),
+            status: String::new(),
+            summary: String::new(),
+            numchapter: 0,
+            jdn: 0,
+            cover: String::new(),
+            info_failed: false,
+            module_id: module_id.to_string(),
+            module_name: String::new(),
+        };
+        if restore_hidden(&app, module_id, &fallback)? {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// Vacía la papelera (de un módulo o entera) restaurando todo lo que tenga snapshot.
+/// Las filas sin snapshot (ocultadas antes de esta versión) solo pierden el veto:
+/// reaparecen en el siguiente Update List.
+pub fn unhide_all(module_id: Option<&str>) -> Result<usize, String> {
+    let entries = hidden_list(module_id)?;
+    let mut by_module: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for e in entries {
+        by_module.entry(e.module_id).or_default().push(e.link);
+    }
+    let mut n = 0usize;
+    for (mid, links) in by_module {
+        n += unhide_links(&mid, &links)?;
+    }
+    Ok(n)
 }
 
 /// All normalized links currently in masterlist (for Update List staging).
@@ -1430,6 +1650,15 @@ pub fn manga_cache_get(module_id: &str, link: &str) -> Result<Option<MangaCacheR
         return Ok(None);
     }
     let conn = open_app_db()?;
+    manga_cache_row_on(&conn, module_id, link)
+}
+
+/// `manga_cache_get` sobre una conexión ya abierta (bulk: evita reabrir por fila).
+fn manga_cache_row_on(
+    conn: &Connection,
+    module_id: &str,
+    link: &str,
+) -> Result<Option<MangaCacheRow>, String> {
     let link = normalize_manga_link(link);
     let row = conn
         .query_row(
@@ -2059,5 +2288,86 @@ mod tests {
                 params![mid],
             );
         }
+    }
+
+    /// Papelera: el snapshot guardado permite restaurar título y portada sin red.
+    #[test]
+    fn trash_lists_and_restores_with_cover() {
+        let mid = "__test_catalog_trash__";
+        let link = "/series/trashed/";
+        let path = catalog_db_path(mid);
+        let cleanup = || {
+            if let Ok(conn) = open_app_db() {
+                let _ = conn.execute(
+                    "DELETE FROM catalog_hidden WHERE module_id = ?1",
+                    params![mid],
+                );
+                let _ = conn.execute(
+                    "DELETE FROM manga_cache WHERE module_id = ?1",
+                    params![mid],
+                );
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        cleanup();
+
+        upsert_links(mid, &[(link.into(), "Trashed Title".into())]).expect("insert");
+        manga_cache_upsert(
+            mid,
+            link,
+            &MangaCacheUpsert {
+                title: "Trashed Title".into(),
+                alt_titles: String::new(),
+                authors: "Autora".into(),
+                artists: String::new(),
+                genres: String::new(),
+                status: String::new(),
+                summary: String::new(),
+                numchapter: 7,
+                cover: "https://example.test/cover.jpg".into(),
+            },
+        )
+        .expect("cache");
+
+        hide_entries(&[CatalogEntry {
+            link: link.into(),
+            title: "Trashed Title".into(),
+            alttitles: String::new(),
+            authors: String::new(),
+            artists: String::new(),
+            genres: String::new(),
+            status: String::new(),
+            summary: String::new(),
+            numchapter: 0,
+            jdn: 0,
+            cover: String::new(),
+            info_failed: false,
+            module_id: mid.into(),
+            module_name: "Test".into(),
+        }])
+        .expect("hide");
+
+        let rows = hidden_list(Some(mid)).expect("list");
+        assert_eq!(rows.len(), 1, "la papelera lista el título oculto");
+        assert_eq!(rows[0].title, "Trashed Title");
+        assert!(rows[0].has_snapshot);
+        assert_eq!(rows[0].cover, "https://example.test/cover.jpg");
+        assert_eq!(hidden_count(Some(mid)).expect("count"), 1);
+        assert!(manga_cache_get(mid, link).expect("cache gone").is_none());
+
+        let n = unhide_links(mid, &[link.to_string()]).expect("unhide");
+        assert_eq!(n, 1);
+        assert!(!is_hidden(mid, link).expect("not hidden"));
+        assert!(hidden_list(Some(mid)).expect("empty").is_empty());
+        let hits = search(mid, "", 10, 0).expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Trashed Title");
+        // La portada vuelve del snapshot: restaurar no obliga a rebajar la info.
+        let cache = manga_cache_get(mid, link).expect("cache").expect("row");
+        assert_eq!(cache.cover, "https://example.test/cover.jpg");
+        assert_eq!(cache.numchapter, 7);
+
+        let _ = std::fs::remove_file(path);
+        cleanup();
     }
 }

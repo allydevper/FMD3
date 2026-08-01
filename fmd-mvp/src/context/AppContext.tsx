@@ -81,6 +81,8 @@ type AppContextValue = {
   lastCatalogJobModuleIds: string[];
   startCatalogJob: (args: StartCatalogJobArgs) => Promise<void>;
   cancelCatalogJob: () => Promise<void>;
+  /** Avisa que el catálogo cambió fuera de un job (p. ej. restaurar de la papelera). */
+  notifyCatalogChanged: (moduleIds: string[]) => void;
   /** Drive the top progress bar for non-catalog jobs (e.g. favorites check). */
   setAppJob: (job: CatalogJobState | null) => void;
   /** True after Cancel on the progress bar until the current job clears it. */
@@ -540,6 +542,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [enabledModuleIds, log, modules],
   );
 
+  const notifyCatalogChanged = useCallback((moduleIds: string[]) => {
+    setLastCatalogJobModuleIds(moduleIds);
+    setCatalogJobDoneSeq((n) => n + 1);
+  }, []);
+
   // Startup: theme, favorites check-on-start, interval timer, app update.
   // Empty deps: must run once per mount. A sticky bootDoneRef breaks under
   // React Strict Mode (first effect sets the flag, cleanup cancels work, second
@@ -634,6 +641,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     lastCatalogJobModuleIds,
     startCatalogJob,
     cancelCatalogJob,
+    notifyCatalogChanged,
     setAppJob,
     isAppJobCancelRequested,
     clearAppJobCancel,

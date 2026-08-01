@@ -66,6 +66,7 @@ export function VirtualList<T>({
   onRangeRef.current = onRange;
   const lastRangeRef = useRef<{ start: number; end: number }>({ start: -1, end: -1 });
   const [scrollTop, setScrollTop] = useState(0);
+  const scrollTopRef = useRef(0);
   const [viewH, setViewH] = useState(DEFAULT_VIEW_HEIGHT);
 
   useLayoutEffect(() => {
@@ -74,7 +75,15 @@ export function VirtualList<T>({
     setViewH(el.clientHeight || DEFAULT_VIEW_HEIGHT);
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
-      setViewH(el.clientHeight || DEFAULT_VIEW_HEIGHT);
+      const h = el.clientHeight;
+      setViewH(h || DEFAULT_VIEW_HEIGHT);
+      // Una vista oculta (`display: none`) pierde su scrollTop en el DOM, pero
+      // aquí seguimos pintando desde la posición recordada: al volver a mostrarse
+      // habría filas colocadas fuera de la vista (pantalla en blanco hasta hacer
+      // scroll). Devolvemos el scroll real a donde estaba.
+      if (h > 0 && Math.abs(el.scrollTop - scrollTopRef.current) > 1) {
+        el.scrollTop = scrollTopRef.current;
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -83,6 +92,7 @@ export function VirtualList<T>({
   useEffect(() => {
     const el = containerRef.current;
     if (el) el.scrollTop = 0;
+    scrollTopRef.current = 0;
     setScrollTop(0);
     lastRangeRef.current = { start: -1, end: -1 };
     // Only ever needs to run when the caller signals a reset.
@@ -125,6 +135,7 @@ export function VirtualList<T>({
   function handleScroll(e: UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
     const top = el.scrollTop;
+    scrollTopRef.current = top;
     setScrollTop(top);
     let s = Math.floor(top / stride) - overscan;
     let en = Math.ceil((top + el.clientHeight) / stride) + overscan;
