@@ -195,7 +195,7 @@ pub fn chapter_folder_on() -> bool {
 }
 
 pub fn ascii_on() -> bool {
-    bool_setting(DOWNLOAD_ASCII_ON, false)
+    bool_setting(DOWNLOAD_ASCII_ON, true)
 }
 
 pub fn ascii_char() -> char {

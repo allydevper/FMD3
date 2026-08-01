@@ -209,7 +209,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   chapPadOn: true,
   volDigits: 2,
   chapDigits: 3,
-  asciiOn: false,
+  asciiOn: true,
   asciiChar: "_",
   favIntervalOn: false,
   favIntervalMin: 60,
@@ -870,7 +870,7 @@ export function OptionsView() {
       (await api.defaultSaveDir());
     const mangaFolderOn = parseB(await get(SK.MANGA_FOLDER_ON), true);
     const chapterFolderOn = parseB(await get(SK.CHAPTER_FOLDER_ON), true);
-    const asciiOn = parseB(await get(SK.ASCII_ON), false);
+    const asciiOn = parseB(await get(SK.ASCII_ON), true);
     const asciiChar = (await get(SK.ASCII_CHAR)) || "_";
     const volPadOn = parseB(await get(SK.VOL_PAD), true);
     const chapPadOn = parseB(await get(SK.CHAP_PAD), true);
