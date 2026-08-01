@@ -381,10 +381,10 @@ fn find_new_chapters(fav: &Favorite, chapters: &[ChapterInfo]) -> (Vec<ChapterIn
     if fav.last_chapter_link.is_empty() {
         return (vec![], true);
     }
-    if let Some(pos) = chapters
-        .iter()
-        .position(|c| c.link == fav.last_chapter_link)
-    {
+    let last_key = crate::lua_host::remove_host_from_url(&fav.last_chapter_link);
+    if let Some(pos) = chapters.iter().position(|c| {
+        crate::lua_host::remove_host_from_url(&c.link) == last_key
+    }) {
         (chapters[pos + 1..].to_vec(), true)
     } else {
         (vec![], false)

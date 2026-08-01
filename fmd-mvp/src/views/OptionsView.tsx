@@ -147,9 +147,7 @@ type OptionsFormState = {
   favIntervalOn: boolean;
   favIntervalMin: number;
   favCheckOnStart: boolean;
-  favOpenOnStart: boolean;
   favDownloadAfter: boolean;
-  favRemoveCompleted: boolean;
   loadCovers: boolean;
   liveSearch: boolean;
   gotoDl: boolean;
@@ -214,9 +212,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   favIntervalOn: false,
   favIntervalMin: 60,
   favCheckOnStart: true,
-  favOpenOnStart: false,
   favDownloadAfter: false,
-  favRemoveCompleted: false,
   loadCovers: true,
   liveSearch: true,
   gotoDl: true,
@@ -706,7 +702,7 @@ function TokenInsert({ tokens, onInsert }: { tokens: string[]; onInsert: (token:
 /* ---------------------------------------------------------------------- */
 
 export function OptionsView() {
-  const { activeNav, log, outputDir, setOutputDir, modules, refreshModules, setTheme, refreshEnabledModules } =
+  const { activeNav, log, outputDir, setOutputDir, modules, refreshModules, setTheme, refreshEnabledModules, setFavAutoCheck } =
     useApp();
 
   const [optTab, setOptTab] = useState<OptTabId>("general");
@@ -879,9 +875,7 @@ export function OptionsView() {
     const favIntervalOn = parseB(await get(SK.FAV_INTERVAL_ON), false);
     const favIntervalMin = Number((await get(SK.FAV_INTERVAL_MIN)) ?? "60") || 60;
     const favCheckOnStart = parseB(await get(SK.FAV_CHECK_ON_START), true);
-    const favOpenOnStart = parseB(await get(SK.FAV_OPEN_ON_START), false);
     const favDownloadAfter = parseB(await get(SK.FAV_DOWNLOAD_AFTER), false);
-    const favRemoveCompleted = parseB(await get(SK.FAV_REMOVE_COMPLETED), false);
     const loadCovers = parseB(await get(SK.UI_LOAD_COVERS), true);
     const liveSearch = parseB(await get(SK.UI_LIVE_SEARCH), true);
     const gotoDl = parseB(await get(SK.UI_GOTO_DL), true);
@@ -959,9 +953,7 @@ export function OptionsView() {
       favIntervalOn,
       favIntervalMin,
       favCheckOnStart,
-      favOpenOnStart,
       favDownloadAfter,
-      favRemoveCompleted,
       loadCovers,
       liveSearch,
       gotoDl,
@@ -1036,9 +1028,7 @@ export function OptionsView() {
     await api.settingsSet(SK.FAV_INTERVAL_ON, boolStr(s.favIntervalOn));
     await api.settingsSet(SK.FAV_INTERVAL_MIN, String(s.favIntervalMin));
     await api.settingsSet(SK.FAV_CHECK_ON_START, boolStr(s.favCheckOnStart));
-    await api.settingsSet(SK.FAV_OPEN_ON_START, boolStr(s.favOpenOnStart));
     await api.settingsSet(SK.FAV_DOWNLOAD_AFTER, boolStr(s.favDownloadAfter));
-    await api.settingsSet(SK.FAV_REMOVE_COMPLETED, boolStr(s.favRemoveCompleted));
     await api.settingsSet(SK.UI_LOAD_COVERS, boolStr(s.loadCovers));
     await api.settingsSet(SK.UI_LIVE_SEARCH, boolStr(s.liveSearch));
     await api.settingsSet(SK.UI_GOTO_DL, boolStr(s.gotoDl));
@@ -1076,6 +1066,7 @@ export function OptionsView() {
     }
     setTheme(s.theme);
     await refreshEnabledModules();
+    await setFavAutoCheck(s.favIntervalOn);
     setDirty(false);
     setSaveFlash("saved");
     if (saveFlashTimerRef.current != null) window.clearTimeout(saveFlashTimerRef.current);
@@ -1098,7 +1089,7 @@ export function OptionsView() {
       }, 2800);
       log(`No se pudieron guardar los ajustes: ${e}`, "err");
     }
-  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshEnabledModules, saveFlash]);
+  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshEnabledModules, setFavAutoCheck, saveFlash]);
 
   const handleBrowseOutputDir = useCallback(async () => {
     const dir = await open({ directory: true, multiple: false });
@@ -2275,12 +2266,6 @@ export function OptionsView() {
                         onChange={(v) => update("favCheckOnStart", v)}
                       />
                       <SwitchRow
-                        label="Abrir Favoritos al iniciar"
-                        desc="Muestra esa vista al abrir la app"
-                        checked={s.favOpenOnStart}
-                        onChange={(v) => update("favOpenOnStart", v)}
-                      />
-                      <SwitchRow
                         id="set-fav-interval"
                         label="Comprobar en intervalo"
                         desc="Revisa favoritos periódicamente"
@@ -2310,12 +2295,6 @@ export function OptionsView() {
                         desc="Encola capítulos nuevos automáticamente"
                         checked={s.favDownloadAfter}
                         onChange={(v) => update("favDownloadAfter", v)}
-                      />
-                      <SwitchRow
-                        label="Quitar mangas completados"
-                        desc="Los elimina de Favoritos al terminar"
-                        checked={s.favRemoveCompleted}
-                        onChange={(v) => update("favRemoveCompleted", v)}
                       />
                     </div>
                   </section>

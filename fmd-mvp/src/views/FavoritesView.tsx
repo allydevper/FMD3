@@ -23,15 +23,13 @@ function favoriteSnapshot(fav: Favorite): FavoriteAddRequest {
 }
 
 type FavFilter = "Todo" | "Habilitado" | "Deshabilitado";
-type SortKey = "new" | "title" | "cur" | "site" | "status" | "path" | "added" | "checked";
+type SortKey = "new" | "title" | "cur" | "status" | "added" | "checked";
 
 const SORT_COLS: { key: SortKey; label: string }[] = [
   { key: "new", label: "#" },
   { key: "title", label: "Título" },
   { key: "cur", label: "Capítulo actual" },
-  { key: "site", label: "Sitio web" },
   { key: "status", label: "Estado" },
-  { key: "path", label: "Guardado en" },
   { key: "added", label: "Agregado" },
   { key: "checked", label: "Última rev." },
 ];
@@ -61,7 +59,20 @@ function favFmtAgo(iso: string | undefined, checkedMs?: number): string {
 }
 
 export function FavoritesView() {
-  const { activeNav, log, outputDir, setOutputDir, favAutoCheck, setFavAutoCheck } = useApp();
+  const {
+    activeNav,
+    log,
+    outputDir,
+    setOutputDir,
+    favAutoCheckSeq,
+    lastFavAutoCheck,
+    favAutoChecking,
+    favAutoCheckSource,
+    catalogJob,
+    setAppJob,
+    isAppJobCancelRequested,
+    clearAppJobCancel,
+  } = useApp();
 
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [newCounts, setNewCounts] = useState<Map<number, number>>(new Map());
@@ -74,11 +85,12 @@ export function FavoritesView() {
   const [sel, setSel] = useState<Record<number, true>>({});
   const [sortKey, setSortKey] = useState<SortKey>("new");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
-  const [scanning, setScanning] = useState(false);
-  const [scanTarget, setScanTarget] = useState("");
-  const [scanCount, setScanCount] = useState("");
+  const [treeCollapsed, setTreeCollapsed] = useState(false);
 
   const queryInputRef = useRef<HTMLInputElement>(null);
+  const favScanning = catalogJob?.mode === "favorites";
+  const scanningFavId = favScanning ? Number(catalogJob.moduleId) : NaN;
+  const checkBusy = favScanning || favAutoChecking;
 
   const favNewOf = useCallback((id: number) => newCounts.get(id) || 0, [newCounts]);
   const favIsEnabled = useCallback(
@@ -88,14 +100,6 @@ export function FavoritesView() {
       return fav?.enabled !== false;
     },
     [enabledMap, favorites],
-  );
-  const favPathOf = useCallback(
-    (fav: Favorite): string => {
-      const base = (outputDir || "").replace(/[/\\]+$/, "");
-      const folder = fav.title.trim() || "manga";
-      return base ? `${base}\\${folder}` : folder;
-    },
-    [outputDir],
   );
 
   const refreshFavorites = useCallback(async () => {
@@ -137,6 +141,26 @@ export function FavoritesView() {
   useEffect(() => {
     if (activeNav === "favorites") void refreshFavorites();
   }, [activeNav, refreshFavorites]);
+
+  useEffect(() => {
+    if (favAutoCheckSeq === 0 || !lastFavAutoCheck) return;
+    setNewCounts((prev) => {
+      const next = new Map(prev);
+      for (const r of lastFavAutoCheck) {
+        next.set(r.favorite.id, r.new_chapters.length);
+      }
+      return next;
+    });
+    setCheckedAt((prev) => {
+      const next = new Map(prev);
+      const now = Date.now();
+      for (const r of lastFavAutoCheck) {
+        next.set(r.favorite.id, now);
+      }
+      return next;
+    });
+    void refreshFavorites();
+  }, [favAutoCheckSeq, lastFavAutoCheck, refreshFavorites]);
 
   const ensureOutputDir = useCallback(async (): Promise<string | null> => {
     if (outputDir) return outputDir;
@@ -183,7 +207,11 @@ export function FavoritesView() {
 
   const runFavChecks = useCallback(
     async (ids: number[], enqueue: boolean) => {
-      if (!ids.length || scanning) return;
+      if (!ids.length || favScanning) return;
+      if (catalogJob) {
+        log("Ya hay una tarea en curso.", "err");
+        return;
+      }
       if (enqueue) {
         const dir = await ensureOutputDir();
         if (!dir) {
@@ -191,14 +219,34 @@ export function FavoritesView() {
           return;
         }
       }
-      setScanning(true);
+      clearAppJobCancel();
       const results: FavoriteCheckResult[] = [];
+      let cancelled = false;
       try {
         for (let i = 0; i < ids.length; i++) {
+          if (isAppJobCancelRequested()) {
+            cancelled = true;
+            break;
+          }
           const id = ids[i];
           const fav = favorites.find((f) => f.id === id);
-          setScanTarget(fav ? `${fav.title} · ${fav.module_name || fav.module_id}` : "");
-          setScanCount(`${i + 1} / ${ids.length}`);
+          const title = fav?.title || `Favorito #${id}`;
+          const site = fav ? fav.module_name || fav.module_id : "";
+          setAppJob({
+            mode: "favorites",
+            scope: "all",
+            moduleId: String(id),
+            moduleName: title,
+            index: i + 1,
+            total: ids.length,
+            page: i,
+            pageTotal: ids.length,
+            bytesDone: 0,
+            bytesTotal: 0,
+            message: site,
+            phase: "check",
+            cancelling: false,
+          });
           try {
             const r = await api.favoritesCheck(id, enqueue);
             results.push(r);
@@ -210,19 +258,35 @@ export function FavoritesView() {
         }
         const news = results.reduce((a, r) => a + r.new_chapters.length, 0);
         const enq = results.reduce((a, r) => a + r.enqueued, 0);
-        if (enqueue) {
+        if (cancelled) {
+          log(
+            enqueue
+              ? `Revisión cancelada · ${enq} capítulos encolados`
+              : `Revisión cancelada · ${news} capítulos nuevos en ${results.length} favoritos`,
+            "",
+          );
+        } else if (enqueue) {
           log(`Encolados ${enq} capítulos nuevos`, "ok");
         } else {
           log(`Revisión: ${news} capítulos nuevos en ${results.length} favoritos`, "ok");
         }
         await refreshFavorites();
       } finally {
-        setScanning(false);
-        setScanTarget("");
-        setScanCount("");
+        setAppJob(null);
+        clearAppJobCancel();
       }
     },
-    [scanning, favorites, log, ensureOutputDir, refreshFavorites],
+    [
+      favScanning,
+      catalogJob,
+      favorites,
+      log,
+      ensureOutputDir,
+      refreshFavorites,
+      setAppJob,
+      isAppJobCancelRequested,
+      clearAppJobCancel,
+    ],
   );
 
   const list = useMemo(() => {
@@ -252,12 +316,10 @@ export function FavoritesView() {
     const val = (it: Favorite): string | number => {
       if (sortKey === "title") return it.title.toLowerCase();
       if (sortKey === "cur") return it.chapter_count || 0;
-      if (sortKey === "site") return (it.module_name || it.module_id).toLowerCase();
       if (sortKey === "status") {
         if (!favIsEnabled(it.id)) return 2;
         return favNewOf(it.id) > 0 ? 0 : 1;
       }
-      if (sortKey === "path") return favPathOf(it).toLowerCase();
       if (sortKey === "added") return Date.parse(it.updated_at) || 0;
       if (sortKey === "checked") return checkedAt.get(it.id) ?? (Date.parse(it.updated_at) || 0);
       return favNewOf(it.id);
@@ -270,7 +332,7 @@ export function FavoritesView() {
       return a.title.localeCompare(b.title);
     });
     return arr;
-  }, [favorites, query, filter, cat, sortKey, sortDir, favIsEnabled, favNewOf, checkedAt, favPathOf]);
+  }, [favorites, query, filter, cat, sortKey, sortDir, favIsEnabled, favNewOf, checkedAt]);
 
   const treeEntries = useMemo(() => {
     const countBy = (fn: (i: Favorite) => boolean) => favorites.filter(fn).length;
@@ -334,7 +396,7 @@ export function FavoritesView() {
     [sel],
   );
   const hasSel = selectedIds.length > 0;
-  const selDisabled = !hasSel || scanning;
+  const selDisabled = !hasSel || checkBusy;
 
   const allOn = list.length > 0 && list.every((it) => sel[it.id]);
   const someOn = list.some((it) => sel[it.id]);
@@ -366,7 +428,7 @@ export function FavoritesView() {
       setSortDir((d) => (d === 1 ? -1 : 1));
     } else {
       setSortKey(key);
-      setSortDir(key === "title" || key === "site" || key === "path" ? 1 : -1);
+      setSortDir(key === "title" ? 1 : -1);
     }
   };
 
@@ -469,10 +531,13 @@ export function FavoritesView() {
     ? `${stats.newSum} ${stats.newSum === 1 ? "capítulo nuevo" : "capítulos nuevos"}`
     : "Todo al día";
 
-  const lastScanLabel = stats.latestChecked
-    ? `Última revisión hace ${favFmtAgo(undefined, stats.latestChecked)}`
-    : "Última revisión —";
-
+  const lastScanLabel = favAutoChecking
+    ? favAutoCheckSource === "inicio"
+      ? "Revisando al iniciar…"
+      : "Revisión periódica…"
+    : stats.latestChecked
+      ? `Última revisión hace ${favFmtAgo(undefined, stats.latestChecked)}`
+      : "Última revisión —";
   return (
     <section id="view-favorites" className="view" hidden={activeNav !== "favorites"}>
       <div className="fav-shell">
@@ -490,15 +555,15 @@ export function FavoritesView() {
             <button
               type="button"
               className="fav-btn-p"
-              disabled={scanning}
+              disabled={checkBusy || !!catalogJob}
               onClick={handleCheckAllTop}
             >
               <Icon
                 name="refresh"
                 className="ico ico-sm"
-                style={{ animation: scanning ? "spin 1s linear infinite" : "none" }}
+                style={{ animation: checkBusy ? "spin 1s linear infinite" : "none" }}
               />
-              <span>{scanning ? "Revisando…" : "Revisar capítulos nuevos"}</span>
+              <span>{checkBusy ? "Revisando…" : "Revisar capítulos nuevos"}</span>
             </button>
             <button
               type="button"
@@ -512,46 +577,57 @@ export function FavoritesView() {
           </div>
         </header>
 
-        <div className="fav-scan" hidden={!scanning}>
-          <span className="fav-scan-title">Revisando favoritos</span>
-          <span className="ell mono fav-scan-target">{scanTarget}</span>
-          <span className="mono fav-scan-count">{scanCount}</span>
-        </div>
-
         <div className="fav-body">
-          <aside className="fav-tree" aria-label="Filtros de favoritos">
-            {treeEntries.map((entry) => {
-              const on = cat === entry.id;
-              return (
-                <button
-                  key={entry.id}
-                  type="button"
-                  className={`fav-trow${on ? " on" : ""}`}
-                  style={{ paddingLeft: entry.group ? "14px" : "34px" }}
-                  onClick={() => setCat(entry.id)}
-                >
-                  {entry.group ? (
-                    <Icon ico={entry.icon} className="ico ico-sm" style={{ color: "var(--muted)" }} />
-                  ) : (
-                    <span className="fav-dot" style={{ background: entry.color || "var(--muted)" }} />
-                  )}
-                  <span
-                    className="ell"
-                    style={{
-                      fontSize: "12.5px",
-                      fontWeight: on ? 600 : entry.group ? 600 : 500,
-                      color: on ? "var(--text)" : entry.group ? "var(--text)" : "var(--muted)",
-                    }}
+          <aside
+            className={`fav-tree${treeCollapsed ? " is-collapsed" : ""}`}
+            aria-label="Filtros de favoritos"
+          >
+            <button
+              type="button"
+              className="fav-tree-notch"
+              title={treeCollapsed ? "Mostrar filtros" : "Ocultar filtros"}
+              aria-expanded={!treeCollapsed}
+              onClick={() => setTreeCollapsed((v) => !v)}
+            >
+              <Icon
+                ico={ICO.chevron}
+                className={`ico ico-sm fav-tree-notch-ico${treeCollapsed ? " is-collapsed" : ""}`}
+              />
+            </button>
+            <div className="fav-tree-body">
+              {treeEntries.map((entry) => {
+                const on = cat === entry.id;
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className={`fav-trow${on ? " on" : ""}`}
+                    style={{ paddingLeft: entry.group ? "14px" : "34px" }}
+                    onClick={() => setCat(entry.id)}
                   >
-                    {entry.label}
-                  </span>
-                  <div className="fav-toolbar-spacer" />
-                  <span className="mono" style={{ fontSize: "11px", color: "var(--muted)" }}>
-                    {entry.count}
-                  </span>
-                </button>
-              );
-            })}
+                    {entry.group ? (
+                      <Icon ico={entry.icon} className="ico ico-sm" style={{ color: "var(--muted)" }} />
+                    ) : (
+                      <span className="fav-dot" style={{ background: entry.color || "var(--muted)" }} />
+                    )}
+                    <span
+                      className="ell"
+                      style={{
+                        fontSize: "12.5px",
+                        fontWeight: on ? 600 : entry.group ? 600 : 500,
+                        color: on ? "var(--text)" : entry.group ? "var(--text)" : "var(--muted)",
+                      }}
+                    >
+                      {entry.label}
+                    </span>
+                    <div className="fav-toolbar-spacer" />
+                    <span className="mono" style={{ fontSize: "11px", color: "var(--muted)" }}>
+                      {entry.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </aside>
 
           <div className="fav-main">
@@ -692,10 +768,9 @@ export function FavoritesView() {
                       : n
                         ? { label: "Nuevo", color: "var(--warn)", bg: "var(--warn-bg)" }
                         : { label: "Al día", color: "var(--ok)", bg: "var(--ok-bg)" };
-                    const path = favPathOf(it);
                     const current = it.last_chapter_name || "—";
                     const latest =
-                      scanning && scanTarget.includes(it.title)
+                      it.id === scanningFavId
                         ? "revisando…"
                         : n
                           ? `+${n} nuevos`
@@ -742,12 +817,8 @@ export function FavoritesView() {
                             {latest}
                           </span>
                         </div>
-                        <span className="ell fav-site">{it.module_name || it.module_id}</span>
                         <span className="fav-badge" style={{ color: st.color, background: st.bg }}>
                           {st.label}
-                        </span>
-                        <span className="ell mono fav-path" title={path}>
-                          {path}
                         </span>
                         <span className="mono fav-added">{favFmtAgo(it.updated_at)}</span>
                         <span className="mono fav-checked">
@@ -797,17 +868,6 @@ export function FavoritesView() {
               </span>
               <span className="fav-footer-muted">{lastScanLabel}</span>
               <div className="fav-toolbar-spacer" />
-              <span className="fav-auto-wrap">
-                Revisión automática
-                <button
-                  type="button"
-                  className={`fav-sw${favAutoCheck ? " on" : ""}`}
-                  aria-pressed={favAutoCheck}
-                  onClick={() => void setFavAutoCheck(!favAutoCheck)}
-                >
-                  <i />
-                </button>
-              </span>
               <button type="button" className="lnk" onClick={handleQueueAll}>
                 Encolar todos los nuevos
               </button>

@@ -596,11 +596,6 @@ fn process_item(
         result.files.len()
     ));
     maybe_notify_group_done(&app, &item);
-    maybe_remove_completed_favorite(
-        &app.state::<QueueState>().db,
-        &app.state::<QueueState>().favorites,
-        &item.manga_url,
-    );
     Ok(())
 }
 
@@ -651,25 +646,6 @@ fn maybe_notify_group_done(app: &AppHandle, item: &QueueItem) {
     };
     use tauri_plugin_notification::NotificationExt;
     let _ = app.notification().builder().title("FMD3").body(body).show();
-}
-
-/// If `favorites.remove_completed` is on and no other queue items remain
-/// pending/running for this manga, remove the matching favorite (MVP: keeps
-/// the favorites list clean once every enqueued chapter has finished).
-fn maybe_remove_completed_favorite(main: &Db, favorites: &Db, manga_url: &str) {
-    if manga_url.trim().is_empty() {
-        return;
-    }
-    if !crate::settings_keys::bool_setting(crate::settings_keys::FAVORITES_REMOVE_COMPLETED, false) {
-        return;
-    }
-    let Ok(Some(fav)) = db::favorites_find_by_manga_url(favorites, manga_url) else {
-        return;
-    };
-    let remaining = db::queue_count_pending_for_manga(main, manga_url).unwrap_or(1);
-    if remaining == 0 {
-        let _ = db::favorites_remove(favorites, fav.id);
-    }
 }
 
 /// Signal cancel for a single in-flight item. Other parallel workers keep going.

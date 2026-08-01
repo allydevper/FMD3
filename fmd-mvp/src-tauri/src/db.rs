@@ -622,34 +622,6 @@ pub fn favorites_remove(db: &Db, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Look up a favorite by its manga URL (used by `favorites.remove_completed`).
-pub fn favorites_find_by_manga_url(db: &Db, manga_url: &str) -> Result<Option<Favorite>, String> {
-    if manga_url.trim().is_empty() {
-        return Ok(None);
-    }
-    let conn = db.lock();
-    conn.query_row(
-        &format!("{FAVORITE_SELECT} WHERE manga_url = ?1"),
-        params![manga_url],
-        map_favorite,
-    )
-    .optional()
-    .map_err(|e| e.to_string())
-}
-
-/// Count queue items still pending/running for a given manga URL (used to know
-/// whether a favorite's chapters have all finished downloading).
-pub fn queue_count_pending_for_manga(db: &Db, manga_url: &str) -> Result<i64, String> {
-    let conn = db.lock();
-    conn.query_row(
-        "SELECT COUNT(*) FROM queue_items
-         WHERE manga_url = ?1 AND status IN ('pending','running')",
-        params![manga_url],
-        |r| r.get(0),
-    )
-    .map_err(|e| e.to_string())
-}
-
 /// Remaining pending/running work in the same download group as `item`.
 /// Split batches (`batch_id` set) are grouped by batch; otherwise by `manga_url`
 /// among items with empty `batch_id` (FMD2-style "task finished").

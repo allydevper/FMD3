@@ -13,6 +13,7 @@ import type {
   CatalogJobMode,
   CatalogJobScope,
   CatalogJobState,
+  FavoriteCheckResult,
   ModuleMeta,
   NavId,
 } from "../types";
@@ -65,15 +66,26 @@ type AppContextValue = {
   /** Opt-in website IDs from Settings (modules.enabled). */
   enabledModuleIds: Set<string>;
   refreshEnabledModules: () => Promise<Set<string>>;
-  /** Favorites auto-check interval (Options + Favorites footer). */
-  favAutoCheck: boolean;
+  /** Apply favorites interval check after Options save (or boot). */
   setFavAutoCheck: (on: boolean) => Promise<void>;
+  /** True while startup/interval favorites check is running (no top bar). */
+  favAutoChecking: boolean;
+  /** Why the background check is running (footer copy). */
+  favAutoCheckSource: "inicio" | "intervalo";
+  /** Bumps when an auto-check (startup / interval) finishes; Favorites UI syncs from this. */
+  favAutoCheckSeq: number;
+  lastFavAutoCheck: FavoriteCheckResult[] | null;
   catalogJob: CatalogJobState | null;
   /** Bumps when a catalog job finishes (success or cancel) so Info can refresh. */
   catalogJobDoneSeq: number;
   lastCatalogJobModuleIds: string[];
   startCatalogJob: (args: StartCatalogJobArgs) => Promise<void>;
   cancelCatalogJob: () => Promise<void>;
+  /** Drive the top progress bar for non-catalog jobs (e.g. favorites check). */
+  setAppJob: (job: CatalogJobState | null) => void;
+  /** True after Cancel on the progress bar until the current job clears it. */
+  isAppJobCancelRequested: () => boolean;
+  clearAppJobCancel: () => void;
   /** Deep-link from Downloads «Agregar más» → Info load. */
   pendingMangaOpen: PendingMangaOpen | null;
   setPendingMangaOpen: (v: PendingMangaOpen | null) => void;
@@ -123,7 +135,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [outputDir, setOutputDir] = useState("");
   const [showMangaInfo, setShowMangaInfo] = useState(false);
   const [enabledModuleIds, setEnabledModuleIds] = useState<Set<string>>(() => new Set());
-  const [favAutoCheck, setFavAutoCheckState] = useState(false);
   const [catalogJob, setCatalogJob] = useState<CatalogJobState | null>(null);
   const [catalogJobDoneSeq, setCatalogJobDoneSeq] = useState(0);
   const [lastCatalogJobModuleIds, setLastCatalogJobModuleIds] = useState<string[]>([]);
@@ -136,7 +147,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   const favIntervalRef = useRef<number | null>(null);
   const favDownloadAfterRef = useRef(false);
-  const bootDoneRef = useRef(false);
+  const [favAutoCheckSeq, setFavAutoCheckSeq] = useState(0);
+  const [lastFavAutoCheck, setLastFavAutoCheck] = useState<FavoriteCheckResult[] | null>(
+    null,
+  );
+  const [favAutoChecking, setFavAutoChecking] = useState(false);
+  const [favAutoCheckSource, setFavAutoCheckSource] = useState<"inicio" | "intervalo">(
+    "inicio",
+  );
 
   const applyResolvedDark = useCallback((nextTheme: AppTheme) => {
     const dark = resolveDark(nextTheme);
@@ -163,12 +181,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, [applyResolvedDark]);
 
+  const log = useCallback((msg: string, kind: LogKind = "") => {
+    setLogLines((prev) => [...prev.slice(-400), { text: msg, kind }]);
+  }, []);
+
+  const clearLog = useCallback(() => {
+    setLogLines([{ text: "Listo.", kind: "" }]);
+  }, []);
+
+  const toggleLog = useCallback(() => setLogOpen((o) => !o), []);
+
   const clearFavInterval = useCallback(() => {
     if (favIntervalRef.current != null) {
       window.clearInterval(favIntervalRef.current);
       favIntervalRef.current = null;
     }
   }, []);
+
+  const publishFavAutoCheck = useCallback(
+    (results: FavoriteCheckResult[], downloadAfter: boolean, source: "inicio" | "intervalo") => {
+      setLastFavAutoCheck(results);
+      setFavAutoCheckSeq((n) => n + 1);
+      const news = results.reduce((a, r) => a + r.new_chapters.length, 0);
+      const enq = results.reduce((a, r) => a + r.enqueued, 0);
+      if (downloadAfter) {
+        log(
+          `${source === "inicio" ? "Inicio" : "Intervalo"}: ${enq} capítulos encolados desde favoritos`,
+          "ok",
+        );
+      } else {
+        log(
+          `${source === "inicio" ? "Inicio" : "Intervalo"}: ${news} capítulos nuevos en favoritos`,
+          "ok",
+        );
+      }
+    },
+    [log],
+  );
 
   const scheduleFavInterval = useCallback(
     async (on: boolean) => {
@@ -179,17 +228,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
       favDownloadAfterRef.current = downloadAfter;
       if (intervalMin <= 0) return;
       favIntervalRef.current = window.setInterval(() => {
-        void api.favoritesCheckAll(favDownloadAfterRef.current).catch(() => {
-          /* ignore background errors */
-        });
+        void (async () => {
+          setFavAutoCheckSource("intervalo");
+          setFavAutoChecking(true);
+          try {
+            const results = await api.favoritesCheckAll(favDownloadAfterRef.current);
+            publishFavAutoCheck(results, favDownloadAfterRef.current, "intervalo");
+          } catch (e) {
+            log(`Revisión periódica de favoritos: ${e}`, "err");
+          } finally {
+            setFavAutoChecking(false);
+          }
+        })();
       }, intervalMin * 60_000);
     },
-    [clearFavInterval],
+    [clearFavInterval, log, publishFavAutoCheck],
   );
 
   const setFavAutoCheck = useCallback(
     async (on: boolean) => {
-      setFavAutoCheckState(on);
       await api.settingsSet(SK.FAV_INTERVAL_ON, on ? "1" : "0");
       await scheduleFavInterval(on);
     },
@@ -221,16 +278,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
     return () => un?.();
   }, []);
-
-  const log = useCallback((msg: string, kind: LogKind = "") => {
-    setLogLines((prev) => [...prev.slice(-400), { text: msg, kind }]);
-  }, []);
-
-  const clearLog = useCallback(() => {
-    setLogLines([{ text: "Listo.", kind: "" }]);
-  }, []);
-
-  const toggleLog = useCallback(() => setLogOpen((o) => !o), []);
 
   const currentModule = useMemo(
     () => modules.find((m) => m.id === selectedModuleId),
@@ -345,9 +392,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [log]);
 
+  const setAppJob = useCallback((job: CatalogJobState | null) => {
+    catalogJobRef.current = job;
+    setCatalogJob(job);
+  }, []);
+
+  const isAppJobCancelRequested = useCallback(
+    () => catalogCancelRequestedRef.current,
+    [],
+  );
+
+  const clearAppJobCancel = useCallback(() => {
+    catalogCancelRequestedRef.current = false;
+  }, []);
+
   const cancelCatalogJob = useCallback(async () => {
     catalogCancelRequestedRef.current = true;
-    setCatalogJob((prev) => (prev ? { ...prev, cancelling: true } : prev));
+    const mode = catalogJobRef.current?.mode;
+    setCatalogJob((prev) => {
+      const next = prev ? { ...prev, cancelling: true } : prev;
+      catalogJobRef.current = next;
+      return next;
+    });
+    // Favorites checks are frontend-loop only; skip Rust catalog cancel.
+    if (mode === "favorites") return;
     try {
       await api.catalogJobCancel();
     } catch {
@@ -357,8 +425,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const startCatalogJob = useCallback(
     async (args: StartCatalogJobArgs) => {
-      if (catalogJobRunningRef.current) {
-        log("Ya hay una actualización de catálogo en curso.", "err");
+      if (catalogJobRunningRef.current || catalogJobRef.current) {
+        log("Ya hay una tarea en curso.", "err");
         return;
       }
       const enabled = modules.filter((m) => enabledModuleIds.has(m.id));
@@ -469,9 +537,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [enabledModuleIds, log, modules],
   );
 
+  // Startup: theme, favorites check-on-start, interval timer, app update.
+  // Empty deps: must run once per mount. A sticky bootDoneRef breaks under
+  // React Strict Mode (first effect sets the flag, cleanup cancels work, second
+  // effect sees the flag and skips — auto-check never runs in tauri dev).
   useEffect(() => {
-    if (bootDoneRef.current) return;
-    bootDoneRef.current = true;
     let cancelled = false;
 
     void (async () => {
@@ -482,32 +552,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setThemeState(t);
         applyResolvedDark(t);
 
-        const openOnStart = parseBool(await api.settingsGet(SK.FAV_OPEN_ON_START), false);
-        if (!cancelled && openOnStart) setActiveNav("favorites");
-
         // Align defaults with OptionsView DEFAULT_STATE
         const checkOnStart = parseBool(await api.settingsGet(SK.FAV_CHECK_ON_START), true);
         const downloadAfter = parseBool(await api.settingsGet(SK.FAV_DOWNLOAD_AFTER), false);
         favDownloadAfterRef.current = downloadAfter;
         if (!cancelled && checkOnStart) {
+          setFavAutoCheckSource("inicio");
+          setFavAutoChecking(true);
           try {
             const results = await api.favoritesCheckAll(downloadAfter);
-            const news = results.reduce((a, r) => a + r.new_chapters.length, 0);
-            const enq = results.reduce((a, r) => a + r.enqueued, 0);
-            log(
-              downloadAfter
-                ? `Inicio: ${enq} capítulos encolados desde favoritos`
-                : `Inicio: ${news} capítulos nuevos en favoritos`,
-              "ok",
-            );
+            if (!cancelled) publishFavAutoCheck(results, downloadAfter, "inicio");
           } catch (e) {
-            log(`Revisión de favoritos al inicio: ${e}`, "err");
+            if (!cancelled) log(`Revisión de favoritos al inicio: ${e}`, "err");
+          } finally {
+            setFavAutoChecking(false);
           }
         }
 
         const intervalOn = parseBool(await api.settingsGet(SK.FAV_INTERVAL_ON), false);
         if (!cancelled) {
-          setFavAutoCheckState(intervalOn);
           await scheduleFavInterval(intervalOn);
         }
 
@@ -520,7 +583,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
         }
       } catch (e) {
-        log(String(e), "err");
+        if (!cancelled) log(String(e), "err");
       }
     })();
 
@@ -528,7 +591,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       clearFavInterval();
     };
-  }, [applyResolvedDark, clearFavInterval, log, scheduleFavInterval]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional once-per-mount boot
+  }, []);
 
   const value: AppContextValue = {
     activeNav,
@@ -557,13 +621,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshModules,
     enabledModuleIds,
     refreshEnabledModules,
-    favAutoCheck,
     setFavAutoCheck,
+    favAutoChecking,
+    favAutoCheckSource,
+    favAutoCheckSeq,
+    lastFavAutoCheck,
     catalogJob,
     catalogJobDoneSeq,
     lastCatalogJobModuleIds,
     startCatalogJob,
     cancelCatalogJob,
+    setAppJob,
+    isAppJobCancelRequested,
+    clearAppJobCancel,
     pendingMangaOpen,
     setPendingMangaOpen,
   };

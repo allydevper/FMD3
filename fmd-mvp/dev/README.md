@@ -8,7 +8,7 @@
 3. Run **`tauri dev`** — Vite middleware serves the mock (no extra port).
 4. In the app: Ajustes → Sitios Web → enable **TestCatalog**.
 5. Catálogo → Actualizar lista.
-6. **Page 1** lists the 10 `dl-*` titles first as `01 · …` … `10 · …` (mixed short/long names, 8 chapters each).
+6. **Page 1** lists the 10 `dl-*` titles first as `01 · …` … `10 · …` (mixed short/long names; `dl-0001` has 12 chapters, the rest 8).
 7. After changing the mock links, **reset** the TestCatalog DB and Actualizar lista again (old rows lack the correct `/series/...` paths).
 8. Reset DB: delete `%AppData%\fmd-mvp\data\ffffffffffffffffffffffffffffffff.db`
 

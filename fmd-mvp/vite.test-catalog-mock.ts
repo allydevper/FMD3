@@ -62,7 +62,7 @@ const DL_TITLES: { title: string; summary: string }[] = [
   },
 ];
 
-/** Mixed chapter labels within each downloadable manga (index 1..8). */
+/** Mixed chapter labels within each downloadable manga (index 1..N). */
 function chapterLabel(ch: number): string {
   switch (ch) {
     case 1:
@@ -81,9 +81,23 @@ function chapterLabel(ch: number): string {
       return "";
     case 8:
       return "Capítulo 8 — Epílogo definitivo del arco (versión extendida)";
+    case 9:
+      return "Capítulo 9 — Arco nuevo (check al iniciar)";
+    case 10:
+      return "Capítulo 10 — Continuación";
+    case 11:
+      return "Capítulo 11 — Segundo lote de prueba";
+    case 12:
+      return "Capítulo 12 — Cierre del lote";
     default:
       return `Capítulo ${ch}`;
   }
+}
+
+/** Image folders on disk are only 1..8; map higher chapter indices onto them. */
+function capImageFolder(ch: number): number {
+  if (ch >= 1 && ch <= 8) return ch;
+  return ((ch - 1) % 8) + 1;
 }
 
 function parseGenres(raw: string | undefined): string[] {
@@ -105,7 +119,8 @@ function buildDownloadEntries(): Entry[] {
       title: `${num} · ${row.title}`,
       summary: row.summary,
       genres: ["Test", "Download"],
-      chapters: 8,
+      // dl-0001 has extra chapters for favorites check smoke tests.
+      chapters: n === 1 ? 12 : 8,
       na: false,
       downloadable: true,
     };
@@ -178,7 +193,8 @@ function pageSlice(entries: Entry[], page1: number): Entry[] {
 }
 
 function listCapImages(ch: number): string[] {
-  const dir = path.join(CAPS_ROOT, String(ch));
+  const folder = capImageFolder(ch);
+  const dir = path.join(CAPS_ROOT, String(folder));
   let files: string[] = [];
   try {
     files = fs
@@ -256,10 +272,11 @@ function renderChapter(e: Entry, ch: number): string {
 <div id="reader"></div>
 </body></html>`;
   }
+  const folder = capImageFolder(ch);
   const files = listCapImages(ch);
   const imgs = files
     .map((f) => {
-      const src = `http://localhost:1420${PREFIX}/caps/${ch}/${encodeURIComponent(f)}`;
+      const src = `http://localhost:1420${PREFIX}/caps/${folder}/${encodeURIComponent(f)}`;
       return `<a class="page" href="${src}"></a><img src="${src}" alt="${escapeHtml(f)}" />`;
     })
     .join("\n");

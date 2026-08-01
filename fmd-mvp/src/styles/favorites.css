@@ -112,37 +112,6 @@
   background: var(--hover-tint);
 }
 
-.fav-scan {
-  flex: 0 0 auto;
-  padding: 8px 26px;
-  background: var(--card-hi);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.fav-scan[hidden] {
-  display: none !important;
-}
-
-.fav-scan-title {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.fav-scan-target {
-  flex: 1 1 auto;
-  font-size: 11px;
-  color: var(--text);
-  opacity: 0.7;
-}
-
-.fav-scan-count {
-  font-size: 11px;
-  color: var(--text);
-}
-
 .fav-body {
   flex: 1 1 auto;
   display: flex;
@@ -150,12 +119,75 @@
 }
 
 .fav-tree {
+  position: relative;
   flex: 0 0 218px;
   display: flex;
   flex-direction: column;
-  padding: 12px 0;
   border-right: 1px solid var(--border);
+  overflow: hidden;
+  transition: flex-basis 0.18s ease, max-width 0.18s ease, width 0.18s ease;
+}
+
+.fav-tree.is-collapsed {
+  flex-basis: 16px;
+  width: 16px;
+  max-width: 16px;
+}
+
+.fav-tree-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  padding: 12px 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  opacity: 1;
+  transition: opacity 0.18s ease;
+}
+
+.fav-tree.is-collapsed .fav-tree-body {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fav-tree-notch {
+  position: absolute;
+  right: 0;
+  bottom: 10px;
+  top: auto;
+  z-index: 6;
+  width: 16px;
+  height: 48px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-radius: 6px 0 0 6px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.92;
+}
+
+.fav-tree-notch:hover {
+  opacity: 1;
+  color: var(--text);
+  background: var(--hover-tint);
+}
+
+.fav-tree-notch-ico {
+  transform: rotate(90deg);
+  transition: transform 0.22s ease;
+}
+
+.fav-tree-notch-ico.is-collapsed {
+  transform: rotate(-90deg);
 }
 
 .fav-trow {
@@ -341,10 +373,10 @@
 
 .fav-grid {
   display: grid;
-  grid-template-columns: 26px 34px minmax(210px, 1.6fr) 150px 118px 104px minmax(140px, 1fr) 84px 92px 62px;
+  grid-template-columns: 26px 34px minmax(210px, 1.8fr) 160px 104px 84px 92px 62px;
   align-items: center;
   column-gap: 14px;
-  min-width: 1180px;
+  min-width: 880px;
 }
 
 .fav-head {
@@ -467,12 +499,6 @@
   width: fit-content;
 }
 
-.fav-site {
-  font-size: 11.5px;
-  color: var(--muted);
-}
-
-.fav-path,
 .fav-added,
 .fav-checked {
   font-size: 11px;
@@ -529,46 +555,6 @@
 .fav-footer-muted {
   font-size: 12px;
   color: var(--muted);
-}
-
-.fav-auto-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.fav-sw {
-  position: relative;
-  flex: 0 0 30px;
-  width: 30px;
-  height: 17px;
-  border-radius: 999px;
-  background: var(--track);
-  border: none;
-  cursor: pointer;
-  padding: 0;
-}
-
-.fav-sw.on {
-  background: var(--accent);
-}
-
-.fav-sw i {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 13px;
-  height: 13px;
-  border-radius: 999px;
-  background: var(--field-bg);
-  transition: transform 0.16s ease;
-}
-
-.fav-sw.on i {
-  transform: translateX(13px);
-  background: var(--on-accent);
 }
 
 .mono {

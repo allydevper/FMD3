@@ -4,6 +4,11 @@ import { useApp } from "../context/AppContext";
 import type { CatalogJobState } from "../types";
 
 function phaseHeadline(job: CatalogJobState): string {
+  if (job.mode === "favorites") {
+    if (job.cancelling) return "Cancelando revisión de favoritos";
+    if (job.phase === "done") return "Revisión de favoritos lista";
+    return `Revisando favoritos [${job.index}/${job.total}] ${job.moduleName}`;
+  }
   const site = `[${job.index}/${job.total}] ${job.moduleName}`;
   if (job.cancelling) return `Cancelando · ${job.moduleName}`;
   if (job.mode === "fetch") return `Descargando lista ${site}`;
@@ -20,6 +25,11 @@ function phaseHeadline(job: CatalogJobState): string {
 }
 
 function phaseShort(job: CatalogJobState): string {
+  if (job.mode === "favorites") {
+    if (job.cancelling) return "Cancelando favoritos";
+    if (job.phase === "done") return "Favoritos · listo";
+    return `Favoritos · ${job.index}/${job.total}`;
+  }
   if (job.cancelling) return `Cancelando · ${job.moduleName}`;
   if (job.mode === "fetch") return `Descarga · ${job.moduleName}`;
   switch (job.phase) {
@@ -85,9 +95,13 @@ export function CatalogJobBar() {
   if (!catalogJob) return null;
 
   const isFetch = catalogJob.mode === "fetch";
-  const pct =
-    catalogJob.pageTotal > 0 &&
-    (catalogJob.phase === "scrape" || !catalogJob.getinfoTotal)
+  const isFavorites = catalogJob.mode === "favorites";
+  const pct = isFavorites
+    ? catalogJob.total > 0
+      ? Math.min(100, Math.round((catalogJob.index / catalogJob.total) * 100))
+      : 0
+    : catalogJob.pageTotal > 0 &&
+        (catalogJob.phase === "scrape" || !catalogJob.getinfoTotal)
       ? Math.min(100, Math.round(((catalogJob.page + 1) / catalogJob.pageTotal) * 100))
       : catalogJob.getinfoTotal && catalogJob.getinfoTotal > 0
         ? Math.min(
@@ -107,7 +121,11 @@ export function CatalogJobBar() {
       : "");
 
   const title = phaseHeadline(catalogJob);
-  const meta = isFetch ? body : phaseMeta(body, catalogJob.phase);
+  const meta = isFavorites
+    ? body
+    : isFetch
+      ? body
+      : phaseMeta(body, catalogJob.phase);
   const short = phaseShort(catalogJob);
   const pctLabel = `${pct}%`;
   const spinning = !catalogJob.cancelling && catalogJob.phase !== "done";

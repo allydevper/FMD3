@@ -47,9 +47,7 @@ pub const CATALOG_UPDATE_FULL_SCAN: &str = "catalog.update_full_scan";
 pub const FAVORITES_CHECK_INTERVAL_MIN: &str = "favorites.check_interval_min";
 pub const FAVORITES_CHECK_INTERVAL_ON: &str = "favorites.check_interval_on";
 pub const FAVORITES_CHECK_ON_START: &str = "favorites.check_on_start";
-pub const FAVORITES_OPEN_ON_START: &str = "favorites.open_on_start";
 pub const FAVORITES_DOWNLOAD_AFTER_CHECK: &str = "favorites.download_after_check";
-pub const FAVORITES_REMOVE_COMPLETED: &str = "favorites.remove_completed";
 
 pub const UI_LOAD_COVERS: &str = "ui.load_covers";
 pub const UI_LIVE_SEARCH: &str = "ui.live_search";
