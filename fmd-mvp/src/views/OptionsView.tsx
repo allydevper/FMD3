@@ -1423,7 +1423,9 @@ export function OptionsView() {
   const siteGroups = useMemo<SiteGroup[]>(() => {
     const byCat = new Map<string, SiteMod[]>();
     for (const m of modules) {
-      const label = (m.category || "").trim() || "Other";
+      // FMD2 omits modules with empty Category from the websites tree.
+      const label = (m.category || "").trim();
+      if (!label) continue;
       const list = byCat.get(label) ?? [];
       list.push({ id: m.id, name: m.name, domain: moduleDomain(m.root_url) });
       byCat.set(label, list);
