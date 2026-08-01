@@ -873,7 +873,7 @@ export function OptionsView() {
     const volDigits = Number((await get(SK.VOL_DIGITS)) ?? "2") || 2;
     const chapDigits = Number((await get(SK.CHAP_DIGITS)) ?? "3") || 3;
     const favIntervalOn = parseB(await get(SK.FAV_INTERVAL_ON), false);
-    const favIntervalMin = Number((await get(SK.FAV_INTERVAL_MIN)) ?? "60") || 60;
+    const favIntervalMin = Math.max(60, Number((await get(SK.FAV_INTERVAL_MIN)) ?? "60") || 60);
     const favCheckOnStart = parseB(await get(SK.FAV_CHECK_ON_START), true);
     const favDownloadAfter = parseB(await get(SK.FAV_DOWNLOAD_AFTER), false);
     const loadCovers = parseB(await get(SK.UI_LOAD_COVERS), true);
@@ -1026,7 +1026,7 @@ export function OptionsView() {
     await api.settingsSet(SK.VOL_DIGITS, String(s.volDigits));
     await api.settingsSet(SK.CHAP_DIGITS, String(s.chapDigits));
     await api.settingsSet(SK.FAV_INTERVAL_ON, boolStr(s.favIntervalOn));
-    await api.settingsSet(SK.FAV_INTERVAL_MIN, String(s.favIntervalMin));
+    await api.settingsSet(SK.FAV_INTERVAL_MIN, String(Math.max(60, s.favIntervalMin)));
     await api.settingsSet(SK.FAV_CHECK_ON_START, boolStr(s.favCheckOnStart));
     await api.settingsSet(SK.FAV_DOWNLOAD_AFTER, boolStr(s.favDownloadAfter));
     await api.settingsSet(SK.UI_LOAD_COVERS, boolStr(s.loadCovers));
@@ -2280,7 +2280,7 @@ export function OptionsView() {
                               <Stepper
                                 id="set-fav-interval-min"
                                 value={s.favIntervalMin}
-                                min={1}
+                                min={60}
                                 max={1440}
                                 wide
                                 onChange={(v) => update("favIntervalMin", v)}

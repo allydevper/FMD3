@@ -223,7 +223,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (on: boolean) => {
       clearFavInterval();
       if (!on) return;
-      const intervalMin = Number((await api.settingsGet(SK.FAV_INTERVAL_MIN)) ?? "60") || 60;
+      const intervalMin = Math.max(
+        60,
+        Number((await api.settingsGet(SK.FAV_INTERVAL_MIN)) ?? "60") || 60,
+      );
       const downloadAfter = parseBool(await api.settingsGet(SK.FAV_DOWNLOAD_AFTER), false);
       favDownloadAfterRef.current = downloadAfter;
       if (intervalMin <= 0) return;
