@@ -94,6 +94,7 @@ export async function runModulesGithubUpdate(
       items: check.status_lines.length ? check.status_lines : [summarizeCheck(check)],
     });
     if (!ok) {
+      // Frees the parked plan; the same changes are reported again next time.
       await api.modulesUpdateDismiss(check.token);
       log("Actualización de módulos cancelada", "");
       return { check, report: null, deferred: false };

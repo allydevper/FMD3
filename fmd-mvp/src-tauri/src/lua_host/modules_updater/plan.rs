@@ -94,13 +94,6 @@ pub fn build(
                 continue;
             }
             entry.flag = ChangeKind::Delete.flag().into();
-            if force {
-                entry.dismissed_id = None;
-            }
-            if entry.is_dismissed() {
-                suppressed_count += 1;
-                continue;
-            }
             delete_count += 1;
             status_lines.push(format!("[{}] {}", label(ChangeKind::Delete), entry.name));
             items.push(PlanItem {
@@ -128,19 +121,11 @@ pub fn build(
         };
         entry.flag = kind.flag().into();
 
-        if force {
-            // The user is looking on purpose, so an old "no thanks" no longer
-            // applies. Clearing it keeps the badge and the manual check telling
-            // the same story instead of one screaming while the other is mute.
-            entry.dismissed_id = None;
-        }
-        let dismissed = entry.is_dismissed();
-        let backing_off = entry.attempts > 0 && !entry.retry_due(now) && !force;
-        if dismissed || backing_off {
-            if entry.attempts > 0 {
-                entry.flag = FLAG_FAILED.into();
-                failed_count += 1;
-            }
+        // Only a repeatedly failing download is held back, and only until its
+        // backoff expires. Declining an update never silences it.
+        if entry.attempts > 0 && !entry.retry_due(now) && !force {
+            entry.flag = FLAG_FAILED.into();
+            failed_count += 1;
             suppressed_count += 1;
             continue;
         }
@@ -191,17 +176,6 @@ pub fn build(
     }
 }
 
-/// Mark every pending change as dismissed at its current remote id, so the
-/// prompt stays quiet until the remote actually moves.
-pub fn dismiss(state: &mut RepoState, plan: &SyncPlan) {
-    let paths: HashSet<&str> = plan.items.iter().map(|i| i.path.as_str()).collect();
-    for entry in state.entries.iter_mut() {
-        if paths.contains(entry.name.as_str()) {
-            entry.dismissed_id = Some(entry.remote_id.clone());
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,28 +212,12 @@ mod tests {
         assert!(!e.retry_due(i64::MAX / 2));
     }
 
+    /// Declining an update must not silence it: the reminder has to come back
+    /// on the next launch, which is what the persisted state decides.
     #[test]
-    fn a_forced_check_clears_an_old_dismissal() {
-        // Mirrors what `build` does under `force`: the badge (force = false)
-        // and «Revisar actualización» (force = true) must not disagree once the
-        // user has deliberately looked.
-        let mut e = entry("modules/A.lua", "bbb", Some("aaa"));
-        e.dismissed_id = Some("bbb".into());
-        assert!(e.is_dismissed());
-        let force = true;
-        if force {
-            e.dismissed_id = None;
-        }
-        assert!(!e.is_dismissed());
-    }
-
-    #[test]
-    fn dismiss_tracks_the_remote_id() {
-        let mut e = entry("modules/A.lua", "bbb", Some("aaa"));
-        e.dismissed_id = Some("bbb".into());
-        assert!(e.is_dismissed());
-        // Remote moved on: the dismissal no longer applies.
-        e.remote_id = "ccc".into();
-        assert!(!e.is_dismissed());
+    fn declining_leaves_the_entry_actionable() {
+        let e = entry("modules/A.lua", "bbb", Some("aaa"));
+        assert!(!e.is_current());
+        assert!(e.retry_due(0), "sin fallos previos siempre es accionable");
     }
 }

@@ -192,16 +192,11 @@ pub fn apply(
     Ok(report)
 }
 
-/// Silence the pending changes until the source moves on.
-pub fn dismiss(token: Option<String>) -> Result<(), String> {
-    let _guard = lock()?;
-    let Some(plan) = token.as_deref().and_then(session::peek) else {
-        session::clear();
-        return Ok(());
-    };
-    let mut st = load_state();
-    plan::dismiss(&mut st, &plan);
-    save_state(&st)?;
+/// Drop the parked plan after the user declines. Nothing is remembered: the
+/// next check reports the same changes again, which is what someone who said
+/// "not now" expects. Only repeated download failures are held back, via the
+/// per-entry backoff.
+pub fn dismiss(_token: Option<String>) -> Result<(), String> {
     session::clear();
     Ok(())
 }

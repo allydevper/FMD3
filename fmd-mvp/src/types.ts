@@ -86,7 +86,6 @@ export type LuaRepoEntry = {
   flag?: string;
   attempts?: number;
   last_attempt?: number | null;
-  dismissed_id?: string | null;
 };
 
 /** Result of a check. `token` is handed back to `modulesUpdateApply`. */

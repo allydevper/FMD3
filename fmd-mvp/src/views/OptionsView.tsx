@@ -1662,9 +1662,42 @@ export function OptionsView() {
 
   const modsUpdatedCount = useMemo(() => modRows.filter((r) => r.updated).length, [modRows]);
 
-  const modulesPendingCount = modulesPending
-    ? modulesPending.new_count + modulesPending.update_count + modulesPending.delete_count
-    : 0;
+  /**
+   * What is actually pending, read off the stored state rather than off the
+   * last background check. Silencing the toast must not make this tab lie:
+   * you opened it on purpose, so it tells you the truth either way.
+   */
+  const modsPending = useMemo(() => {
+    let nw = 0;
+    let up = 0;
+    let del = 0;
+    for (const e of repoEntries) {
+      switch ((e.flag || "").toLowerCase()) {
+        case "new":
+          nw++;
+          break;
+        case "update":
+          up++;
+          break;
+        case "delete":
+          del++;
+          break;
+      }
+    }
+    const parts: string[] = [];
+    if (nw) parts.push(`${nw} nuevos`);
+    if (up) parts.push(`${up} actualizados`);
+    if (del) parts.push(`${del} eliminados`);
+    return { total: nw + up + del, summary: parts.join(", ") };
+  }, [repoEntries]);
+
+  const modulesPendingCount = modsPending.total;
+  const [modsBannerHidden, setModsBannerHidden] = useState(false);
+
+  // A fresh background result is news again, even if the banner was hidden.
+  useEffect(() => {
+    if (modulesPending) setModsBannerHidden(false);
+  }, [modulesPending]);
 
   /** File count drives the bar; the archive phase only knows bytes. */
   const modulesJobPct = useMemo(() => {
@@ -3271,17 +3304,22 @@ export function OptionsView() {
                   ) : null}
                 </div>
 
-                {modulesPending && !modulesJob ? (
+                {modsPending.total > 0 && !modulesJob && !modsBannerHidden ? (
                   <div className="mods-banner" role="status">
                     <Icon ico={ICO.info} className="ico ico-sm" />
                     <span className="ell">
-                      Hay actualizaciones pendientes: {summarizeCheck(modulesPending)}
+                      Hay actualizaciones pendientes:{" "}
+                      {modulesPending ? summarizeCheck(modulesPending) : modsPending.summary}
                     </span>
                     <div className="sites-footer-spacer" />
                     <button type="button" className="lnk" onClick={() => void runModulesCheck()}>
                       Actualizar ahora
                     </button>
-                    <button type="button" className="lnk" onClick={() => setModulesPending(null)}>
+                    <button
+                      type="button"
+                      className="lnk"
+                      onClick={() => setModsBannerHidden(true)}
+                    >
                       Ocultar
                     </button>
                   </div>

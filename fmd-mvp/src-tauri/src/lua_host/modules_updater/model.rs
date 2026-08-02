@@ -41,9 +41,6 @@ pub struct LuaRepoEntry {
     pub attempts: u32,
     #[serde(default)]
     pub last_attempt: Option<i64>,
-    /// Remote id the user dismissed: silences the prompt until the remote moves.
-    #[serde(default)]
-    pub dismissed_id: Option<String>,
 }
 
 pub fn default_flag() -> String {
@@ -63,7 +60,6 @@ impl LuaRepoEntry {
             flag: default_flag(),
             attempts: 0,
             last_attempt: None,
-            dismissed_id: None,
         }
     }
 
@@ -72,7 +68,10 @@ impl LuaRepoEntry {
         self.local_id.as_deref() == Some(self.remote_id.as_str())
     }
 
-    /// Failed entries back off so a permanently broken file cannot nag forever.
+    /// Failed entries back off, which is what keeps a permanently broken file
+    /// from re-announcing itself on every launch. Declining an update is *not*
+    /// recorded: a toast that shows up once per launch is a reminder, not a
+    /// nag, and silencing it for good only made the app look broken.
     pub fn retry_due(&self, now: i64) -> bool {
         if self.attempts == 0 {
             return true;
@@ -87,14 +86,9 @@ impl LuaRepoEntry {
         }
     }
 
-    pub fn is_dismissed(&self) -> bool {
-        self.dismissed_id.as_deref() == Some(self.remote_id.as_str())
-    }
-
     pub fn clear_failure(&mut self) {
         self.attempts = 0;
         self.last_attempt = None;
-        self.dismissed_id = None;
     }
 }
 
