@@ -2,12 +2,18 @@
 -- Template Configuration
 ----------------------------------------------------------------------------------------------------
 
-local Template = require 'templates.Madara'
-XPathTokenStatus  = 'الحالة'
+local Template = require 'templates.DataLife'
 
 ----------------------------------------------------------------------------------------------------
 -- Event Functions
 ----------------------------------------------------------------------------------------------------
+
+-- Get the page count of the manga list of the current website.
+function GetDirectoryPageNumber()
+	Template.GetDirectoryPageNumber()
+
+	return no_error
+end
 
 -- Get links and names from the manga list of the current website.
 function GetNameAndLink()
@@ -30,17 +36,27 @@ function GetPageNumber()
 	return true
 end
 
+-- Prepare the URL, http header and/or http cookies before downloading an image.
+function BeforeDownloadImage()
+	Template.BeforeDownloadImage()
+
+	return true
+end
+
 ----------------------------------------------------------------------------------------------------
 -- Module Initialization
 ----------------------------------------------------------------------------------------------------
 
 function Init()
-	local m = NewWebsiteModule()
-	m.ID                       = '7bda2905b61c49d1976777e9f2356361'
-	m.Name                     = '3asq'
-	m.RootURL                  = 'https://3asq.online'
-	m.Category                 = 'Arabic-Scanlation'
-	m.OnGetNameAndLink         = 'GetNameAndLink'
-	m.OnGetInfo                = 'GetInfo'
-	m.OnGetPageNumber          = 'GetPageNumber'
+    local m = NewWebsiteModule()
+    m.ID                       = '36910b82616e48be9fec000c7bda5ab4'
+    m.Name                     = 'Batcave'
+    m.RootURL                  = 'https://batcave.biz'
+    m.Category                 = 'English'
+    m.OnGetDirectoryPageNumber = 'GetDirectoryPageNumber'
+    m.OnGetNameAndLink         = 'GetNameAndLink'
+    m.OnGetInfo                = 'GetInfo'
+    m.OnGetPageNumber          = 'GetPageNumber'
+	m.OnBeforeDownloadImage    = 'BeforeDownloadImage'
+	m.SortedList               = true
 end

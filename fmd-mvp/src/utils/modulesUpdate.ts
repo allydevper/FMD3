@@ -28,6 +28,15 @@ export function summarizeCheck(c: ModulesCheckReport): string {
   return parts.length ? parts.join(", ") : "sin cambios pendientes";
 }
 
+function formatCheckBreakdown(c: ModulesCheckReport): string {
+  const parts: string[] = [];
+  if (c.update_count) parts.push(`${c.update_count} actualizados`);
+  if (c.new_count) parts.push(`${c.new_count} nuevos`);
+  if (c.delete_count) parts.push(`${c.delete_count} eliminados`);
+  if (c.failed_count) parts.push(`${c.failed_count} con error`);
+  return parts.length ? parts.join(" · ") : "sin cambios pendientes";
+}
+
 function summarizeApply(r: ModulesUpdateReport): string {
   const parts: string[] = [];
   if (r.downloaded) parts.push(`${r.downloaded} descargados`);
@@ -85,13 +94,21 @@ export async function runModulesGithubUpdate(
   const warn =
     overwrites > 0 && parseBool(await api.settingsGet(SK.MODULES_UPDATER_SHOW_WARNING), true);
   if (warn) {
+    const files = check.status_lines.length
+      ? check.status_lines
+      : [summarizeCheck(check)];
+    const fileCount = check.new_count + check.update_count + check.delete_count;
     const ok = await appConfirm({
       title: "Actualización de módulos",
       message:
-        "Hay cambios en los módulos. La versión actual de cada archivo se guarda en la copia de seguridad antes de sobrescribirse, así que puedes deshacer. ¿Continuar?",
+        "La versión actual de cada archivo se guarda en la copia de seguridad antes de sobrescribirse, así que puedes deshacer.",
       okLabel: "Actualizar",
       cancelLabel: "Cancelar",
-      items: check.status_lines.length ? check.status_lines : [summarizeCheck(check)],
+      items: files,
+      meta: `${fileCount || files.length} archivos`,
+      listTitle: "Archivos afectados",
+      listMeta: formatCheckBreakdown(check),
+      footerHint: "Copia de seguridad automática",
     });
     if (!ok) {
       // Frees the parked plan; the same changes are reported again next time.

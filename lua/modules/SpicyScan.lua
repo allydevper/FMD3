@@ -2,8 +2,10 @@
 -- Template Configuration
 ----------------------------------------------------------------------------------------------------
 
-local Template = require 'templates.Madara'
-XPathTokenStatus  = 'الحالة'
+local Template = require 'templates.SpicyTheme'
+local domain = 'spicyseries.com'
+API_URL = 'https://back.' .. domain
+path = 'comic'
 
 ----------------------------------------------------------------------------------------------------
 -- Event Functions
@@ -36,10 +38,10 @@ end
 
 function Init()
 	local m = NewWebsiteModule()
-	m.ID                       = '7bda2905b61c49d1976777e9f2356361'
-	m.Name                     = '3asq'
-	m.RootURL                  = 'https://3asq.online'
-	m.Category                 = 'Arabic-Scanlation'
+	m.ID                       = 'c3b247af4573468fac3ff366edfa0240'
+	m.Name                     = 'Spicy Scan'
+	m.RootURL                  = 'https://' .. domain
+	m.Category                 = 'Spanish'
 	m.OnGetNameAndLink         = 'GetNameAndLink'
 	m.OnGetInfo                = 'GetInfo'
 	m.OnGetPageNumber          = 'GetPageNumber'
