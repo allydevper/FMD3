@@ -10,20 +10,30 @@ const GITHUB_URL = "https://github.com/allydevper/FMD3";
 const FMD2_URL = "https://github.com/dazedcat19/FMD2";
 const GPL_URL = "https://www.gnu.org/licenses/gpl-2.0.html";
 
-const CHANGELOG = `FMD Host
-Cliente Tauri + módulos Lua de Free Manga Downloader 2
+const CHANGELOG = `FMD Host (FMD3)
+Cliente Tauri + React + módulos Lua de Free Manga Downloader 2
 
 Changelog:
 ([!] Importante, [+] Añadido, [-] Eliminado, [*] Cambio/corrección)
 
-0.1.0 (MVP)
-[+] Shell OmniManga: Descargas, Información, Favoritos, Opciones, Sobre
+0.1.0 (01.08.2026)
+[+] Favoritos: menú contextual, revisión de capítulos y miniatura
+[+] Papelera de títulos ocultos (restaurar / eliminar)
+[+] Confirmaciones al salir, borrar y vaciar listas
+[+] Descargas: tag de formato, menú contextual y cola por prioridad
+[+] Empaquetado / compresión de capítulos (ZIP·CBZ y afines)
+[+] Self-updater vía GitHub Releases (allydevper/FMD3)
+[+] Opciones: comprobar versión al iniciar
+[*] Rutas largas, hilos de favoritos y reordenación de cola
+[*] Borrar tareas completadas al cerrar (opción)
+
+0.1.0 (MVP · base)
+[+] Shell: Descargas, Información, Favoritos, Opciones, Sobre
 [+] Cola de descarga con SQLite y progreso en vivo
 [+] Favoritos: revisar capítulos nuevos y encolar
 [+] Catálogo + filtro avanzado (UI) + GetInfo
 [+] Opciones alineadas a FMD2 (guardar en, renombrado, sitios, módulos)
-[+] Bypass Cloudflare básico / websitebypass de FMD2
-[+] Self-updater (GitHub Releases allydevper/FMD3)
+[+] Bypass Cloudflare / websitebypass FMD2 (+ Duktape)
 [*] Mismos módulos Lua que FMD2 (recursos empaquetados)
 
 — Historial completo de FMD2 —
@@ -130,7 +140,7 @@ export function AboutView() {
               <div className="about-card">
                 <div className="about-kv">
                   <span className="about-kv-k">Proyecto</span>
-                  <span className="about-kv-v">FMD Host</span>
+                  <span className="about-kv-v">FMD Host (FMD3)</span>
                 </div>
                 <div className="about-kv">
                   <span className="about-kv-k">Basado en</span>
@@ -151,9 +161,14 @@ export function AboutView() {
               </div>
 
               <p className="about-lead">
-                Cliente moderno (Rust + Tauri) que reutiliza los módulos Lua de Free Manga Downloader 2:
-                misma sesión HTTP, hooks por imagen y catálogo/favoritos/cola en SQLite.
+                Cliente de escritorio (Rust + Tauri + React) que reutiliza los módulos Lua de Free Manga
+                Downloader 2: misma sesión HTTP, websitebypass/Duktape, y catálogo/favoritos/cola en SQLite.
               </p>
+
+              <h2 className="about-h">Desarrollador FMD3</h2>
+              <ul className="about-list">
+                <li>allydevper</li>
+              </ul>
 
               <h2 className="about-h">Desarrolladores FMD2</h2>
               <ul className="about-list">
@@ -161,7 +176,7 @@ export function AboutView() {
                 <li>dazedcat19</li>
               </ul>
 
-              <h2 className="about-h">Desarrolladores anteriores</h2>
+              <h2 className="about-h">Desarrolladores anteriores (FMD)</h2>
               <ul className="about-list about-list-inline">
                 <li>Akarin-K</li>
                 <li>Anastasiadinara</li>
@@ -173,16 +188,17 @@ export function AboutView() {
 
               <h2 className="about-h">Stack de este cliente</h2>
               <ul className="about-list">
-                <li>Rust + Tauri 2</li>
+                <li>Rust + Tauri 2 + React</li>
                 <li>Lua 5.4 (mlua) — módulos y plantillas FMD2</li>
-                <li>SQLite — cola y favoritos</li>
+                <li>SQLite — cola, favoritos y catálogo</li>
                 <li>reqwest — HTTP / cookies / compresión</li>
+                <li>Duktape — challenges websitebypass (paridad FMD2)</li>
               </ul>
 
-              <h2 className="about-h">Bibliotecas y herramientas (línea FMD2)</h2>
+              <h2 className="about-h">Recursos FMD2 empaquetados</h2>
               <ul className="about-list about-list-compact">
-                <li>Lua · SQLite · OpenSSL · LibWebp · Brotli · Zstd · 7-Zip</li>
-                <li>Plantillas y módulos del árbol FMD2 empaquetados con la app</li>
+                <li>Módulos, plantillas, utils y websitebypass del árbol FMD2</li>
+                <li>Compatible con la misma API Lua que el cliente Lazarus</li>
               </ul>
             </div>
           </div>
@@ -195,7 +211,7 @@ export function AboutView() {
         <footer className="about-footer">
           <span className="about-footer-stat">
             <span className="fav-dot" style={{ background: "var(--accent)" }}></span>
-            <span>FMD Host</span>
+            <span>FMD Host · FMD3</span>
           </span>
           <span className="about-footer-muted mono">{runtimeLabel}</span>
           <span className="about-footer-muted mono">{modulesLabel}</span>
