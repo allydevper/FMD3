@@ -336,7 +336,7 @@ export type CatalogFetchProgressEvent = {
   message: string;
 };
 
-export type CatalogJobMode = "update" | "fetch" | "favorites";
+export type CatalogJobMode = "update" | "fetch" | "favorites" | "modules";
 export type CatalogJobScope = "one" | "all";
 
 export type CatalogJobState = {

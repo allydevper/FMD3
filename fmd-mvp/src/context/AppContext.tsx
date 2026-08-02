@@ -111,9 +111,9 @@ type AppContextValue = {
   /** Changes a silent module check found and left for the user to confirm. */
   modulesPending: ModulesCheckReport | null;
   setModulesPending: (v: ModulesCheckReport | null) => void;
-  /** Live progress of a running module sync; null when idle. */
+  /** Live progress of a running module sync; null when idle. Cancelling goes
+   *  through `cancelCatalogJob`, which dispatches on the job mode. */
   modulesJob: ModulesUpdateProgressEvent | null;
-  cancelModulesJob: () => Promise<void>;
   /** Version of a postponed app update, if any. */
   appUpdatePending: string | null;
   /** Options tab to open next; OptionsView consumes and clears it. */
@@ -416,23 +416,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     catalogJobRef.current = catalogJob;
   }, [catalogJob]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let un: (() => void) | undefined;
-    void api
-      .onModulesUpdateProgress((p) => {
-        setModulesJob(p.phase === "done" ? null : p);
-      })
-      .then((u) => {
-        if (cancelled) u();
-        else un = u;
-      });
-    return () => {
-      cancelled = true;
-      un?.();
-    };
-  }, []);
-
   // What a restart would interrupt. The queue is polled from the backend by
   // `busyReasons`; these two only exist in memory.
   useEffect(
@@ -445,14 +428,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }),
     [],
   );
-
-  const cancelModulesJob = useCallback(async () => {
-    try {
-      await api.modulesUpdateCancel();
-    } catch (e) {
-      log(`No se pudo cancelar la actualización de módulos: ${e}`, "err");
-    }
-  }, [log]);
 
   useEffect(() => {
     let cancelled = false;
@@ -533,6 +508,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCatalogJob(job);
   }, []);
 
+  // The module sync drives the same floating bar as catalog and favorites, so
+  // progress and Cancel follow the user instead of disappearing the moment
+  // they navigate away from the settings tab.
+  useEffect(() => {
+    let cancelled = false;
+    let un: (() => void) | undefined;
+    void api
+      .onModulesUpdateProgress((p) => {
+        if (p.phase === "done") {
+          setModulesJob(null);
+          setAppJob(null);
+          return;
+        }
+        setModulesJob(p);
+        setAppJob({
+          mode: "modules",
+          scope: "all",
+          moduleId: "",
+          moduleName: p.current || "",
+          index: p.files_done,
+          total: p.files_total,
+          page: 0,
+          pageTotal: 0,
+          bytesDone: p.bytes_done,
+          bytesTotal: p.bytes_total,
+          message: p.message || p.current,
+          phase: p.phase,
+          cancelling: false,
+        });
+      })
+      .then((u) => {
+        if (cancelled) u();
+        else un = u;
+      });
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, [setAppJob]);
+
   const isAppJobCancelRequested = useCallback(
     () => catalogCancelRequestedRef.current,
     [],
@@ -553,7 +568,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Favorites checks are frontend-loop only; skip Rust catalog cancel.
     if (mode === "favorites") return;
     try {
-      await api.catalogJobCancel();
+      // Same bar, different job: the modules sync has its own cancel flag.
+      await (mode === "modules" ? api.modulesUpdateCancel() : api.catalogJobCancel());
     } catch {
       /* ignore */
     }
@@ -797,7 +813,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     modulesPending,
     setModulesPending,
     modulesJob,
-    cancelModulesJob,
     appUpdatePending,
     pendingOptionsTab,
     openOptionsTab,

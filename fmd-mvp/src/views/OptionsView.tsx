@@ -132,18 +132,6 @@ function formatMb(bytes: number): string {
   return mb < 0.1 ? "menos de 0,1 MB" : `${mb.toFixed(1).replace(".", ",")} MB`;
 }
 
-/** Progress phases emitted by the Rust updater, in user-facing Spanish. */
-const MODS_PHASE_LABEL: Record<string, string> = {
-  probe: "Consultando la fuente…",
-  list: "Leyendo el listado…",
-  metadata: "Consultando información de los cambios…",
-  archive: "Descargando paquete…",
-  download: "Descargando archivos…",
-  delete: "Eliminando archivos…",
-  persist: "Guardando estado…",
-  registry: "Recargando módulos…",
-};
-
 type OptionsFormState = {
   ua: string;
   useProxy: boolean;
@@ -795,7 +783,6 @@ export function OptionsView() {
     modulesPending,
     setModulesPending,
     modulesJob,
-    cancelModulesJob,
     pendingOptionsTab,
     clearPendingOptionsTab,
   } = useApp();
@@ -1631,6 +1618,7 @@ export function OptionsView() {
 
   const [modsQuery, setModsQuery] = useState("");
   const [modsOnlyUpdated, setModsOnlyUpdated] = useState(false);
+  const [modsShowSupport, setModsShowSupport] = useState(false);
   const [modsChecking, setModsChecking] = useState(false);
   const [repoEntries, setRepoEntries] = useState<LuaRepoEntry[]>([]);
   const [modsSourceOpen, setModsSourceOpen] = useState(false);
@@ -1675,7 +1663,14 @@ export function OptionsView() {
     );
   }, [repoEntries]);
 
-  const modsUpdatedCount = useMemo(() => modRows.filter((r) => r.updated).length, [modRows]);
+  /** Counted over what the list is currently showing, so the footer adds up. */
+  const modsUpdatedCount = useMemo(
+    () =>
+      modRows.filter(
+        (r) => r.updated && (modsShowSupport || r.file.startsWith("modules/")),
+      ).length,
+    [modRows, modsShowSupport],
+  );
 
   /**
    * What is actually pending, read off the stored state rather than off the
@@ -1718,28 +1713,31 @@ export function OptionsView() {
     if (modulesPending) setModsBannerHidden(false);
   }, [modulesPending]);
 
-  /** File count drives the bar; the archive phase only knows bytes. */
-  const modulesJobPct = useMemo(() => {
-    if (!modulesJob) return 0;
-    const { files_done, files_total, bytes_done, bytes_total } = modulesJob;
-    if (files_total > 0) return Math.min(100, Math.round((files_done / files_total) * 100));
-    if (bytes_total > 0) return Math.min(100, Math.round((bytes_done / bytes_total) * 100));
-    return 0;
-  }, [modulesJob]);
-
   // A finished sync makes the row list stale.
   useEffect(() => {
     if (modulesJob) return;
     if (optTab === "websites" && sitesTab === "mods") void loadRepoEntries();
   }, [modulesJob, optTab, sitesTab, loadRepoEntries]);
 
+  /**
+   * The sync tracks the whole Lua tree, but only `modules/` maps to a site the
+   * user recognises. Templates, watermark PNGs and the bypass scripts are
+   * support files they never look for by name — hidden by default, one click
+   * away, and never excluded from the sync itself.
+   */
+  const modsSupportCount = useMemo(
+    () => modRows.filter((r) => !r.file.startsWith("modules/")).length,
+    [modRows],
+  );
+
   const modsFlat = useMemo(() => {
     const mq = modsQuery.trim().toLowerCase();
     let rows = modRows;
+    if (!modsShowSupport) rows = rows.filter((r) => r.file.startsWith("modules/"));
     if (mq) rows = rows.filter((r) => r.file.toLowerCase().includes(mq) || r.msg.toLowerCase().includes(mq));
     if (modsOnlyUpdated) rows = rows.filter((r) => r.updated);
     return rows;
-  }, [modRows, modsQuery, modsOnlyUpdated]);
+  }, [modRows, modsQuery, modsOnlyUpdated, modsShowSupport]);
 
   const {
     containerRef: modsListRef,
@@ -3357,26 +3355,6 @@ export function OptionsView() {
                   </div>
                 ) : null}
 
-                {modulesJob ? (
-                  <div className="mods-progress" role="status" aria-live="polite">
-                    <div className="mods-progress-head">
-                      <span className="ell">
-                        {modulesJob.message ||
-                          modulesJob.current ||
-                          MODS_PHASE_LABEL[modulesJob.phase] ||
-                          "Actualizando módulos…"}
-                      </span>
-                      <span className="mods-progress-pct">{modulesJobPct}%</span>
-                      <button type="button" className="lnk" onClick={() => void cancelModulesJob()}>
-                        Cancelar
-                      </button>
-                    </div>
-                    <div className="mods-progress-track">
-                      <div className="mods-progress-fill" style={{ width: `${modulesJobPct}%` }} />
-                    </div>
-                  </div>
-                ) : null}
-
                 <div className="mods-list-wrap">
                   <div className="mods-head">
                     <span>Nombre del archivo</span>
@@ -3466,9 +3444,21 @@ export function OptionsView() {
                 <div className="sites-footer">
                   <Icon ico={ICO.terminal} className="ico ico-sm" />
                   <span id="mods-summary">
-                    {modRows.length} módulos · {modsUpdatedCount} actualizados recientemente
+                    {modRows.length - modsSupportCount} módulos
+                    {modsShowSupport ? ` · ${modsSupportCount} archivos de soporte` : ""}
+                    {modsUpdatedCount ? ` · ${modsUpdatedCount} con cambios` : ""}
                   </span>
                   <div className="sites-footer-spacer" />
+                  <button
+                    type="button"
+                    className="lnk"
+                    onClick={() => setModsShowSupport((v) => !v)}
+                    title="Plantillas, imágenes y scripts que los módulos necesitan"
+                  >
+                    {modsShowSupport
+                      ? "Ocultar archivos de soporte"
+                      : `Mostrar archivos de soporte (${modsSupportCount})`}
+                  </button>
                   <button type="button" className="lnk" onClick={() => setModsOnlyUpdated((v) => !v)}>
                     {modsOnlyUpdated ? "Mostrar todos" : "Mostrar solo actualizados"}
                   </button>

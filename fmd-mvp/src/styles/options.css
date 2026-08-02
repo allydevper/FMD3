@@ -1331,46 +1331,6 @@
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.mods-progress {
-  flex: 0 0 auto;
-  padding: 8px 22px 10px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-}
-
-.mods-progress-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 6px;
-}
-
-.mods-progress-head > .ell {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.mods-progress-pct {
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  color: var(--fg);
-}
-
-.mods-progress-track {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--row-line);
-  overflow: hidden;
-}
-
-.mods-progress-fill {
-  height: 100%;
-  background: var(--accent);
-  transition: width 120ms linear;
-}
-
 /* Row actions stay out of the way until the row is hovered. */
 .mods-actions {
   display: flex;

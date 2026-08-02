@@ -3,7 +3,24 @@ import { Icon } from "./Icon";
 import { useApp } from "../context/AppContext";
 import type { CatalogJobState } from "../types";
 
+/** Phases emitted by the Lua modules updater, in user-facing Spanish. */
+const MODULES_PHASE: Record<string, string> = {
+  probe: "Consultando la fuente",
+  list: "Leyendo el listado",
+  metadata: "Consultando información de los cambios",
+  archive: "Descargando paquete de módulos",
+  download: "Descargando módulos",
+  delete: "Eliminando módulos",
+  persist: "Guardando estado",
+  registry: "Recargando módulos",
+};
+
 function phaseHeadline(job: CatalogJobState): string {
+  if (job.mode === "modules") {
+    if (job.cancelling) return "Cancelando actualización de módulos";
+    const what = MODULES_PHASE[job.phase ?? ""] ?? "Actualizando módulos";
+    return job.total > 0 ? `${what} [${job.index}/${job.total}]` : what;
+  }
   if (job.mode === "favorites") {
     if (job.cancelling) return "Cancelando revisión de favoritos";
     if (job.phase === "done") return "Revisión de favoritos lista";
@@ -25,6 +42,12 @@ function phaseHeadline(job: CatalogJobState): string {
 }
 
 function phaseShort(job: CatalogJobState): string {
+  if (job.mode === "modules") {
+    if (job.cancelling) return "Cancelando módulos";
+    return job.total > 0
+      ? `Módulos · ${job.index}/${job.total}`
+      : (MODULES_PHASE[job.phase ?? ""] ?? "Módulos");
+  }
   if (job.mode === "favorites") {
     if (job.cancelling) return "Cancelando favoritos";
     if (job.phase === "done") return "Favoritos · listo";
