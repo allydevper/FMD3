@@ -799,7 +799,6 @@ export function OptionsView() {
   const logClearTimerRef = useRef<number | undefined>(undefined);
   const [s, setS] = useState<OptionsFormState>(DEFAULT_SETTINGS);
   const [modsWarn, setModsWarn] = useState(true);
-  const [modsAutoRestart, setModsAutoRestart] = useState(false);
   const [modsFetchMeta, setModsFetchMeta] = useState(true);
   const [modsBackupGens, setModsBackupGens] = useState(3);
   const [modsBackupMb, setModsBackupMb] = useState(64);
@@ -1000,10 +999,7 @@ export function OptionsView() {
     const removeMangaFromChapter = parseB(await get(SK.REMOVE_MANGA_FROM_CHAPTER), false);
     const sortOnAdd = parseB(await get(SK.SORT_ON_ADD), false);
     const checkUpdateStart = parseB(await get(SK.CHECK_UPDATE_START), true);
-    const modsWarnLoad = parseB(await get(SK.MODULES_UPDATER_SHOW_WARNING), true);
-    const modsAutoRestartLoad = parseB(await get(SK.MODULES_UPDATER_AUTO_RESTART), false);
-    setModsWarn(modsWarnLoad);
-    setModsAutoRestart(modsAutoRestartLoad);
+    setModsWarn(parseB(await get(SK.MODULES_UPDATER_SHOW_WARNING), true));
     const parseN = (raw: string | null, fallback: number) => {
       const n = Number((raw ?? "").trim());
       return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -1157,7 +1153,6 @@ export function OptionsView() {
     await api.settingsSet(SK.SORT_ON_ADD, boolStr(s.sortOnAdd));
     await api.settingsSet(SK.CHECK_UPDATE_START, boolStr(s.checkUpdateStart));
     await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, boolStr(modsWarn));
-    await api.settingsSet(SK.MODULES_UPDATER_AUTO_RESTART, boolStr(modsAutoRestart));
     await api.settingsSet(SK.MODULES_FETCH_METADATA, boolStr(modsFetchMeta));
     await api.settingsSet(SK.MODULES_BACKUP_GENERATIONS, String(modsBackupGens));
     await api.settingsSet(SK.MODULES_BACKUP_MAX_MB, String(modsBackupMb));
@@ -1207,7 +1202,6 @@ export function OptionsView() {
     setFavAutoCheck,
     saveFlash,
     modsWarn,
-    modsAutoRestart,
     modsFetchMeta,
     modsBackupGens,
     modsBackupMb,
@@ -1754,9 +1748,8 @@ export function OptionsView() {
     if (modsChecking) return;
     setModsChecking(true);
     try {
-      // Persist current toggles so Rust reads the same warning/restart prefs.
+      // Persist the toggle first so the updater reads what is on screen.
       await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, modsWarn ? "1" : "0");
-      await api.settingsSet(SK.MODULES_UPDATER_AUTO_RESTART, modsAutoRestart ? "1" : "0");
       await runModulesGithubUpdate(log);
       setModulesPending(null);
       await refreshModules();
@@ -1769,7 +1762,6 @@ export function OptionsView() {
   }, [
     modsChecking,
     modsWarn,
-    modsAutoRestart,
     refreshModules,
     loadRepoEntries,
     setModulesPending,
@@ -3199,20 +3191,6 @@ export function OptionsView() {
                         <span className="sites-cb-mk" />
                       </span>
                       Mostrar advertencia de actualización
-                    </button>
-                    <button
-                      type="button"
-                      className="mods-chk"
-                      aria-pressed={modsAutoRestart}
-                      onClick={() => {
-                        setModsAutoRestart((v) => !v);
-                        setDirty(true);
-                      }}
-                    >
-                      <span className={`sites-cb${modsAutoRestart ? " on" : ""}`} style={{ ["--ico" as string]: ICO.check }}>
-                        <span className="sites-cb-mk" />
-                      </span>
-                      Auto reinicio
                     </button>
                   </div>
                   <button

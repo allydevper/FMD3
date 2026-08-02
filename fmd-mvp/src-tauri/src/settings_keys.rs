@@ -41,8 +41,9 @@ pub const QUEUE_SORT_ON_ADD: &str = "queue.sort_on_add";
 pub const MODULES_ENABLED: &str = "modules.enabled";
 /// FMD2 `[modulesupdater] ShowUpdateWarning` — confirm before overwriting local Lua.
 pub const MODULES_UPDATER_SHOW_WARNING: &str = "modulesupdater.show_update_warning";
-/// FMD2 `[modulesupdater] AutoRestart` — relaunch after modules download.
-pub const MODULES_UPDATER_AUTO_RESTART: &str = "modulesupdater.auto_restart";
+// FMD2's `[modulesupdater] AutoRestart` has no equivalent here: every module
+// call builds a fresh Lua VM from the file on disk, so a sync takes effect
+// without relaunching and there is nothing for the setting to control.
 /// Where Lua modules come from: `github` | `http_index` | `local_dir`.
 pub const MODULES_SOURCE: &str = "modules.source";
 /// Index URL or folder for the non-GitHub sources. Empty → the built-in default.

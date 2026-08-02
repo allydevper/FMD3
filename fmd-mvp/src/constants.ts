@@ -257,7 +257,6 @@ export const SK = {
   OUTPUT_DIR: "default_output_dir",
   MODULES_ENABLED: "modules.enabled",
   MODULES_UPDATER_SHOW_WARNING: "modulesupdater.show_update_warning",
-  MODULES_UPDATER_AUTO_RESTART: "modulesupdater.auto_restart",
   // Transport tuning (bulk threshold, worker count) stays backend-only: it is
   // an implementation detail, not a decision to put in front of a user.
   MODULES_FETCH_METADATA: "modules.updater.fetch_metadata",

@@ -1,7 +1,6 @@
 import * as api from "../api/tauri";
 import { appConfirm } from "../components/AppConfirm";
 import { SK } from "../constants";
-import { safeRelaunch } from "./restartGuard";
 import type { ModulesCheckReport, ModulesUpdateReport } from "../types";
 
 export type ModulesUpdateLog = (msg: string, kind?: "ok" | "err" | "") => void;
@@ -43,23 +42,6 @@ function summarizeApply(r: ModulesUpdateReport): string {
   if (r.deleted) parts.push(`${r.deleted} eliminados`);
   if (r.failed) parts.push(`${r.failed} con error`);
   return parts.length ? parts.join(", ") : "sin cambios";
-}
-
-async function maybeRestart(log: ModulesUpdateLog): Promise<void> {
-  const auto = parseBool(await api.settingsGet(SK.MODULES_UPDATER_AUTO_RESTART), false);
-  if (auto) {
-    log("Módulos actualizados — reiniciando…", "ok");
-    // Even auto-restart asks when it would kill a download in flight.
-    await safeRelaunch("Se actualizaron los módulos Lua.");
-    return;
-  }
-  const ok = await appConfirm({
-    title: "Módulos actualizados",
-    message: "Se actualizaron módulos Lua. ¿Reiniciar ahora?",
-    okLabel: "Reiniciar",
-    cancelLabel: "Más tarde",
-  });
-  if (ok) await safeRelaunch("Se actualizaron los módulos Lua.");
 }
 
 /**
@@ -131,10 +113,12 @@ export async function runModulesGithubUpdate(
     return { check, report, deferred: false };
   }
 
+  // No restart: the registry is refreshed at the end of `apply`, and every
+  // module call builds a fresh Lua VM that reads the file off disk, so new code
+  // is live immediately. FMD2 needed a relaunch here; this port does not.
   log(
     `Módulos actualizados: ${summarizeApply(report)} (${report.refreshed_count} cargados)`,
     "ok",
   );
-  await maybeRestart(log);
   return { check, report, deferred: false };
 }
