@@ -6,6 +6,7 @@ mod image_puzzle;
 mod json_xpath;
 mod lua_log;
 mod mangafox_watermark;
+mod modules_updater;
 mod paths;
 mod registry;
 mod registry_cache;
@@ -14,6 +15,10 @@ mod strings;
 mod website_bypass_host;
 
 pub use lua_log::set_app_handle as set_lua_log_app;
+pub use modules_updater::{
+    list_for_ui as modules_repo_list, update_from_github as modules_update_from_github,
+    LuaRepoEntry, ModulesUpdateReport,
+};
 pub use registry::{
     ensure_loaded, find_by_id, list as modules_list, match_url as modules_match_url,
     refresh as modules_refresh, ModuleMeta,

@@ -197,12 +197,27 @@ pub fn refresh() -> usize {
     n
 }
 
+/// Hide Category=Test modules in release builds (TestCatalog is local-dev only).
+fn filter_release_test(list: Vec<ModuleMeta>) -> Vec<ModuleMeta> {
+    if cfg!(debug_assertions) {
+        list
+    } else {
+        list.into_iter()
+            .filter(|m| !m.category.eq_ignore_ascii_case("Test"))
+            .collect()
+    }
+}
+
 pub fn list() -> Vec<ModuleMeta> {
-    with_registry(|r| r.list.clone())
+    filter_release_test(with_registry(|r| r.list.clone()))
 }
 
 pub fn find_by_id(id: &str) -> Option<ModuleMeta> {
-    with_registry(|r| r.by_id.get(id).cloned())
+    let meta = with_registry(|r| r.by_id.get(id).cloned())?;
+    if cfg!(not(debug_assertions)) && meta.category.eq_ignore_ascii_case("Test") {
+        return None;
+    }
+    Some(meta)
 }
 
 /// Match URL host against RootURL hosts. Prefer longer (more specific) RootURL.
@@ -210,14 +225,14 @@ pub fn match_url(url: &str) -> Vec<ModuleMeta> {
     let Some(host) = host_from_url(url) else {
         return Vec::new();
     };
-    with_registry(|r| {
+    filter_release_test(with_registry(|r| {
         let Some(ids) = r.by_host.get(&host) else {
             return Vec::new();
         };
         ids.iter()
             .filter_map(|id| r.by_id.get(id).cloned())
             .collect()
-    })
+    }))
 }
 
 /// Resolve module: explicit id, else unique auto-match, else error/ambiguous.

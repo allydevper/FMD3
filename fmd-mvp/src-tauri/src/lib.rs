@@ -375,6 +375,7 @@ pub fn run() {
             commands::log_open,
             commands::log_clear,
             commands::db_vacuum,
+            commands::modules_repo_list_cmd,
             commands::modules_update_github,
             commands::catalog_download_fmd2db,
             commands::app_confirm_exit,

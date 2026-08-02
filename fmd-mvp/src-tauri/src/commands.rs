@@ -4,8 +4,9 @@ use crate::catalog::{
 };
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
-    get_info, modules_list, modules_match_url, modules_refresh, update_list, ChapterInfo,
-    MangaInfoResult, ModuleMeta, UpdateListProgress, UpdateListStats,
+    get_info, modules_list, modules_match_url, modules_refresh, modules_repo_list,
+    modules_update_from_github, update_list, ChapterInfo, LuaRepoEntry, MangaInfoResult,
+    ModuleMeta, ModulesUpdateReport, UpdateListProgress, UpdateListStats,
 };
 use crate::queue::{self, QueueState};
 use crate::rename_patterns::RenameOpts;
@@ -1660,10 +1661,21 @@ pub fn db_vacuum(state: State<QueueState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn modules_update_github() -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(modules_refresh)
+pub async fn modules_repo_list_cmd() -> Result<Vec<LuaRepoEntry>, String> {
+    tauri::async_runtime::spawn_blocking(modules_repo_list)
         .await
         .map_err(|e| format!("tarea cancelada: {e}"))
+}
+
+/// GitHub Lua sync (FMD2 modules updater).
+/// `proceed`: `None` = check (may return `awaiting_confirm`); `Some(true)` = apply; `Some(false)` = cancel.
+#[tauri::command]
+pub async fn modules_update_github(
+    proceed: Option<bool>,
+) -> Result<ModulesUpdateReport, String> {
+    tauri::async_runtime::spawn_blocking(move || modules_update_from_github(proceed))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
 }
 
 #[tauri::command]

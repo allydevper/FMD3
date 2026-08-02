@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { VirtualList } from "./VirtualList";
 
 export type AppConfirmOptions = {
   title?: string;
@@ -15,6 +16,8 @@ export type AppConfirmOptions = {
   cancelLabel?: string;
   /** Only show OK (informational). */
   alert?: boolean;
+  /** Optional scrollable detail lines (virtualized). */
+  items?: string[];
 };
 
 type ConfirmFn = (opts: AppConfirmOptions) => Promise<boolean>;
@@ -25,12 +28,15 @@ type Pending = AppConfirmOptions & {
 
 const AppConfirmContext = createContext<ConfirmFn | null>(null);
 
+const LIST_ROW_H = 28;
+
 /** Imperative bridge for non-hook callers (settings helpers, etc.). */
 let bridge: ConfirmFn | null = null;
 
 export function appConfirm(opts: AppConfirmOptions): Promise<boolean> {
   if (bridge) return bridge(opts);
-  return Promise.resolve(window.confirm(opts.message));
+  const extra = opts.items?.length ? `\n\n${opts.items.join("\n")}` : "";
+  return Promise.resolve(window.confirm(opts.message + extra));
 }
 
 export function AppConfirmProvider({ children }: { children: ReactNode }) {
@@ -60,6 +66,8 @@ export function AppConfirmProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(() => confirm, [confirm]);
+  const items = pending?.items ?? [];
+  const hasList = items.length > 0;
 
   return (
     <AppConfirmContext.Provider value={value}>
@@ -71,7 +79,7 @@ export function AppConfirmProvider({ children }: { children: ReactNode }) {
           onClick={() => finish(false)}
         >
           <div
-            className="info-modal info-modal-confirm"
+            className={`info-modal info-modal-confirm${hasList ? " info-modal-confirm-list" : ""}`}
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="app-confirm-title"
@@ -87,6 +95,22 @@ export function AppConfirmProvider({ children }: { children: ReactNode }) {
               <p id="app-confirm-msg" className="info-modal-confirm-msg">
                 {pending.message}
               </p>
+              {hasList ? (
+                <VirtualList
+                  className="info-modal-confirm-vlist"
+                  innerClassName="info-modal-confirm-vlist-inner"
+                  items={items}
+                  itemHeight={LIST_ROW_H}
+                  overscan={8}
+                  resetKey={pending.title}
+                  getKey={(line, i) => `${i}:${line}`}
+                  renderItem={(line, _i, style) => (
+                    <div className="info-modal-confirm-row" style={style} title={line}>
+                      {line}
+                    </div>
+                  )}
+                />
+              ) : null}
             </div>
             <footer className="info-modal-foot">
               {!pending.alert ? (

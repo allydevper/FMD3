@@ -19,6 +19,7 @@ import type {
 } from "../types";
 import * as api from "../api/tauri";
 import { runAppUpdateCheck } from "../utils/appUpdate";
+import { runModulesGithubUpdate } from "../utils/modulesUpdate";
 
 export type LogKind = "ok" | "err" | "";
 export type AppTheme = "system" | "light" | "dark";
@@ -148,6 +149,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     layoutFromWidth(typeof window !== "undefined" ? window.innerWidth : 1280),
   );
   const favIntervalRef = useRef<number | null>(null);
+  const modulesUpdateBusyRef = useRef(false);
+  const runAutoModulesCheckRef = useRef<(silent: boolean) => Promise<void>>(async () => {});
   const favDownloadAfterRef = useRef(false);
   const [favAutoCheckSeq, setFavAutoCheckSeq] = useState(0);
   const [lastFavAutoCheck, setLastFavAutoCheck] = useState<FavoriteCheckResult[] | null>(
@@ -244,6 +247,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           } finally {
             setFavAutoChecking(false);
           }
+          // FMD2: same AutoCheckLatestVersion also refreshes Lua modules on fav timer.
+          const checkUpdate = parseBool(await api.settingsGet(SK.CHECK_UPDATE_START), true);
+          if (checkUpdate) {
+            await runAutoModulesCheckRef.current(true);
+          }
         })();
       }, intervalMin * 60_000);
     },
@@ -297,6 +305,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     return mods;
   }, [selectedModuleId]);
+
+  const runAutoModulesCheck = useCallback(
+    async (silent: boolean) => {
+      if (modulesUpdateBusyRef.current) return;
+      modulesUpdateBusyRef.current = true;
+      try {
+        await runModulesGithubUpdate(log, { silent });
+        await refreshModules();
+      } catch (e) {
+        if (!silent) log(`Revisión automática de módulos: ${e}`, "err");
+      } finally {
+        modulesUpdateBusyRef.current = false;
+      }
+    },
+    [log, refreshModules],
+  );
+  runAutoModulesCheckRef.current = runAutoModulesCheck;
 
   const refreshEnabledModules = useCallback(async () => {
     const raw = (await api.settingsGet(SK.MODULES_ENABLED)) ?? "[]";
@@ -590,6 +615,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             await runAppUpdateCheck(log);
           } catch {
             // runAppUpdateCheck already logged
+          }
+          if (!cancelled) {
+            await runAutoModulesCheckRef.current(true);
           }
         }
       } catch (e) {

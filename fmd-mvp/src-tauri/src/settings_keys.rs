@@ -39,6 +39,10 @@ pub const CONNECTIONS_MAX_FAVORITE_THREADS: &str = "connections.max_favorite_thr
 pub const QUEUE_SORT_ON_ADD: &str = "queue.sort_on_add";
 
 pub const MODULES_ENABLED: &str = "modules.enabled";
+/// FMD2 `[modulesupdater] ShowUpdateWarning` — confirm before overwriting local Lua.
+pub const MODULES_UPDATER_SHOW_WARNING: &str = "modulesupdater.show_update_warning";
+/// FMD2 `[modulesupdater] AutoRestart` — relaunch after modules download.
+pub const MODULES_UPDATER_AUTO_RESTART: &str = "modulesupdater.auto_restart";
 pub const CATALOG_DB_URL: &str = "catalog.db_url";
 pub const CATALOG_UPDATE_NO_INFO: &str = "catalog.update_no_info";
 /// When true, Update List ignores module SortedList and scans every directory page.

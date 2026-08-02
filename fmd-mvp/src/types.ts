@@ -72,6 +72,27 @@ export type ModuleMeta = {
   mtime?: number | null;
 };
 
+/** FMD2 userdata/lua.json entry (GitHub modules updater). */
+export type LuaRepoEntry = {
+  name: string;
+  sha: string;
+  last_modified?: number | null;
+  last_message?: string;
+  flag?: string;
+};
+
+export type ModulesUpdateReport = {
+  found_updates: boolean;
+  applied: boolean;
+  awaiting_confirm: boolean;
+  refreshed_count: number;
+  status_lines: string[];
+  new_count: number;
+  update_count: number;
+  delete_count: number;
+  failed_count: number;
+};
+
 export type Favorite = {
   id: number;
   module_id: string;

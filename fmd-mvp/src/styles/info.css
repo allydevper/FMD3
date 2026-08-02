@@ -2292,12 +2292,58 @@
   background: var(--field-bg);
 }
 
+.info-modal-confirm-list {
+  width: min(520px, calc(100% - 48px));
+  max-height: min(720px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+}
+
+.info-modal-confirm-list .info-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+
 .info-modal-confirm-msg {
   margin: 0;
   font-size: 13px;
   line-height: 1.45;
   color: var(--text);
   white-space: pre-wrap;
+}
+
+.info-modal-confirm-vlist {
+  position: relative;
+  height: min(360px, 42vh);
+  overflow: auto;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.info-modal-confirm-vlist-inner {
+  position: relative;
+  width: 100%;
+}
+
+.info-modal-confirm-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 28px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
 }
 
 .info-modal-foot {

@@ -13,6 +13,8 @@ import type {
   MangaCacheRow,
   MangaInfoResult,
   ModuleMeta,
+  ModulesUpdateReport,
+  LuaRepoEntry,
   QueueAddRequest,
   QueueItem,
   QueueProgressEvent,
@@ -59,6 +61,10 @@ export function modulesList() {
 
 export function modulesRefresh() {
   return invoke<number>("modules_refresh_cmd");
+}
+
+export function modulesRepoList() {
+  return invoke<LuaRepoEntry[]>("modules_repo_list_cmd");
 }
 
 export function modulesMatchUrl(url: string) {
@@ -392,8 +398,10 @@ export function vacuumDb() {
   return invoke("db_vacuum");
 }
 
-export function updateModulesFromGithub() {
-  return invoke<number>("modules_update_github");
+export function updateModulesFromGithub(proceed?: boolean | null) {
+  return invoke<ModulesUpdateReport>("modules_update_github", {
+    proceed: proceed === undefined ? null : proceed,
+  });
 }
 
 export function onQueueChanged(handler: () => void): Promise<UnlistenFn> {

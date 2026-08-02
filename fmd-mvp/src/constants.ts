@@ -256,6 +256,8 @@ export const SK = {
   ONE_CHAPTER_PER_MANGA: "download.one_chapter_per_manga",
   OUTPUT_DIR: "default_output_dir",
   MODULES_ENABLED: "modules.enabled",
+  MODULES_UPDATER_SHOW_WARNING: "modulesupdater.show_update_warning",
+  MODULES_UPDATER_AUTO_RESTART: "modulesupdater.auto_restart",
   CATALOG_DB_URL: "catalog.db_url",
   FAV_INTERVAL_ON: "favorites.check_interval_on",
   FAV_INTERVAL_MIN: "favorites.check_interval_min",

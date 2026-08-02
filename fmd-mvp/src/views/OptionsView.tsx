@@ -15,7 +15,8 @@ import { ICO } from "../icons";
 import { DEFAULT_USER_AGENT, PACK_EXT, SK } from "../constants";
 import * as api from "../api/tauri";
 import { useApp, type AppTheme } from "../context/AppContext";
-import type { HiddenEntry, ModuleMeta } from "../types";
+import type { HiddenEntry, LuaRepoEntry } from "../types";
+import { runModulesGithubUpdate } from "../utils/modulesUpdate";
 
 /* ---------------------------------------------------------------------- */
 /* Tipos y constantes                                                      */
@@ -124,8 +125,6 @@ const SITE_ROW_H = 31;
 const SITE_OVERSCAN = 10;
 const MOD_ROW_H = 32;
 const MOD_OVERSCAN = 10;
-/** Highlight as "Nuevo" if mtime within this many days (local scan; GitHub updater pending). */
-const MOD_NEW_DAYS = 14;
 
 type OptionsFormState = {
   ua: string;
@@ -295,7 +294,9 @@ type ModRow = {
   when: string;
   dateTitle: string;
   msg: string;
+  /** Highlight: new or update from GitHub sync flags. */
   updated: boolean;
+  badge: string | null;
 };
 
 /* ---------------------------------------------------------------------- */
@@ -377,10 +378,36 @@ function moduleDomain(rootUrl: string): string {
     .replace(/^www\./i, "");
 }
 
-function moduleFileName(m: ModuleMeta): string {
-  const p = (m.file_path || "").replace(/\\/g, "/");
-  const base = p.split("/").pop() || "";
-  return base || `${m.id}.lua`;
+function repoEntryToRow(e: LuaRepoEntry): ModRow {
+  const flag = (e.flag || "none").toLowerCase();
+  const mtime = e.last_modified ?? null;
+  const { when, title } = relDateFromUnix(mtime);
+  const msg = (e.last_message || "").trim() || "—";
+  let badge: string | null = null;
+  let updated = false;
+  if (flag === "new") {
+    badge = "Nuevo";
+    updated = true;
+  } else if (flag === "update") {
+    badge = "Update";
+    updated = true;
+  } else if (flag === "failed") {
+    badge = "Fail";
+    updated = true;
+  } else if (flag === "delete") {
+    badge = "Delete";
+    updated = true;
+  }
+  return {
+    key: e.name,
+    file: e.name,
+    mtime,
+    when,
+    dateTitle: title,
+    msg,
+    updated,
+    badge,
+  };
 }
 
 function relDateFromUnix(sec: number | null | undefined): { when: string; title: string } {
@@ -740,6 +767,8 @@ export function OptionsView() {
   const [logClearFlash, setLogClearFlash] = useState<"idle" | "working" | "done" | "error">("idle");
   const logClearTimerRef = useRef<number | undefined>(undefined);
   const [s, setS] = useState<OptionsFormState>(DEFAULT_SETTINGS);
+  const [modsWarn, setModsWarn] = useState(true);
+  const [modsAutoRestart, setModsAutoRestart] = useState(false);
 
   const outputDirRef = useRef(outputDir);
   useEffect(() => {
@@ -933,6 +962,10 @@ export function OptionsView() {
     const removeMangaFromChapter = parseB(await get(SK.REMOVE_MANGA_FROM_CHAPTER), false);
     const sortOnAdd = parseB(await get(SK.SORT_ON_ADD), false);
     const checkUpdateStart = parseB(await get(SK.CHECK_UPDATE_START), true);
+    const modsWarnLoad = parseB(await get(SK.MODULES_UPDATER_SHOW_WARNING), true);
+    const modsAutoRestartLoad = parseB(await get(SK.MODULES_UPDATER_AUTO_RESTART), false);
+    setModsWarn(modsWarnLoad);
+    setModsAutoRestart(modsAutoRestartLoad);
     const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
     const updateListFullScan = parseB(await get(SK.UPDATE_LIST_FULL_SCAN), false);
     const updateListThreads = Math.min(
@@ -1078,6 +1111,8 @@ export function OptionsView() {
     await api.settingsSet(SK.REMOVE_MANGA_FROM_CHAPTER, boolStr(s.removeMangaFromChapter));
     await api.settingsSet(SK.SORT_ON_ADD, boolStr(s.sortOnAdd));
     await api.settingsSet(SK.CHECK_UPDATE_START, boolStr(s.checkUpdateStart));
+    await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, boolStr(modsWarn));
+    await api.settingsSet(SK.MODULES_UPDATER_AUTO_RESTART, boolStr(modsAutoRestart));
     await api.settingsSet(SK.UPDATE_LIST_NO_INFO, boolStr(s.updateListNoInfo));
     await api.settingsSet(SK.UPDATE_LIST_FULL_SCAN, boolStr(s.updateListFullScan));
     const enabled = modules.filter((m) => siteOn[m.id]).map((m) => m.id);
@@ -1113,7 +1148,7 @@ export function OptionsView() {
       }, 2800);
       log(`No se pudieron guardar los ajustes: ${e}`, "err");
     }
-  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshEnabledModules, setFavAutoCheck, saveFlash]);
+  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshEnabledModules, setFavAutoCheck, saveFlash, modsWarn, modsAutoRestart]);
 
   const handleBrowseOutputDir = useCallback(async () => {
     const dir = await open({ directory: true, multiple: false });
@@ -1510,31 +1545,29 @@ export function OptionsView() {
 
   const [modsQuery, setModsQuery] = useState("");
   const [modsOnlyUpdated, setModsOnlyUpdated] = useState(false);
-  const [modsWarn, setModsWarn] = useState(true);
-  const [modsAutoRestart, setModsAutoRestart] = useState(false);
   const [modsChecking, setModsChecking] = useState(false);
+  const [repoEntries, setRepoEntries] = useState<LuaRepoEntry[]>([]);
+
+  const loadRepoEntries = useCallback(async () => {
+    try {
+      const list = await api.modulesRepoList();
+      setRepoEntries(list);
+    } catch (e) {
+      log(`No se pudo listar módulos: ${e}`, "err");
+    }
+  }, [log]);
+
+  useEffect(() => {
+    if (optTab === "websites" && sitesTab === "mods") {
+      void loadRepoEntries();
+    }
+  }, [optTab, sitesTab, loadRepoEntries]);
 
   const modRows = useMemo<ModRow[]>(() => {
-    const byFile = new Map<string, ModRow>();
-    const newCut = Date.now() - MOD_NEW_DAYS * 86400000;
-    for (const m of modules) {
-      const file = moduleFileName(m);
-      const mtime = m.mtime ?? null;
-      const prev = byFile.get(file);
-      if (prev && (prev.mtime ?? 0) >= (mtime ?? 0)) continue;
-      const { when, title } = relDateFromUnix(mtime);
-      byFile.set(file, {
-        key: file,
-        file,
-        mtime,
-        when,
-        dateTitle: title,
-        msg: "—",
-        updated: mtime != null && mtime * 1000 >= newCut,
-      });
-    }
-    return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file, undefined, { sensitivity: "base" }));
-  }, [modules]);
+    return repoEntries.map(repoEntryToRow).sort((a, b) =>
+      a.file.localeCompare(b.file, undefined, { sensitivity: "base" }),
+    );
+  }, [repoEntries]);
 
   const modsUpdatedCount = useMemo(() => modRows.filter((r) => r.updated).length, [modRows]);
 
@@ -1561,15 +1594,21 @@ export function OptionsView() {
     if (modsChecking) return;
     setModsChecking(true);
     try {
-      const n = await api.modulesRefresh();
+      // Persist current toggles so Rust reads the same warning/restart prefs.
+      await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, modsWarn ? "1" : "0");
+      await api.settingsSet(SK.MODULES_UPDATER_AUTO_RESTART, modsAutoRestart ? "1" : "0");
+      const report = await runModulesGithubUpdate(log);
       await refreshModules();
-      log(`Módulos reescaneados: ${n}`, "ok");
+      await loadRepoEntries();
+      if (report?.applied) {
+        // refreshModules already done inside updater path via registry; ensure UI
+      }
     } catch (e) {
       log(`No se pudo revisar módulos: ${e}`, "err");
     } finally {
       setModsChecking(false);
     }
-  }, [modsChecking, refreshModules, log]);
+  }, [modsChecking, modsWarn, modsAutoRestart, refreshModules, loadRepoEntries, log]);
 
   /* ---------------------------------------------------------------------- */
 
@@ -2907,7 +2946,7 @@ export function OptionsView() {
 
                 <div className="mods-list-wrap">
                   <div className="mods-head">
-                    <span>Nombre del archivo (modules/)</span>
+                    <span>Nombre del archivo</span>
                     <span>Última modificación</span>
                     <span>Último mensaje</span>
                   </div>
@@ -2916,7 +2955,7 @@ export function OptionsView() {
                       <div className="sites-tree-empty">
                         <div className="sites-empty-title">Sin módulos</div>
                         <div className="sites-empty-desc">
-                          No hay archivos en <code>lua/modules</code>.
+                          No hay archivos en el repositorio Lua. Pulsa «Revisar actualización».
                         </div>
                       </div>
                     ) : modsFlat.length === 0 ? (
@@ -2934,7 +2973,7 @@ export function OptionsView() {
                               <div className="mods-name">
                                 <Icon ico={ICO.file} className="ico ico-sm" style={{ color: "var(--muted)" }} />
                                 <span className="ell mods-file">{row.file}</span>
-                                {row.updated ? <span className="mods-new">Nuevo</span> : null}
+                                {row.badge ? <span className="mods-new">{row.badge}</span> : null}
                               </div>
                               <span className="mods-when" title={row.dateTitle}>
                                 {row.when}
