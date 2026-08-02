@@ -37,7 +37,7 @@ function friendlyCheckError(err: unknown): string {
     lower.includes("no release") ||
     lower.includes("could not fetch")
   ) {
-    return "No hay release de actualización publicado (latest.json).";
+    return "No hay actualización disponible.";
   }
   return raw;
 }
