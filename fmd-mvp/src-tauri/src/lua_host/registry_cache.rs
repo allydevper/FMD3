@@ -5,7 +5,7 @@
 //! for a given set of Lua files, so we persist it and reuse it whenever a
 //! fingerprint of the Lua tree still matches.
 
-use super::paths::{lua_root, modules_dir, templates_dir, utils_dir, websitebypass_dir};
+use super::paths::{extras_dir, lua_root, modules_dir, templates_dir, utils_dir, websitebypass_dir};
 use super::registry::ModuleMeta;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump when the shape of `ModuleMeta` or the meaning of the scan changes in a
 /// way that existing cache files would no longer describe correctly.
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct CacheFile {
@@ -36,23 +36,33 @@ fn cache_path() -> PathBuf {
 /// a few ms, and it removes two blind spots that metadata has — an edit that
 /// preserves size within the same second, and files a `require` pulls in but an
 /// extension filter would skip (`utils/*.js`, `websitebypass/*.py`).
-/// Entries are sorted so the digest does not depend on directory order.
+/// Entries are sorted so the digest does not depend on directory order, and the
+/// walk recurses so nested assets (`extras/mangafoxtemplate/*.png`) count too.
 fn hash_dir(hasher: &mut Sha256, label: &str, dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         hasher.update(format!("{label}\0missing\n"));
         return;
     };
-    let mut files: Vec<(String, PathBuf)> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
-        .collect();
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    let mut dirs: Vec<(String, PathBuf)> = Vec::new();
+    for e in entries.filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().to_string();
+        match e.file_type() {
+            Ok(t) if t.is_file() => files.push((name, e.path())),
+            Ok(t) if t.is_dir() => dirs.push((name, e.path())),
+            _ => {}
+        }
+    }
     files.sort();
+    dirs.sort();
     for (name, path) in files {
         let body = std::fs::read(&path).unwrap_or_default();
         hasher.update(format!("{label}/{name}\0{}\0", body.len()));
         hasher.update(&body);
         hasher.update(b"\n");
+    }
+    for (name, path) in dirs {
+        hash_dir(hasher, &format!("{label}/{name}"), &path);
     }
 }
 
@@ -69,6 +79,7 @@ pub fn fingerprint() -> String {
     hash_dir(&mut hasher, "templates", &templates_dir());
     hash_dir(&mut hasher, "utils", &utils_dir());
     hash_dir(&mut hasher, "websitebypass", &websitebypass_dir());
+    hash_dir(&mut hasher, "extras", &extras_dir());
     format!("{:x}", hasher.finalize())
 }
 

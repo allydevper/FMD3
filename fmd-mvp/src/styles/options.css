@@ -1259,10 +1259,76 @@
   flex-direction: column;
 }
 
+/* Pending-updates notice left by a silent background check. */
+.mods-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 22px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--card-hi);
+  border-bottom: 1px solid var(--border);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.mods-progress {
+  flex: 0 0 auto;
+  padding: 8px 22px 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.mods-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.mods-progress-head > .ell {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mods-progress-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.mods-progress-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--row-line);
+  overflow: hidden;
+}
+
+.mods-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+/* Per-row revert stays out of the way until the row is hovered. */
+.mods-revert {
+  justify-self: end;
+  opacity: 0;
+  transition: opacity 90ms ease;
+}
+
+.mods-row:hover .mods-revert,
+.mods-revert:focus-visible {
+  opacity: 1;
+}
+
 .mods-head {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 74px;
   column-gap: 16px;
   padding: 9px 22px;
   background: var(--bg);
@@ -1295,7 +1361,7 @@
   right: 0;
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 74px;
   align-items: center;
   column-gap: 16px;
   padding: 0 22px;

@@ -13,6 +13,8 @@ import type {
   CatalogJobMode,
   CatalogJobScope,
   CatalogJobState,
+  ModulesCheckReport,
+  ModulesUpdateProgressEvent,
   FavoriteCheckResult,
   ModuleMeta,
   NavId,
@@ -92,6 +94,12 @@ type AppContextValue = {
   /** Deep-link from Downloads «Agregar más» → Info load. */
   pendingMangaOpen: PendingMangaOpen | null;
   setPendingMangaOpen: (v: PendingMangaOpen | null) => void;
+  /** Changes a silent module check found and left for the user to confirm. */
+  modulesPending: ModulesCheckReport | null;
+  setModulesPending: (v: ModulesCheckReport | null) => void;
+  /** Live progress of a running module sync; null when idle. */
+  modulesJob: ModulesUpdateProgressEvent | null;
+  cancelModulesJob: () => Promise<void>;
 };
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -151,6 +159,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const favIntervalRef = useRef<number | null>(null);
   const modulesUpdateBusyRef = useRef(false);
   const runAutoModulesCheckRef = useRef<(silent: boolean) => Promise<void>>(async () => {});
+  /** Set by a silent check that found changes; cleared once they are applied. */
+  const [modulesPending, setModulesPending] = useState<ModulesCheckReport | null>(null);
+  const [modulesJob, setModulesJob] = useState<ModulesUpdateProgressEvent | null>(null);
   const favDownloadAfterRef = useRef(false);
   const [favAutoCheckSeq, setFavAutoCheckSeq] = useState(0);
   const [lastFavAutoCheck, setLastFavAutoCheck] = useState<FavoriteCheckResult[] | null>(
@@ -311,8 +322,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (modulesUpdateBusyRef.current) return;
       modulesUpdateBusyRef.current = true;
       try {
-        await runModulesGithubUpdate(log, { silent });
-        await refreshModules();
+        const { check, deferred } = await runModulesGithubUpdate(log, { silent });
+        // A silent pass never prompts; it just lights up the Módulos tab.
+        setModulesPending(deferred ? check : null);
+        if (!deferred) await refreshModules();
       } catch (e) {
         if (!silent) log(`Revisión automática de módulos: ${e}`, "err");
       } finally {
@@ -321,7 +334,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [log, refreshModules],
   );
-  runAutoModulesCheckRef.current = runAutoModulesCheck;
+
+  useEffect(() => {
+    runAutoModulesCheckRef.current = runAutoModulesCheck;
+  }, [runAutoModulesCheck]);
 
   const refreshEnabledModules = useCallback(async () => {
     const raw = (await api.settingsGet(SK.MODULES_ENABLED)) ?? "[]";
@@ -347,6 +363,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     catalogJobRef.current = catalogJob;
   }, [catalogJob]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let un: (() => void) | undefined;
+    void api
+      .onModulesUpdateProgress((p) => {
+        setModulesJob(p.phase === "done" ? null : p);
+      })
+      .then((u) => {
+        if (cancelled) u();
+        else un = u;
+      });
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, []);
+
+  const cancelModulesJob = useCallback(async () => {
+    try {
+      await api.modulesUpdateCancel();
+    } catch (e) {
+      log(`No se pudo cancelar la actualización de módulos: ${e}`, "err");
+    }
+  }, [log]);
 
   useEffect(() => {
     let cancelled = false;
@@ -675,6 +716,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearAppJobCancel,
     pendingMangaOpen,
     setPendingMangaOpen,
+    modulesPending,
+    setModulesPending,
+    modulesJob,
+    cancelModulesJob,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

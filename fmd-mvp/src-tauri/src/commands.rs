@@ -4,9 +4,12 @@ use crate::catalog::{
 };
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
-    get_info, modules_list, modules_match_url, modules_refresh, modules_repo_list,
-    modules_update_from_github, update_list, ChapterInfo, LuaRepoEntry, MangaInfoResult,
-    ModuleMeta, ModulesUpdateReport, UpdateListProgress, UpdateListStats,
+    get_info, modules_generations, modules_history, modules_list, modules_match_url,
+    modules_refresh, modules_repo_list, modules_revert_file, modules_undo_generation,
+    modules_update_apply, modules_update_check, modules_update_dismiss,
+    modules_update_request_cancel, modules_update_reset_cancel, update_list, ChapterInfo,
+    CheckReport, FileVersion, Generation, LuaRepoEntry, MangaInfoResult, ModuleMeta,
+    ModulesUpdateProgress, ModulesUpdateReport, UndoReport, UpdateListProgress, UpdateListStats,
 };
 use crate::queue::{self, QueueState};
 use crate::rename_patterns::RenameOpts;
@@ -1667,15 +1670,79 @@ pub async fn modules_repo_list_cmd() -> Result<Vec<LuaRepoEntry>, String> {
         .map_err(|e| format!("tarea cancelada: {e}"))
 }
 
-/// GitHub Lua sync (FMD2 modules updater).
-/// `proceed`: `None` = check (may return `awaiting_confirm`); `Some(true)` = apply; `Some(false)` = cancel.
+/// Look for module changes. `force` ignores dismissals and retry backoff.
+/// Returns a token the caller hands back to `modules_update_apply_cmd`, so
+/// confirming costs no further network round trip.
 #[tauri::command]
-pub async fn modules_update_github(
-    proceed: Option<bool>,
-) -> Result<ModulesUpdateReport, String> {
-    tauri::async_runtime::spawn_blocking(move || modules_update_from_github(proceed))
+pub async fn modules_update_check_cmd(force: Option<bool>) -> Result<CheckReport, String> {
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || modules_update_check(force))
         .await
         .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub async fn modules_update_apply_cmd(
+    app: AppHandle,
+    token: Option<String>,
+) -> Result<ModulesUpdateReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let app2 = app.clone();
+        let sink = move |p: ModulesUpdateProgress| {
+            let _ = app2.emit("modules-update-progress", &p);
+        };
+        modules_update_apply(token, Some(&sink))
+    })
+    .await
+    .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub async fn modules_update_dismiss_cmd(token: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || modules_update_dismiss(token))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub fn modules_update_begin() -> Result<(), String> {
+    modules_update_reset_cancel();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn modules_update_cancel() -> Result<(), String> {
+    modules_update_request_cancel();
+    Ok(())
+}
+
+/// Roll back a whole apply. `id` defaults to the most recent one.
+#[tauri::command]
+pub async fn modules_undo_cmd(id: Option<String>) -> Result<UndoReport, String> {
+    tauri::async_runtime::spawn_blocking(move || modules_undo_generation(id))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub async fn modules_history_cmd(path: String) -> Result<Vec<FileVersion>, String> {
+    tauri::async_runtime::spawn_blocking(move || modules_history(path))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))
+}
+
+#[tauri::command]
+pub async fn modules_revert_cmd(path: String, content_id: String) -> Result<UndoReport, String> {
+    tauri::async_runtime::spawn_blocking(move || modules_revert_file(path, content_id))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub async fn modules_generations_cmd() -> Result<Vec<Generation>, String> {
+    tauri::async_runtime::spawn_blocking(modules_generations)
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))
 }
 
 #[tauri::command]

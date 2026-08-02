@@ -15,8 +15,8 @@ import { ICO } from "../icons";
 import { DEFAULT_USER_AGENT, PACK_EXT, SK } from "../constants";
 import * as api from "../api/tauri";
 import { useApp, type AppTheme } from "../context/AppContext";
-import type { HiddenEntry, LuaRepoEntry } from "../types";
-import { runModulesGithubUpdate } from "../utils/modulesUpdate";
+import type { HiddenEntry, LuaFileVersion, LuaRepoEntry } from "../types";
+import { runModulesGithubUpdate, summarizeCheck } from "../utils/modulesUpdate";
 
 /* ---------------------------------------------------------------------- */
 /* Tipos y constantes                                                      */
@@ -125,6 +125,18 @@ const SITE_ROW_H = 31;
 const SITE_OVERSCAN = 10;
 const MOD_ROW_H = 32;
 const MOD_OVERSCAN = 10;
+
+/** Progress phases emitted by the Rust updater, in user-facing Spanish. */
+const MODS_PHASE_LABEL: Record<string, string> = {
+  probe: "Consultando la fuente…",
+  list: "Leyendo el listado…",
+  metadata: "Consultando información de los cambios…",
+  archive: "Descargando paquete…",
+  download: "Descargando archivos…",
+  delete: "Eliminando archivos…",
+  persist: "Guardando estado…",
+  registry: "Recargando módulos…",
+};
 
 type OptionsFormState = {
   ua: string;
@@ -754,6 +766,10 @@ export function OptionsView() {
     refreshEnabledModules,
     setFavAutoCheck,
     notifyCatalogChanged,
+    modulesPending,
+    setModulesPending,
+    modulesJob,
+    cancelModulesJob,
   } = useApp();
 
   const [optTab, setOptTab] = useState<OptTabId>("general");
@@ -1571,6 +1587,21 @@ export function OptionsView() {
 
   const modsUpdatedCount = useMemo(() => modRows.filter((r) => r.updated).length, [modRows]);
 
+  /** File count drives the bar; the archive phase only knows bytes. */
+  const modulesJobPct = useMemo(() => {
+    if (!modulesJob) return 0;
+    const { files_done, files_total, bytes_done, bytes_total } = modulesJob;
+    if (files_total > 0) return Math.min(100, Math.round((files_done / files_total) * 100));
+    if (bytes_total > 0) return Math.min(100, Math.round((bytes_done / bytes_total) * 100));
+    return 0;
+  }, [modulesJob]);
+
+  // A finished sync makes the row list stale.
+  useEffect(() => {
+    if (modulesJob) return;
+    if (optTab === "websites" && sitesTab === "mods") void loadRepoEntries();
+  }, [modulesJob, optTab, sitesTab, loadRepoEntries]);
+
   const modsFlat = useMemo(() => {
     const mq = modsQuery.trim().toLowerCase();
     let rows = modRows;
@@ -1597,18 +1628,102 @@ export function OptionsView() {
       // Persist current toggles so Rust reads the same warning/restart prefs.
       await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, modsWarn ? "1" : "0");
       await api.settingsSet(SK.MODULES_UPDATER_AUTO_RESTART, modsAutoRestart ? "1" : "0");
-      const report = await runModulesGithubUpdate(log);
+      await runModulesGithubUpdate(log);
+      setModulesPending(null);
       await refreshModules();
       await loadRepoEntries();
-      if (report?.applied) {
-        // refreshModules already done inside updater path via registry; ensure UI
-      }
     } catch (e) {
       log(`No se pudo revisar módulos: ${e}`, "err");
     } finally {
       setModsChecking(false);
     }
-  }, [modsChecking, modsWarn, modsAutoRestart, refreshModules, loadRepoEntries, log]);
+  }, [
+    modsChecking,
+    modsWarn,
+    modsAutoRestart,
+    refreshModules,
+    loadRepoEntries,
+    setModulesPending,
+    log,
+  ]);
+
+  /** Roll the last apply back; every overwritten file was snapshotted first. */
+  const undoModulesUpdate = useCallback(async () => {
+    if (modsChecking) return;
+    const ok = await appConfirm({
+      title: "Deshacer actualización",
+      message:
+        "Se restaurará la versión anterior de cada archivo modificado en la última actualización. ¿Continuar?",
+      okLabel: "Deshacer",
+      cancelLabel: "Cancelar",
+    });
+    if (!ok) return;
+    setModsChecking(true);
+    try {
+      const r = await api.modulesUndo();
+      log(
+        `Módulos restaurados: ${r.restored} · eliminados: ${r.removed} (${r.refreshed_count} cargados)`,
+        r.failed.length ? "err" : "ok",
+      );
+      for (const f of r.failed.slice(0, 10)) log(`Módulos: ${f}`, "err");
+      await refreshModules();
+      await loadRepoEntries();
+    } catch (e) {
+      log(`No se pudo deshacer: ${e}`, "err");
+    } finally {
+      setModsChecking(false);
+    }
+  }, [modsChecking, refreshModules, loadRepoEntries, log]);
+
+  /** Per-file history: pick one stored version and write it back. */
+  const revertModuleFile = useCallback(
+    async (path: string) => {
+      let versions: LuaFileVersion[] = [];
+      try {
+        versions = await api.modulesHistory(path);
+      } catch (e) {
+        log(`No se pudo leer el historial de ${path}: ${e}`, "err");
+        return;
+      }
+      if (!versions.length) {
+        await appConfirm({
+          title: "Sin versiones anteriores",
+          message: `No hay copias guardadas de ${path}.`,
+          alert: true,
+          okLabel: "Entendido",
+        });
+        return;
+      }
+      const target = versions[0];
+      const when = target.updated_at
+        ? new Date(target.updated_at * 1000).toLocaleString()
+        : "fecha desconocida";
+      const ok = await appConfirm({
+        title: "Revertir módulo",
+        message: `Restaurar ${path} a la versión guardada el ${when}.`,
+        okLabel: "Revertir",
+        cancelLabel: "Cancelar",
+        items: versions
+          .slice(0, 20)
+          .map(
+            (v, i) =>
+              `${i === 0 ? "→ " : "  "}${
+                v.updated_at ? new Date(v.updated_at * 1000).toLocaleString() : "—"
+              } · ${v.origin} · ${v.message}`,
+          ),
+      });
+      if (!ok) return;
+      try {
+        const r = await api.modulesRevert(path, target.content_id);
+        log(`${path} revertido (${r.refreshed_count} módulos cargados)`, "ok");
+        await refreshModules();
+        await loadRepoEntries();
+      } catch (e) {
+        log(`No se pudo revertir ${path}: ${e}`, "err");
+      }
+    },
+    [refreshModules, loadRepoEntries, log],
+  );
 
   /* ---------------------------------------------------------------------- */
 
@@ -2919,6 +3034,15 @@ export function OptionsView() {
                       Auto reinicio
                     </button>
                   </div>
+                  <button
+                    type="button"
+                    className="mods-chk"
+                    onClick={() => void undoModulesUpdate()}
+                    title="Restaura la versión anterior de los archivos que cambió la última actualización"
+                  >
+                    <Icon ico={ICO.refresh} className="ico ico-sm" />
+                    Deshacer última
+                  </button>
                   <div className="sites-toolbar-spacer" />
                   <div className="sites-search-wrap mods-search-wrap">
                     <Icon ico={ICO.search} className="ico ico-sm sites-search-ico" />
@@ -2944,11 +3068,48 @@ export function OptionsView() {
                   </div>
                 </div>
 
+                {modulesPending && !modulesJob ? (
+                  <div className="mods-banner" role="status">
+                    <Icon ico={ICO.info} className="ico ico-sm" />
+                    <span className="ell">
+                      Hay actualizaciones pendientes: {summarizeCheck(modulesPending)}
+                    </span>
+                    <div className="sites-footer-spacer" />
+                    <button type="button" className="lnk" onClick={() => void runModulesCheck()}>
+                      Actualizar ahora
+                    </button>
+                    <button type="button" className="lnk" onClick={() => setModulesPending(null)}>
+                      Ocultar
+                    </button>
+                  </div>
+                ) : null}
+
+                {modulesJob ? (
+                  <div className="mods-progress" role="status" aria-live="polite">
+                    <div className="mods-progress-head">
+                      <span className="ell">
+                        {modulesJob.message ||
+                          modulesJob.current ||
+                          MODS_PHASE_LABEL[modulesJob.phase] ||
+                          "Actualizando módulos…"}
+                      </span>
+                      <span className="mods-progress-pct">{modulesJobPct}%</span>
+                      <button type="button" className="lnk" onClick={() => void cancelModulesJob()}>
+                        Cancelar
+                      </button>
+                    </div>
+                    <div className="mods-progress-track">
+                      <div className="mods-progress-fill" style={{ width: `${modulesJobPct}%` }} />
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="mods-list-wrap">
                   <div className="mods-head">
                     <span>Nombre del archivo</span>
                     <span>Última modificación</span>
                     <span>Último mensaje</span>
+                    <span />
                   </div>
                   <div className="mods-list" id="mods-list" ref={modsListRef} onScroll={onModsScroll}>
                     {modRows.length === 0 ? (
@@ -2978,7 +3139,17 @@ export function OptionsView() {
                               <span className="mods-when" title={row.dateTitle}>
                                 {row.when}
                               </span>
-                              <span className={`ell mods-msg${row.msg === "—" ? " muted" : ""}`}>{row.msg}</span>
+                              <span className={`ell mods-msg${row.msg === "—" ? " muted" : ""}`}>
+                                {row.msg}
+                              </span>
+                              <button
+                                type="button"
+                                className="sites-tbtn mods-revert"
+                                title="Revertir a una versión guardada"
+                                onClick={() => void revertModuleFile(row.file)}
+                              >
+                                Revertir
+                              </button>
                             </div>
                           );
                         })}

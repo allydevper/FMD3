@@ -98,3 +98,10 @@ pub fn websitebypass_dir() -> PathBuf {
 pub fn utils_dir() -> PathBuf {
     lua_root().join("utils")
 }
+
+/// `lua/extras` — image-hoster helpers and the MangaFox watermark templates.
+/// Synced from the remote like everything else, so the registry fingerprint
+/// has to see it too.
+pub fn extras_dir() -> PathBuf {
+    lua_root().join("extras")
+}

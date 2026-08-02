@@ -16,8 +16,12 @@ mod website_bypass_host;
 
 pub use lua_log::set_app_handle as set_lua_log_app;
 pub use modules_updater::{
-    list_for_ui as modules_repo_list, update_from_github as modules_update_from_github,
-    LuaRepoEntry, ModulesUpdateReport,
+    apply as modules_update_apply, check as modules_update_check,
+    dismiss as modules_update_dismiss, generations as modules_generations,
+    history as modules_history, list_for_ui as modules_repo_list,
+    request_cancel as modules_update_request_cancel, reset_cancel as modules_update_reset_cancel,
+    revert_file as modules_revert_file, undo_generation as modules_undo_generation, CheckReport,
+    FileVersion, Generation, LuaRepoEntry, ModulesUpdateProgress, ModulesUpdateReport, UndoReport,
 };
 pub use registry::{
     ensure_loaded, find_by_id, list as modules_list, match_url as modules_match_url,

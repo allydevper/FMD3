@@ -43,6 +43,19 @@ pub const MODULES_ENABLED: &str = "modules.enabled";
 pub const MODULES_UPDATER_SHOW_WARNING: &str = "modulesupdater.show_update_warning";
 /// FMD2 `[modulesupdater] AutoRestart` — relaunch after modules download.
 pub const MODULES_UPDATER_AUTO_RESTART: &str = "modulesupdater.auto_restart";
+/// Where Lua modules come from: `github` | `http_index` | `local_dir`.
+pub const MODULES_SOURCE: &str = "modules.source";
+/// Index URL or folder for the non-GitHub sources. Empty → the built-in default.
+pub const MODULES_SOURCE_URL: &str = "modules.source_url";
+/// From this many changed files on, prefer one archive over per-file downloads.
+pub const MODULES_BULK_THRESHOLD: &str = "modules.updater.bulk_threshold";
+pub const MODULES_THREADS: &str = "modules.updater.threads";
+/// Enrich rows with commit date/message after a sync.
+pub const MODULES_FETCH_METADATA: &str = "modules.updater.fetch_metadata";
+/// Hard cap on per-file metadata requests; GitHub has no bulk endpoint for them.
+pub const MODULES_METADATA_MAX_FILES: &str = "modules.updater.metadata_max_files";
+pub const MODULES_BACKUP_GENERATIONS: &str = "modules.updater.backup_generations";
+pub const MODULES_BACKUP_MAX_MB: &str = "modules.updater.backup_max_mb";
 pub const CATALOG_DB_URL: &str = "catalog.db_url";
 pub const CATALOG_UPDATE_NO_INFO: &str = "catalog.update_no_info";
 /// When true, Update List ignores module SortedList and scans every directory page.

@@ -72,25 +72,92 @@ export type ModuleMeta = {
   mtime?: number | null;
 };
 
-/** FMD2 userdata/lua.json entry (GitHub modules updater). */
+/** One tracked file of the Lua tree (`userdata/lua.json`). */
 export type LuaRepoEntry = {
   name: string;
-  sha: string;
+  /** Content id the source advertises: git blob sha, or a portal hash. */
+  remote_id: string;
+  /** Content id of the bytes on disk; null when the file is missing. */
+  local_id?: string | null;
   last_modified?: number | null;
   last_message?: string;
+  author?: string | null;
+  version?: string | null;
   flag?: string;
+  attempts?: number;
+  last_attempt?: number | null;
+  dismissed_id?: string | null;
 };
 
-export type ModulesUpdateReport = {
+/** Result of a check. `token` is handed back to `modulesUpdateApply`. */
+export type ModulesCheckReport = {
   found_updates: boolean;
-  applied: boolean;
-  awaiting_confirm: boolean;
-  refreshed_count: number;
+  token: string | null;
+  source_label: string;
+  revision: string;
   status_lines: string[];
   new_count: number;
   update_count: number;
   delete_count: number;
   failed_count: number;
+  /** Changes held back by a dismissal or a retry backoff. */
+  suppressed_count: number;
+  rate_remaining: number | null;
+  rate_reset: number | null;
+};
+
+export type ModulesUpdateReport = {
+  applied: boolean;
+  cancelled: boolean;
+  /** "zip" | "raw" | "zip+raw" | "" */
+  transport: string;
+  downloaded: number;
+  deleted: number;
+  failed: number;
+  refreshed_count: number;
+  /** Snapshot generation that can undo this apply. */
+  generation_id: string | null;
+  status_lines: string[];
+};
+
+export type ModulesUpdateProgressEvent = {
+  phase: string;
+  transport: string;
+  files_done: number;
+  files_total: number;
+  bytes_done: number;
+  bytes_total: number;
+  current: string;
+  failed: number;
+  message: string;
+};
+
+export type ModulesUndoReport = {
+  restored: number;
+  removed: number;
+  failed: string[];
+  refreshed_count: number;
+};
+
+/** One restorable version of a Lua file. */
+export type LuaFileVersion = {
+  content_id: string;
+  version?: string | null;
+  updated_at?: number | null;
+  size?: number | null;
+  message: string;
+  /** "backup" (local snapshot) | "remote" (re-fetchable from the source). */
+  origin: string;
+};
+
+export type LuaBackupGeneration = {
+  id: string;
+  created_at: number;
+  source_id: string;
+  revision: string;
+  note: string;
+  undone_by: string | null;
+  items: { path: string; prev: string | null; next: string | null }[];
 };
 
 export type Favorite = {

@@ -13,7 +13,12 @@ import type {
   MangaCacheRow,
   MangaInfoResult,
   ModuleMeta,
+  ModulesCheckReport,
+  ModulesUpdateProgressEvent,
   ModulesUpdateReport,
+  ModulesUndoReport,
+  LuaBackupGeneration,
+  LuaFileVersion,
   LuaRepoEntry,
   QueueAddRequest,
   QueueItem,
@@ -398,10 +403,57 @@ export function vacuumDb() {
   return invoke("db_vacuum");
 }
 
-export function updateModulesFromGithub(proceed?: boolean | null) {
-  return invoke<ModulesUpdateReport>("modules_update_github", {
-    proceed: proceed === undefined ? null : proceed,
+/** Look for module changes. `force` ignores dismissals and retry backoff. */
+export function modulesUpdateCheck(force = false) {
+  return invoke<ModulesCheckReport>("modules_update_check_cmd", { force });
+}
+
+/** Apply the plan behind `token`; without one the backend re-checks first. */
+export function modulesUpdateApply(token?: string | null) {
+  return invoke<ModulesUpdateReport>("modules_update_apply_cmd", {
+    token: token ?? null,
   });
+}
+
+/** Silence the pending changes until the source moves on. */
+export function modulesUpdateDismiss(token?: string | null) {
+  return invoke("modules_update_dismiss_cmd", { token: token ?? null });
+}
+
+export function modulesUpdateBegin() {
+  return invoke("modules_update_begin");
+}
+
+export function modulesUpdateCancel() {
+  return invoke("modules_update_cancel");
+}
+
+/** Roll back a whole apply; omit `id` for the most recent one. */
+export function modulesUndo(id?: string | null) {
+  return invoke<ModulesUndoReport>("modules_undo_cmd", { id: id ?? null });
+}
+
+export function modulesHistory(path: string) {
+  return invoke<LuaFileVersion[]>("modules_history_cmd", { path });
+}
+
+export function modulesRevert(path: string, contentId: string) {
+  return invoke<ModulesUndoReport>("modules_revert_cmd", {
+    path,
+    contentId,
+  });
+}
+
+export function modulesGenerations() {
+  return invoke<LuaBackupGeneration[]>("modules_generations_cmd");
+}
+
+export function onModulesUpdateProgress(
+  handler: (payload: ModulesUpdateProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ModulesUpdateProgressEvent>("modules-update-progress", (e) =>
+    handler(e.payload),
+  );
 }
 
 export function onQueueChanged(handler: () => void): Promise<UnlistenFn> {
