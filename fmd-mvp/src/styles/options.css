@@ -649,8 +649,7 @@
   box-shadow: 0 0 0 1px var(--focus);
 }
 
-#opt-log-extra[hidden],
-#opt-external-fields[hidden] {
+#opt-log-extra[hidden] {
   display: none !important;
 }
 

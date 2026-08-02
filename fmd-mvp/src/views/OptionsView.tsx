@@ -25,10 +25,10 @@ import { runModulesGithubUpdate, summarizeCheck } from "../utils/modulesUpdate";
 type OptTabId =
   | "general"
   | "view"
-  | "connections"
+  | "downloads"
+  | "network"
   | "saveto"
   | "updates"
-  | "dialogs"
   | "hidden"
   | "websites";
 type SitesTabId = "list" | "mods";
@@ -36,10 +36,10 @@ type SitesTabId = "list" | "mods";
 const OPTIONS_CATS: { id: OptTabId; label: string; icon: string }[] = [
   { id: "general", label: "General", icon: ICO.settings },
   { id: "view", label: "Vista", icon: ICO.layout },
-  { id: "connections", label: "Conexiones", icon: ICO.link },
+  { id: "downloads", label: "Descargas", icon: ICO.download },
+  { id: "network", label: "Red", icon: ICO.link },
   { id: "saveto", label: "Guardar en", icon: ICO.folder },
   { id: "updates", label: "Actualizaciones", icon: ICO.refresh },
-  { id: "dialogs", label: "Diálogos", icon: ICO.message },
   { id: "hidden", label: "Papelera", icon: ICO.trash },
   { id: "websites", label: "Sitios Web", icon: ICO.globe },
 ];
@@ -1956,12 +1956,9 @@ export function OptionsView() {
                         label="Tema"
                         desc="Apariencia clara, oscura o según el sistema"
                         value={s.theme}
-                        onChange={(v) => {
-                          const t = (v === "dark" || v === "light" || v === "system" ? v : "system") as AppTheme;
-                          // Aplica y guarda al instante; no marca “Cambios sin guardar”.
-                          setS((prev) => ({ ...prev, theme: t }));
-                          setTheme(t);
-                        }}
+                        onChange={(v) =>
+                          update("theme", (v === "dark" || v === "light" || v === "system" ? v : "system") as AppTheme)
+                        }
                         options={[
                           { value: "system", label: "Sistema" },
                           { value: "light", label: "Claro" },
@@ -1984,23 +1981,13 @@ export function OptionsView() {
                         ]}
                       />
                       */}
-                      <BoundStepperRow
-                        id="opt-new-days"
-                        label="Marcar manga como nuevo"
-                        desc="Días desde que se añadió al catálogo"
-                        value={s.newDays}
-                        min={1}
-                        max={365}
-                        unit="días"
-                        onChange={(v) => update("newDays", v)}
-                      />
                     </div>
                   </section>
 
                   <section className="st-section">
                     <div className="st-section-head">
-                      <Icon ico={ICO.sliders} className="ico ico-sm" />
-                      <h2>Comportamiento</h2>
+                      <Icon ico={ICO.minimize} className="ico ico-sm" />
+                      <h2>Sistema y bandeja</h2>
                     </div>
                     <div className="st-card">
                       <SwitchRow
@@ -2017,27 +2004,46 @@ export function OptionsView() {
                         checked={s.trayMinimize}
                         onChange={(v) => update("trayMinimize", v)}
                       />
+                      <SwitchRow id="opt-notify" label="Globo de notificación" desc="Aviso del sistema al terminar todos los capítulos en cola de un manga" checked={s.notify} onChange={(v) => update("notify", v)} />
+                    </div>
+                  </section>
+
+                  <section className="st-section">
+                    <div className="st-section-head">
+                      <Icon ico={ICO.message} className="ico ico-sm" />
+                      <h2>Confirmaciones</h2>
+                    </div>
+                    <div className="st-card">
                       <SwitchRow
-                        id="opt-live-search"
-                        label="Búsqueda en vivo"
-                        desc="Filtra mientras escribes (lento en listas largas)"
-                        checked={s.liveSearch}
-                        onChange={(v) => update("liveSearch", v)}
+                        id="opt-confirm-exit"
+                        label="Salir"
+                        desc="Pedir confirmación al cerrar la app"
+                        checked={s.confirmExit}
+                        onChange={(v) => update("confirmExit", v)}
                       />
                       <SwitchRow
-                        id="opt-clear-done"
-                        label="Borrar tareas completadas al cerrar"
-                        desc="Al salir, quita de la cola solo las terminadas con éxito"
-                        checked={s.clearDoneExit}
-                        onChange={(v) => update("clearDoneExit", v)}
+                        id="opt-confirm-delete"
+                        label="Borrar descarga / favorito / lista"
+                        desc="Confirmar eliminaciones"
+                        checked={s.confirmDelete}
+                        onChange={(v) => update("confirmDelete", v)}
                       />
                       <SwitchRow
-                        id="opt-sort-on-add"
-                        label="Ordenar cola al añadir tareas"
-                        desc="Si está apagado, lo nuevo va al final; si está activo, reordena por título A–Z"
-                        checked={s.sortOnAdd}
-                        onChange={(v) => update("sortOnAdd", v)}
+                        id="opt-confirm-empty"
+                        label="Vaciar terminados"
+                        desc="Confirmar al borrar descargas finalizadas"
+                        checked={s.confirmEmptyList}
+                        onChange={(v) => update("confirmEmptyList", v)}
                       />
+                    </div>
+                  </section>
+
+                  <section className="st-section">
+                    <div className="st-section-head">
+                      <Icon ico={ICO.broom} className="ico ico-sm" />
+                      <h2>Mantenimiento</h2>
+                    </div>
+                    <div className="st-card">
                       <SwitchRow
                         id="opt-vacuum"
                         label="Vacuum de bases al salir"
@@ -2045,13 +2051,36 @@ export function OptionsView() {
                         checked={s.vacuum}
                         onChange={(v) => update("vacuum", v)}
                       />
-                      <SwitchRow
-                        id="opt-long-paths"
-                        label="Rutas de nombre largo"
-                        desc="Conserva títulos y carpetas completos aunque sean muy largos. Si está apagado, se acortan para que la descarga no falle."
-                        checked={s.longPaths}
-                        onChange={(v) => update("longPaths", v)}
-                      />
+                      <div className="st-row st-row-actions">
+                        <div className="st-meta">
+                          <div className="st-label">Caché</div>
+                          <div className="st-desc">
+                            Borra info y portadas guardadas. No afecta favoritos, cola ni catálogo.
+                          </div>
+                          {cacheClearFlash === "done" ? (
+                            <div className="st-inline-ok" role="status">
+                              Caché limpiada
+                            </div>
+                          ) : cacheClearFlash === "error" ? (
+                            <div className="st-inline-err" role="status">
+                              No se pudo limpiar
+                            </div>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          className={`secondary${cacheClearFlash === "done" ? " is-saved" : ""}`}
+                          id="opt-clear-cache"
+                          disabled={cacheClearFlash === "working"}
+                          onClick={runCacheClear}
+                        >
+                          {cacheClearFlash === "working"
+                            ? "Limpiando…"
+                            : cacheClearFlash === "done"
+                              ? "Listo"
+                              : "Limpiar"}
+                        </button>
+                      </div>
                     </div>
                   </section>
 
@@ -2068,7 +2097,7 @@ export function OptionsView() {
                         checked={s.logOn}
                         onChange={(v) => update("logOn", v)}
                       />
-                      <div hidden={!s.logOn}>
+                      <div id="opt-log-extra" hidden={!s.logOn}>
                         <div className="st-row">
                           <div className="st-form-inline">
                             <span className="st-form-key">Archivo</span>
@@ -2134,47 +2163,33 @@ export function OptionsView() {
                     </div>
                     <div className="st-card">
                       <SwitchRow id="opt-load-covers" label="Cargar portada del manga" desc="Descarga portadas; si está apagado solo usa las ya en caché" checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
-                      <div className="st-row st-row-actions">
-                        <div className="st-meta">
-                          <div className="st-label">Caché</div>
-                          <div className="st-desc">
-                            Borra info y portadas guardadas. No afecta favoritos, cola ni catálogo.
-                          </div>
-                          {cacheClearFlash === "done" ? (
-                            <div className="st-inline-ok" role="status">
-                              Caché limpiada
-                            </div>
-                          ) : cacheClearFlash === "error" ? (
-                            <div className="st-inline-err" role="status">
-                              No se pudo limpiar
-                            </div>
-                          ) : null}
-                        </div>
-                        <button
-                          type="button"
-                          className={`secondary${cacheClearFlash === "done" ? " is-saved" : ""}`}
-                          id="opt-clear-cache"
-                          disabled={cacheClearFlash === "working"}
-                          onClick={runCacheClear}
-                        >
-                          {cacheClearFlash === "working"
-                            ? "Limpiando…"
-                            : cacheClearFlash === "done"
-                              ? "Listo"
-                              : "Limpiar"}
-                        </button>
-                      </div>
-                      <SwitchRow id="opt-notify" label="Globo de notificación" desc="Aviso del sistema al terminar todos los capítulos en cola de un manga" checked={s.notify} onChange={(v) => update("notify", v)} />
+                      <SwitchRow
+                        id="opt-live-search"
+                        label="Búsqueda en vivo"
+                        desc="Filtra mientras escribes (lento en listas largas)"
+                        checked={s.liveSearch}
+                        onChange={(v) => update("liveSearch", v)}
+                      />
                       <SwitchRow id="opt-goto-dl" label="Ir a Descargas al añadir" desc="Cambia a la vista Descargas al crear tareas" checked={s.gotoDl} onChange={(v) => update("gotoDl", v)} />
                       <SwitchRow id="opt-goto-fav" label="Ir a Favoritos al añadir manga" desc="Cambia a Favoritos al guardar un título" checked={s.gotoFav} onChange={(v) => update("gotoFav", v)} />
+                      <BoundStepperRow
+                        id="opt-new-days"
+                        label="Marcar manga como nuevo"
+                        desc="Días desde que se añadió al catálogo"
+                        value={s.newDays}
+                        min={1}
+                        max={365}
+                        unit="días"
+                        onChange={(v) => update("newDays", v)}
+                      />
                     </div>
                   </section>
                 </div>
               </div>
             </div>
 
-            {/* ---- Conexiones ---- */}
-            <div className={`options-panel${optTab === "connections" ? " active" : ""}`} role="tabpanel" hidden={optTab !== "connections"}>
+            {/* ---- Descargas ---- */}
+            <div className={`options-panel${optTab === "downloads" ? " active" : ""}`} role="tabpanel" hidden={optTab !== "downloads"}>
               <div className="opt-scroll">
                 <div className="st-wrap">
                   <section className="st-section">
@@ -2207,28 +2222,34 @@ export function OptionsView() {
                   </section>
                   <section className="st-section">
                     <div className="st-section-head">
-                      <Icon ico={ICO.sliders} className="ico ico-sm" />
-                      <h2>Misceláneo</h2>
+                      <Icon ico={ICO.layers} className="ico ico-sm" />
+                      <h2>Cola</h2>
                     </div>
                     <div className="st-card">
-                      <BoundStepperRow
-                        label="Hilos de actualizar lista"
-                        desc="Paralelismo al actualizar el catálogo"
-                        value={s.updateListThreads}
-                        min={1}
-                        max={32}
-                        onChange={(v) => update("updateListThreads", v)}
+                      <SwitchRow
+                        id="opt-sort-on-add"
+                        label="Ordenar cola al añadir tareas"
+                        desc="Si está apagado, lo nuevo va al final; si está activo, reordena por título A–Z"
+                        checked={s.sortOnAdd}
+                        onChange={(v) => update("sortOnAdd", v)}
                       />
-                      <BoundStepperRow
-                        label="Hilos de favoritos"
-                        desc="Comprobaciones de favoritos a la vez"
-                        value={s.favThreads}
-                        min={1}
-                        max={32}
-                        onChange={(v) => update("favThreads", v)}
+                      <SwitchRow
+                        id="opt-clear-done"
+                        label="Borrar tareas completadas al cerrar"
+                        desc="Al salir, quita de la cola solo las terminadas con éxito"
+                        checked={s.clearDoneExit}
+                        onChange={(v) => update("clearDoneExit", v)}
                       />
                     </div>
                   </section>
+                </div>
+              </div>
+            </div>
+
+            {/* ---- Red ---- */}
+            <div className={`options-panel${optTab === "network" ? " active" : ""}`} role="tabpanel" hidden={optTab !== "network"}>
+              <div className="opt-scroll">
+                <div className="st-wrap">
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.link} className="ico ico-sm" />
@@ -2720,6 +2741,13 @@ export function OptionsView() {
                         </div>
                       </div>
 
+                      <SwitchRow
+                        id="opt-long-paths"
+                        label="Rutas de nombre largo"
+                        desc="Conserva títulos y carpetas completos aunque sean muy largos. Si está apagado, se acortan para que la descarga no falle."
+                        checked={s.longPaths}
+                        onChange={(v) => update("longPaths", v)}
+                      />
                     </div>
                   </section>
                 </div>
@@ -2769,6 +2797,14 @@ export function OptionsView() {
                           })();
                         }}
                       />
+                      <BoundStepperRow
+                        label="Hilos de actualizar lista"
+                        desc="Paralelismo al actualizar el catálogo"
+                        value={s.updateListThreads}
+                        min={1}
+                        max={32}
+                        onChange={(v) => update("updateListThreads", v)}
+                      />
                     </div>
                   </section>
                   <section className="st-section">
@@ -2814,42 +2850,13 @@ export function OptionsView() {
                         checked={s.favDownloadAfter}
                         onChange={(v) => update("favDownloadAfter", v)}
                       />
-                    </div>
-                  </section>
-                </div>
-              </div>
-            </div>
-
-            {/* ---- Diálogos ---- */}
-            <div className={`options-panel${optTab === "dialogs" ? " active" : ""}`} role="tabpanel" hidden={optTab !== "dialogs"}>
-              <div className="opt-scroll">
-                <div className="st-wrap">
-                  <section className="st-section">
-                    <div className="st-section-head">
-                      <Icon ico={ICO.message} className="ico ico-sm" />
-                      <h2>Confirmaciones</h2>
-                    </div>
-                    <div className="st-card">
-                      <SwitchRow
-                        id="opt-confirm-exit"
-                        label="Salir"
-                        desc="Pedir confirmación al cerrar la app"
-                        checked={s.confirmExit}
-                        onChange={(v) => update("confirmExit", v)}
-                      />
-                      <SwitchRow
-                        id="opt-confirm-delete"
-                        label="Borrar descarga / favorito / lista"
-                        desc="Confirmar eliminaciones"
-                        checked={s.confirmDelete}
-                        onChange={(v) => update("confirmDelete", v)}
-                      />
-                      <SwitchRow
-                        id="opt-confirm-empty"
-                        label="Vaciar terminados"
-                        desc="Confirmar al borrar descargas finalizadas"
-                        checked={s.confirmEmptyList}
-                        onChange={(v) => update("confirmEmptyList", v)}
+                      <BoundStepperRow
+                        label="Hilos de favoritos"
+                        desc="Comprobaciones de favoritos a la vez"
+                        value={s.favThreads}
+                        min={1}
+                        max={32}
+                        onChange={(v) => update("favThreads", v)}
                       />
                     </div>
                   </section>
