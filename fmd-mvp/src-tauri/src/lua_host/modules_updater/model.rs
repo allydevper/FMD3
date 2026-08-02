@@ -22,6 +22,9 @@ pub const STATE_SCHEMA: u32 = 2;
 /// FMD2 is always the base; a pin is the exception. While one is set the file
 /// is invisible to the sync — never updated, never deleted — so a hand-written
 /// or patched module survives every check until it is unpinned.
+///
+/// The UI calls this «Usar mi versión» / «Volver al oficial»: "pin" names the
+/// mechanism, which turned out to mean nothing to the person clicking it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModulePin {
     /// Where the bytes came from: a path on disk today, a URL once the portal

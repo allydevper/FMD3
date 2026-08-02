@@ -416,7 +416,7 @@ function repoEntryToRow(e: LuaRepoEntry): ModRow {
       dateTitle: title,
       msg: e.pin.origin,
       updated: false,
-      badge: "Anclado",
+      badge: "Mi versión",
       pinned: true,
       pinOrigin: e.pin.origin,
     };
@@ -1815,20 +1815,20 @@ export function OptionsView() {
       });
       if (typeof picked !== "string") return;
       const ok = await appConfirm({
-        title: "Anclar módulo",
-        message: `${path} pasará a ser tu copia y dejará de actualizarse desde FMD2 hasta que lo desancles. La versión actual se guarda en las copias de seguridad.`,
-        okLabel: "Anclar",
+        title: "Usar mi versión",
+        message: `${path} pasará a ser tu copia y dejará de actualizarse desde FMD2 hasta que vuelvas al oficial. La versión actual se guarda en las copias de seguridad.`,
+        okLabel: "Usar mi versión",
         cancelLabel: "Cancelar",
         items: [picked],
       });
       if (!ok) return;
       try {
         const r = await api.modulesPin(path, picked);
-        log(`${path} anclado (${r.refreshed_count} módulos cargados)`, "ok");
+        log(`${path}: ahora usa tu versión (${r.refreshed_count} módulos cargados)`, "ok");
         await refreshModules();
         await loadRepoEntries();
       } catch (e) {
-        log(`No se pudo anclar ${path}: ${e}`, "err");
+        log(`No se pudo usar tu versión de ${path}: ${e}`, "err");
       }
     },
     [refreshModules, loadRepoEntries, log],
@@ -1838,18 +1838,18 @@ export function OptionsView() {
   const unpinModuleFile = useCallback(
     async (path: string) => {
       const ok = await appConfirm({
-        title: "Desanclar módulo",
-        message: `${path} volverá a actualizarse desde FMD2. El archivo no se toca ahora: la próxima revisión te ofrecerá la versión oficial y tú decides.`,
-        okLabel: "Desanclar",
+        title: "Volver al oficial",
+        message: `${path} volverá a actualizarse desde FMD2. Tu archivo no se toca ahora: la próxima revisión te ofrecerá la versión oficial y tú decides.`,
+        okLabel: "Volver al oficial",
         cancelLabel: "Cancelar",
       });
       if (!ok) return;
       try {
         await api.modulesUnpin(path);
-        log(`${path} desanclado`, "ok");
+        log(`${path}: vuelve a seguir al oficial`, "ok");
         await loadRepoEntries();
       } catch (e) {
-        log(`No se pudo desanclar ${path}: ${e}`, "err");
+        log(`No se pudo volver al oficial en ${path}: ${e}`, "err");
       }
     },
     [loadRepoEntries, log],
@@ -3266,7 +3266,7 @@ export function OptionsView() {
                     <span>Origen y copias de seguridad</span>
                     <span className="mods-source-current ell">
                       {modsPinnedCount
-                        ? `GitHub FMD2 · ${modsPinnedCount} anclado${modsPinnedCount > 1 ? "s" : ""}`
+                        ? `GitHub FMD2 · ${modsPinnedCount} con mi versión`
                         : "GitHub FMD2"}
                     </span>
                   </button>
@@ -3274,7 +3274,7 @@ export function OptionsView() {
                     <div className="st-nest-inner mods-source-body">
                       <OptRow
                         label="Oficial"
-                        desc="Todos los módulos vienen de aquí. Si quieres usar tu propia versión de uno concreto, ánclalo desde su fila en la lista."
+                        desc="Todos los módulos vienen de aquí. Para uno concreto puedes usar tu propia versión con «Usar mi versión» en su fila de la lista."
                       >
                         <span className="st-static mono">GitHub · dazedcat19/FMD2</span>
                       </OptRow>
@@ -3432,17 +3432,17 @@ export function OptionsView() {
                                     title="Volver a actualizarlo desde FMD2"
                                     onClick={() => void unpinModuleFile(row.file)}
                                   >
-                                    Desanclar
+                                    Volver al oficial
                                   </button>
                                 ) : (
                                   <>
                                     <button
                                       type="button"
                                       className="sites-tbtn"
-                                      title="Usar tu propio .lua y excluirlo del sync"
+                                      title="Reemplazarlo por tu propio .lua y excluirlo de las actualizaciones"
                                       onClick={() => void pinModuleFile(row.file)}
                                     >
-                                      Anclar
+                                      Usar mi versión
                                     </button>
                                     <button
                                       type="button"

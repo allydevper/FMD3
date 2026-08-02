@@ -1393,7 +1393,7 @@
 .mods-head {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 148px;
+  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 196px;
   column-gap: 16px;
   padding: 9px 22px;
   background: var(--bg);
@@ -1426,7 +1426,7 @@
   right: 0;
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 148px;
+  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 196px;
   align-items: center;
   column-gap: 16px;
   padding: 0 22px;
