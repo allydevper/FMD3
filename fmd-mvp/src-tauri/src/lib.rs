@@ -349,6 +349,7 @@ pub fn run() {
             commands::favorites_check,
             commands::favorites_check_all,
             commands::favorites_enqueue_pending,
+            commands::favorites_download_all,
             commands::favorites_import_list,
             commands::favorites_export_list,
             commands::favorites_export_to_path,

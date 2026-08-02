@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Icon } from "../components/Icon";
 import { appToastUndo } from "../components/AppToast";
@@ -11,6 +11,7 @@ import {
   favoritesCacheUpsert,
   loadFavoritesCached,
 } from "../utils/favoritesCache";
+import { maybeFillHost } from "../utils/url";
 
 function pendingLinkCount(text: string | undefined): number {
   if (!text) return 0;
@@ -90,6 +91,7 @@ export function FavoritesView() {
     setAppJob,
     isAppJobCancelRequested,
     clearAppJobCancel,
+    cancelCatalogJob,
     setActiveNav,
     setPendingMangaOpen,
     modules,
@@ -99,6 +101,9 @@ export function FavoritesView() {
   const [newCounts, setNewCounts] = useState<Map<number, number>>(new Map());
   const [enabledMap, setEnabledMap] = useState<Map<number, boolean>>(new Map());
   const [checkedAt, setCheckedAt] = useState<Map<number, number>>(new Map());
+  const [favCtxMenu, setFavCtxMenu] = useState<{ x: number; y: number; ids: number[] } | null>(
+    null,
+  );
 
   const [cat, setCat] = useState("all");
   const [filter, setFilter] = useState<FavFilter>("Todo");
@@ -406,6 +411,127 @@ export function FavoritesView() {
     },
     [setPendingMangaOpen, setActiveNav],
   );
+
+  const runFavDownloadAll = useCallback(
+    async (ids: number[]) => {
+      if (!ids.length || favScanning) return;
+      if (catalogJob) {
+        log("Ya hay una tarea en curso.", "err");
+        return;
+      }
+      const dir = await ensureOutputDir();
+      if (!dir) {
+        log("Elige carpeta de salida primero.", "err");
+        return;
+      }
+      clearAppJobCancel();
+      let enqTotal = 0;
+      let cancelled = false;
+      try {
+        for (let i = 0; i < ids.length; i++) {
+          if (isAppJobCancelRequested()) {
+            cancelled = true;
+            break;
+          }
+          const id = ids[i];
+          const fav = favorites.find((f) => f.id === id);
+          const title = fav?.title || `Favorito #${id}`;
+          const site = fav ? fav.module_name || fav.module_id : "";
+          setAppJob({
+            mode: "favorites",
+            scope: "all",
+            moduleId: String(id),
+            moduleName: title,
+            index: i + 1,
+            total: ids.length,
+            page: i,
+            pageTotal: ids.length,
+            bytesDone: 0,
+            bytesTotal: 0,
+            message: site,
+            phase: "check",
+            cancelling: false,
+          });
+          try {
+            const r = await api.favoritesDownloadAll(id);
+            enqTotal += r.enqueued;
+            setNewCounts((prev) => new Map(prev).set(r.favorite.id, 0));
+            setCheckedAt((prev) => new Map(prev).set(r.favorite.id, Date.now()));
+          } catch (e) {
+            log(String(e), "err");
+          }
+        }
+        log(
+          cancelled
+            ? `Descarga cancelada · ${enqTotal} capítulos encolados`
+            : `Encolados ${enqTotal} capítulos`,
+          cancelled ? "" : "ok",
+        );
+        await refreshFavorites();
+      } finally {
+        setAppJob(null);
+        clearAppJobCancel();
+      }
+    },
+    [
+      favScanning,
+      catalogJob,
+      favorites,
+      log,
+      ensureOutputDir,
+      refreshFavorites,
+      setAppJob,
+      isAppJobCancelRequested,
+      clearAppJobCancel,
+    ],
+  );
+
+  const openFavCtx = useCallback((ev: ReactMouseEvent, id: number) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    let ids: number[];
+    if (sel[id]) {
+      ids = Object.keys(sel)
+        .filter((k) => sel[Number(k)])
+        .map(Number);
+    } else {
+      ids = [id];
+      setSel({ [id]: true });
+    }
+    const pad = 8;
+    const menuW = 220;
+    const menuH = 420;
+    const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
+    const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
+    setFavCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), ids });
+  }, [sel]);
+
+  useEffect(() => {
+    if (!favCtxMenu) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setFavCtxMenu(null);
+    };
+    const onScroll = () => setFavCtxMenu(null);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [favCtxMenu]);
+
+  const ctxFavs = useMemo(() => {
+    if (!favCtxMenu) return [] as Favorite[];
+    return favCtxMenu.ids
+      .map((id) => favorites.find((f) => f.id === id))
+      .filter((f): f is Favorite => !!f);
+  }, [favCtxMenu, favorites]);
+
+  const ctxSingle = ctxFavs.length === 1 ? ctxFavs[0] : null;
+  const ctxPendingSum = ctxFavs.reduce((a, f) => a + favNewOf(f.id), 0);
+  const ctxAllDisabled = ctxFavs.length > 0 && ctxFavs.every((f) => !favIsEnabled(f.id));
+  const ctxEnableLabel = ctxAllDisabled ? "Habilitar" : "Deshabilitar";
+  const ctxCanStop = favScanning && !!catalogJob;
 
   const list = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -937,6 +1063,7 @@ export function FavoritesView() {
                         className={`fav-grid fav-row${on ? " sel" : ""}`}
                         style={{ height: "46px" }}
                         onClick={() => toggleSel(it.id)}
+                        onContextMenu={(ev) => openFavCtx(ev, it.id)}
                       >
                         <button
                           type="button"
@@ -1042,6 +1169,185 @@ export function FavoritesView() {
           </div>
         </div>
       </div>
+
+      {favCtxMenu ? (
+        <div className="dl-ctx-layer">
+          <div
+            className="dl-ctx-backdrop"
+            onClick={() => setFavCtxMenu(null)}
+            onContextMenu={(ev) => {
+              ev.preventDefault();
+              setFavCtxMenu(null);
+            }}
+          />
+          <div
+            className="dl-ctx-menu"
+            style={{ left: favCtxMenu.x, top: favCtxMenu.y }}
+            role="menu"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={!ctxSingle}
+              onClick={() => {
+                const fav = ctxSingle;
+                setFavCtxMenu(null);
+                if (fav) openFavoriteInInfo(fav);
+              }}
+            >
+              <Icon ico={ICO.info} className="ico ico-sm" />
+              <span>Ver info</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={checkBusy || !favCtxMenu.ids.length}
+              onClick={() => {
+                const ids = favCtxMenu.ids;
+                setFavCtxMenu(null);
+                void runFavChecks(ids, false);
+              }}
+            >
+              <Icon ico={ICO.refresh} className="ico ico-sm" />
+              <span>Revisar capítulos nuevos</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={checkBusy || ctxPendingSum === 0}
+              onClick={() => {
+                const ids = favCtxMenu.ids;
+                setFavCtxMenu(null);
+                void runFavEnqueuePending(ids);
+              }}
+            >
+              <Icon ico={ICO.download} className="ico ico-sm" />
+              <span>Descargar nuevos</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={checkBusy || !favCtxMenu.ids.length}
+              onClick={() => {
+                const ids = favCtxMenu.ids;
+                setFavCtxMenu(null);
+                void runFavDownloadAll(ids);
+              }}
+            >
+              <Icon ico={ICO.layers} className="ico ico-sm" />
+              <span>Descargar todos</span>
+            </button>
+            {ctxCanStop ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="dl-ctx-item"
+                onClick={() => {
+                  setFavCtxMenu(null);
+                  void cancelCatalogJob();
+                }}
+              >
+                <Icon ico={ICO.x} className="ico ico-sm" />
+                <span>Detener revisión</span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item is-sep"
+              disabled={!ctxFavs.length || checkBusy}
+              onClick={() => {
+                const ids = favCtxMenu.ids;
+                const next = ctxAllDisabled;
+                setFavCtxMenu(null);
+                void (async () => {
+                  try {
+                    for (const id of ids) {
+                      await api.favoritesSetEnabled(id, next);
+                      setEnabledMap((prev) => new Map(prev).set(id, next));
+                    }
+                    await refreshFavorites();
+                  } catch (e) {
+                    log(String(e), "err");
+                  }
+                })();
+              }}
+            >
+              <Icon ico={ICO.power} className="ico ico-sm" />
+              <span>{ctxEnableLabel}</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item is-sep"
+              disabled={!ctxSingle}
+              onClick={() => {
+                const fav = ctxSingle;
+                setFavCtxMenu(null);
+                if (!fav) return;
+                const url = maybeFillHost(fav.root_url, fav.manga_url);
+                void api.openExternal(url).catch((e) => log(String(e), "err"));
+              }}
+            >
+              <Icon ico={ICO.external} className="ico ico-sm" />
+              <span>Abrir en el navegador</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={!ctxSingle}
+              onClick={() => {
+                const fav = ctxSingle;
+                setFavCtxMenu(null);
+                if (!fav) return;
+                const url = maybeFillHost(fav.root_url, fav.manga_url);
+                void navigator.clipboard.writeText(url).then(
+                  () => log("URL copiada", "ok"),
+                  (e) => log(String(e), "err"),
+                );
+              }}
+            >
+              <Icon ico={ICO.link} className="ico ico-sm" />
+              <span>Copiar URL</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={!ctxFavs.length}
+              onClick={() => {
+                const titles = ctxFavs.map((f) => f.title).join("\n");
+                setFavCtxMenu(null);
+                void navigator.clipboard.writeText(titles).then(
+                  () => log(ctxFavs.length === 1 ? "Título copiado" : "Títulos copiados", "ok"),
+                  (e) => log(String(e), "err"),
+                );
+              }}
+            >
+              <Icon ico={ICO.copy} className="ico ico-sm" />
+              <span>Copiar título</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item is-sep is-danger"
+              disabled={!ctxFavs.length || checkBusy}
+              onClick={() => {
+                setFavCtxMenu(null);
+                void handleDeleteSelected();
+              }}
+            >
+              <Icon ico={ICO.trash} className="ico ico-sm" />
+              <span>Quitar de favoritos</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

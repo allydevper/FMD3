@@ -765,6 +765,58 @@ pub async fn favorites_enqueue_pending(
     })
 }
 
+/// Download all chapters for a favorite (skip already downloaded / active in queue).
+#[tauri::command]
+pub async fn favorites_download_all(
+    app: AppHandle,
+    state: State<'_, QueueState>,
+    id: i64,
+) -> Result<FavoriteCheckResult, String> {
+    let fav_db = state.favorites.clone();
+    let fav = db::favorites_get(&fav_db, id)?;
+    if crate::settings_keys::module_disabled(&fav.module_id) {
+        return Err(format!(
+            "Módulo no activado: {} ({})",
+            fav.module_name, fav.module_id
+        ));
+    }
+
+    let manga_url = fav.manga_url.clone();
+    let module_id = fav.module_id.clone();
+    let manga_url_for_queue =
+        crate::lua_host::maybe_fill_host(&fav.root_url, &fav.manga_url);
+
+    let info = tauri::async_runtime::spawn_blocking(move || {
+        get_info(&manga_url, Some(module_id.as_str()))
+    })
+    .await
+    .map_err(|e| format!("tarea cancelada: {e}"))??;
+
+    let chapters = chapters_from_info(&info);
+    let (tip_link, tip_name) = tip_chapter(&chapters);
+    let enqueued = enqueue_chapters(&app, state.inner(), &info, &manga_url_for_queue, &chapters)?;
+
+    // Acknowledge every remote chapter as seen (FMD2 download-all baseline).
+    let all_links: Vec<String> = chapters.iter().map(|c| c.link.clone()).collect();
+    let merged = db::merge_chapter_links(&fav.seen_chapter_links, &all_links);
+    db::favorites_acknowledge_chapters(
+        &fav_db,
+        id,
+        &merged,
+        &tip_link,
+        &tip_name,
+        chapters.len() as i64,
+        &info.status,
+    )?;
+
+    let favorite = db::favorites_get(&fav_db, id)?;
+    Ok(FavoriteCheckResult {
+        favorite,
+        new_chapters: chapters,
+        enqueued,
+    })
+}
+
 #[tauri::command]
 pub fn queue_list(state: State<QueueState>) -> Result<Vec<QueueItem>, String> {
     db::queue_list(&state.db)

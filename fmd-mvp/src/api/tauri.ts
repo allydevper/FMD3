@@ -319,6 +319,10 @@ export function favoritesEnqueuePending(id: number) {
   return invoke<FavoriteCheckResult>("favorites_enqueue_pending", { id });
 }
 
+export function favoritesDownloadAll(id: number) {
+  return invoke<FavoriteCheckResult>("favorites_download_all", { id });
+}
+
 export function favoritesImportList(json: string) {
   return invoke<number>("favorites_import_list", { json });
 }
