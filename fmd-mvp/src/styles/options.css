@@ -864,6 +864,9 @@
 }
 
 .sites-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 11px 15px 10px;
   font-size: 12.5px;
   font-weight: 500;
@@ -884,6 +887,16 @@
   color: var(--text);
   font-weight: 600;
   border-bottom-color: var(--accent);
+}
+
+/* Count of pending module changes, mirroring .fav-new-badge. */
+.sites-tab-badge {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 5px;
+  color: var(--on-accent);
+  background: var(--accent);
 }
 
 .sites-pane {
@@ -1257,6 +1270,44 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* Collapsible "where do modules come from" panel. */
+.mods-source {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.mods-source-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 22px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+
+.mods-source-head:hover {
+  background: var(--hover-tint);
+}
+
+.mods-source-current {
+  min-width: 0;
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.mods-source-body {
+  padding: 2px 22px 10px;
 }
 
 /* Pending-updates notice left by a silent background check. */

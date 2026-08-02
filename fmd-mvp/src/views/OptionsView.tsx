@@ -126,6 +126,14 @@ const SITE_OVERSCAN = 10;
 const MOD_ROW_H = 32;
 const MOD_OVERSCAN = 10;
 
+type ModulesSource = "github" | "http_index" | "local_dir";
+
+const MODULES_SOURCE_OPTIONS: { value: ModulesSource; label: string }[] = [
+  { value: "github", label: "GitHub (FMD2 oficial)" },
+  { value: "http_index", label: "Portal (índice HTTP)" },
+  { value: "local_dir", label: "Carpeta local" },
+];
+
 /** Progress phases emitted by the Rust updater, in user-facing Spanish. */
 const MODS_PHASE_LABEL: Record<string, string> = {
   probe: "Consultando la fuente…",
@@ -785,6 +793,13 @@ export function OptionsView() {
   const [s, setS] = useState<OptionsFormState>(DEFAULT_SETTINGS);
   const [modsWarn, setModsWarn] = useState(true);
   const [modsAutoRestart, setModsAutoRestart] = useState(false);
+  const [modsSource, setModsSource] = useState<ModulesSource>("github");
+  const [modsSourceUrl, setModsSourceUrl] = useState("");
+  const [modsBulkThreshold, setModsBulkThreshold] = useState(50);
+  const [modsThreads, setModsThreads] = useState(4);
+  const [modsFetchMeta, setModsFetchMeta] = useState(true);
+  const [modsBackupGens, setModsBackupGens] = useState(5);
+  const [modsBackupMb, setModsBackupMb] = useState(64);
 
   const outputDirRef = useRef(outputDir);
   useEffect(() => {
@@ -982,6 +997,20 @@ export function OptionsView() {
     const modsAutoRestartLoad = parseB(await get(SK.MODULES_UPDATER_AUTO_RESTART), false);
     setModsWarn(modsWarnLoad);
     setModsAutoRestart(modsAutoRestartLoad);
+    const parseN = (raw: string | null, fallback: number) => {
+      const n = Number((raw ?? "").trim());
+      return Number.isFinite(n) && n > 0 ? n : fallback;
+    };
+    const src = ((await get(SK.MODULES_SOURCE)) || "github").trim() as ModulesSource;
+    setModsSource(
+      MODULES_SOURCE_OPTIONS.some((o) => o.value === src) ? src : "github",
+    );
+    setModsSourceUrl((await get(SK.MODULES_SOURCE_URL)) ?? "");
+    setModsBulkThreshold(parseN(await get(SK.MODULES_BULK_THRESHOLD), 50));
+    setModsThreads(parseN(await get(SK.MODULES_THREADS), 4));
+    setModsFetchMeta(parseB(await get(SK.MODULES_FETCH_METADATA), true));
+    setModsBackupGens(parseN(await get(SK.MODULES_BACKUP_GENERATIONS), 5));
+    setModsBackupMb(parseN(await get(SK.MODULES_BACKUP_MAX_MB), 64));
     const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
     const updateListFullScan = parseB(await get(SK.UPDATE_LIST_FULL_SCAN), false);
     const updateListThreads = Math.min(
@@ -1129,6 +1158,20 @@ export function OptionsView() {
     await api.settingsSet(SK.CHECK_UPDATE_START, boolStr(s.checkUpdateStart));
     await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, boolStr(modsWarn));
     await api.settingsSet(SK.MODULES_UPDATER_AUTO_RESTART, boolStr(modsAutoRestart));
+    // Content ids are not comparable across sources (git blob sha vs the
+    // portal's sha256), so a source switch must start from a clean cursor.
+    const prevSource = ((await api.settingsGet(SK.MODULES_SOURCE)) || "github").trim();
+    const prevUrl = (await api.settingsGet(SK.MODULES_SOURCE_URL)) ?? "";
+    await api.settingsSet(SK.MODULES_SOURCE, modsSource);
+    await api.settingsSet(SK.MODULES_SOURCE_URL, modsSourceUrl.trim());
+    await api.settingsSet(SK.MODULES_BULK_THRESHOLD, String(modsBulkThreshold));
+    await api.settingsSet(SK.MODULES_THREADS, String(modsThreads));
+    await api.settingsSet(SK.MODULES_FETCH_METADATA, boolStr(modsFetchMeta));
+    await api.settingsSet(SK.MODULES_BACKUP_GENERATIONS, String(modsBackupGens));
+    await api.settingsSet(SK.MODULES_BACKUP_MAX_MB, String(modsBackupMb));
+    if (prevSource !== modsSource || prevUrl.trim() !== modsSourceUrl.trim()) {
+      await api.modulesResetCursor();
+    }
     await api.settingsSet(SK.UPDATE_LIST_NO_INFO, boolStr(s.updateListNoInfo));
     await api.settingsSet(SK.UPDATE_LIST_FULL_SCAN, boolStr(s.updateListFullScan));
     const enabled = modules.filter((m) => siteOn[m.id]).map((m) => m.id);
@@ -1164,7 +1207,26 @@ export function OptionsView() {
       }, 2800);
       log(`No se pudieron guardar los ajustes: ${e}`, "err");
     }
-  }, [s, setOutputDir, log, modules, siteOn, setTheme, refreshEnabledModules, setFavAutoCheck, saveFlash, modsWarn, modsAutoRestart]);
+  }, [
+    s,
+    setOutputDir,
+    log,
+    modules,
+    siteOn,
+    setTheme,
+    refreshEnabledModules,
+    setFavAutoCheck,
+    saveFlash,
+    modsWarn,
+    modsAutoRestart,
+    modsSource,
+    modsSourceUrl,
+    modsBulkThreshold,
+    modsThreads,
+    modsFetchMeta,
+    modsBackupGens,
+    modsBackupMb,
+  ]);
 
   const handleBrowseOutputDir = useCallback(async () => {
     const dir = await open({ directory: true, multiple: false });
@@ -1563,6 +1625,7 @@ export function OptionsView() {
   const [modsOnlyUpdated, setModsOnlyUpdated] = useState(false);
   const [modsChecking, setModsChecking] = useState(false);
   const [repoEntries, setRepoEntries] = useState<LuaRepoEntry[]>([]);
+  const [modsSourceOpen, setModsSourceOpen] = useState(false);
 
   const loadRepoEntries = useCallback(async () => {
     try {
@@ -1586,6 +1649,10 @@ export function OptionsView() {
   }, [repoEntries]);
 
   const modsUpdatedCount = useMemo(() => modRows.filter((r) => r.updated).length, [modRows]);
+
+  const modulesPendingCount = modulesPending
+    ? modulesPending.new_count + modulesPending.update_count + modulesPending.delete_count
+    : 0;
 
   /** File count drives the bar; the archive phase only knows bytes. */
   const modulesJobPct = useMemo(() => {
@@ -2825,6 +2892,9 @@ export function OptionsView() {
                   onClick={() => setSitesTab("mods")}
                 >
                   Módulos
+                  {modulesPendingCount ? (
+                    <span className="sites-tab-badge mono">{modulesPendingCount}</span>
+                  ) : null}
                 </button>
               </div>
 
@@ -3066,6 +3136,127 @@ export function OptionsView() {
                       <Icon ico={ICO.x} className="ico ico-sm" />
                     </button>
                   </div>
+                </div>
+
+                <div className="mods-source">
+                  <button
+                    type="button"
+                    className="mods-source-head"
+                    aria-expanded={modsSourceOpen}
+                    onClick={() => setModsSourceOpen((v) => !v)}
+                  >
+                    <Icon
+                      ico={ICO.chevron}
+                      className="ico ico-sm"
+                      style={{ transform: modsSourceOpen ? "none" : "rotate(-90deg)" }}
+                    />
+                    <span>Origen de los módulos</span>
+                    <span className="mods-source-current ell">
+                      {MODULES_SOURCE_OPTIONS.find((o) => o.value === modsSource)?.label}
+                    </span>
+                  </button>
+                  {modsSourceOpen ? (
+                    <div className="st-nest-inner mods-source-body">
+                      <SelectRow
+                        id="opt-mods-source"
+                        label="Fuente"
+                        desc="De dónde se descargan los módulos Lua"
+                        value={modsSource}
+                        onChange={(v) => {
+                          setModsSource(v as ModulesSource);
+                          setDirty(true);
+                        }}
+                        options={MODULES_SOURCE_OPTIONS}
+                      />
+                      {modsSource !== "github" ? (
+                        <OptRow
+                          label={modsSource === "local_dir" ? "Carpeta" : "URL del índice"}
+                          desc={
+                            modsSource === "local_dir"
+                              ? "Carpeta con la misma estructura que lua/ (modules, templates, …)"
+                              : "Documento JSON del portal que lista los módulos y sus hashes"
+                          }
+                        >
+                          <input
+                            className="st-field st-mono"
+                            type="text"
+                            value={modsSourceUrl}
+                            placeholder={
+                              modsSource === "local_dir"
+                                ? "C:\\ruta\\a\\lua"
+                                : "https://portal.example/lua/index.json"
+                            }
+                            autoComplete="off"
+                            spellCheck={false}
+                            onChange={(e) => {
+                              setModsSourceUrl(e.target.value);
+                              setDirty(true);
+                            }}
+                          />
+                        </OptRow>
+                      ) : null}
+                      <BoundStepperRow
+                        id="opt-mods-bulk"
+                        label="Umbral de paquete"
+                        desc="A partir de cuántos archivos conviene bajar un único zip en vez de archivo por archivo"
+                        value={modsBulkThreshold}
+                        min={1}
+                        max={5000}
+                        unit="archivos"
+                        onChange={(v) => {
+                          setModsBulkThreshold(v);
+                          setDirty(true);
+                        }}
+                      />
+                      <BoundStepperRow
+                        id="opt-mods-threads"
+                        label="Descargas simultáneas"
+                        desc="Solo se usa cuando no hay paquete y toca bajar archivo por archivo"
+                        value={modsThreads}
+                        min={1}
+                        max={8}
+                        onChange={(v) => {
+                          setModsThreads(v);
+                          setDirty(true);
+                        }}
+                      />
+                      <SwitchRow
+                        id="opt-mods-meta"
+                        label="Traer fecha y mensaje de cada cambio"
+                        desc="GitHub no permite pedirlos en bloque, así que solo se consultan en cambios pequeños"
+                        checked={modsFetchMeta}
+                        onChange={(v) => {
+                          setModsFetchMeta(v);
+                          setDirty(true);
+                        }}
+                      />
+                      <BoundStepperRow
+                        id="opt-mods-gens"
+                        label="Puntos de restauración"
+                        desc="Cuántas actualizaciones se pueden deshacer"
+                        value={modsBackupGens}
+                        min={1}
+                        max={50}
+                        onChange={(v) => {
+                          setModsBackupGens(v);
+                          setDirty(true);
+                        }}
+                      />
+                      <BoundStepperRow
+                        id="opt-mods-mb"
+                        label="Tamaño de las copias"
+                        desc="Las más antiguas se descartan al superarlo; la última siempre se conserva"
+                        value={modsBackupMb}
+                        min={8}
+                        max={2048}
+                        unit="MB"
+                        onChange={(v) => {
+                          setModsBackupMb(v);
+                          setDirty(true);
+                        }}
+                      />
+                    </div>
+                  ) : null}
                 </div>
 
                 {modulesPending && !modulesJob ? (

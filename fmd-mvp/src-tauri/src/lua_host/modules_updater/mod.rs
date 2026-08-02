@@ -93,11 +93,30 @@ fn report_from(plan: &SyncPlan, token: Option<String>, source: &dyn Source) -> C
     }
 }
 
+/// Drop the change cursor when the app version moved.
+///
+/// A new build may ship a different idea of the tree, and the stored ETag would
+/// happily answer "nothing changed" over the top of it. Cheap insurance: one
+/// full listing on the first check after an upgrade.
+fn reset_cursor_on_new_app_version(source_id: &str) {
+    const KEY: &str = "modules.updater.app_version";
+    let current = env!("CARGO_PKG_VERSION");
+    let seen = crate::db::settings_get_direct(KEY).ok().flatten();
+    if seen.as_deref() == Some(current) {
+        return;
+    }
+    if seen.is_some() {
+        let _ = save_cursor(source_id, &state::SourceCursor::default());
+    }
+    let _ = crate::db::settings_set_direct(KEY, current);
+}
+
 /// Look for changes. `force` (an explicit user action) ignores dismissals and
 /// retry backoff so "Revisar actualización" always reports the truth.
 pub fn check(force: bool) -> Result<CheckReport, String> {
     let _guard = lock()?;
     let source = source::resolve()?;
+    reset_cursor_on_new_app_version(&source.id());
     let (plan, st) = build_plan(source.as_ref(), force)?;
     save_state(&st)?;
 
@@ -109,25 +128,31 @@ pub fn check(force: bool) -> Result<CheckReport, String> {
     Ok(report_from(&plan, Some(token), source.as_ref()))
 }
 
-/// Download and write the changes. Reuses the plan behind `token`; without a
-/// usable token it re-checks once rather than acting on a guess.
+/// Download and write the changes for the plan behind `token`.
+///
+/// A valid token is mandatory. It is the only proof that a human saw this exact
+/// set of changes and agreed to it — if `apply` could build its own plan, any
+/// caller (including a background pass that is supposed to be read-only) could
+/// overwrite the whole Lua tree without anyone confirming.
 pub fn apply(
     token: Option<String>,
     sink: Option<ProgressSink<'_>>,
 ) -> Result<ModulesUpdateReport, String> {
     let _guard = lock()?;
+    // Checked before anything else: a call with no plan must not resolve a
+    // source, open the database or touch the network.
+    let Some(plan) = session::take(token.as_deref()) else {
+        return Err(
+            "La actualización caducó o no fue confirmada; vuelve a pulsar «Revisar actualización»."
+                .into(),
+        );
+    };
     progress::reset_cancel();
     let emitter = progress::Emitter::new(sink);
     let source = source::resolve()?;
 
     emitter.phase("probe", "Preparando actualización…");
-    let (plan, mut st) = match session::take(token.as_deref()) {
-        Some(plan) => (plan, load_state()),
-        None => {
-            let (plan, st) = build_plan(source.as_ref(), true)?;
-            (plan, st)
-        }
-    };
+    let mut st = load_state();
     session::clear();
 
     if plan.is_empty() {
@@ -315,4 +340,57 @@ pub fn revert_file(path: String, content_id: String) -> Result<UndoReport, Strin
 
 pub fn generations() -> Vec<Generation> {
     snapshot::generations()
+}
+
+/// Forget the change cursor for the configured source. Needed after switching
+/// sources: a portal's sha256 ids mean nothing to a cursor recorded against
+/// GitHub blob shas, and the stored ETag would wrongly answer "unchanged".
+pub fn reset_cursor() -> Result<(), String> {
+    let source = source::resolve()?;
+    session::clear();
+    save_cursor(&source.id(), &state::SourceCursor::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_plan() -> SyncPlan {
+        SyncPlan {
+            source_id: "test".into(),
+            source_label: "test".into(),
+            revision: "r1".into(),
+            items: Vec::new(),
+            status_lines: Vec::new(),
+            new_count: 0,
+            update_count: 0,
+            delete_count: 0,
+            failed_count: 0,
+            suppressed_count: 0,
+        }
+    }
+
+    /// The whole point of the token: without one, `apply` writes nothing. This
+    /// is what stops a background pass from overwriting the Lua tree.
+    #[test]
+    fn apply_refuses_without_a_confirmed_plan() {
+        session::clear();
+        let err = apply(None, None).unwrap_err();
+        assert!(err.contains("caducó"), "mensaje inesperado: {err}");
+
+        let err = apply(Some("no-existe".into()), None).unwrap_err();
+        assert!(err.contains("caducó"), "mensaje inesperado: {err}");
+    }
+
+    #[test]
+    fn a_foreign_token_does_not_consume_the_plan() {
+        session::clear();
+        let token = session::put(dummy_plan());
+        assert!(session::take(Some("otro")).is_none());
+        // The rightful owner can still claim it.
+        assert!(session::take(Some(&token)).is_some());
+        // And only once.
+        assert!(session::take(Some(&token)).is_none());
+        session::clear();
+    }
 }

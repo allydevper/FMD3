@@ -5,7 +5,8 @@ use crate::catalog::{
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
     get_info, modules_generations, modules_history, modules_list, modules_match_url,
-    modules_refresh, modules_repo_list, modules_revert_file, modules_undo_generation,
+    modules_needs_first_sync, modules_refresh, modules_repo_list, modules_reset_cursor,
+    modules_revert_file, modules_undo_generation,
     modules_update_apply, modules_update_check, modules_update_dismiss,
     modules_update_request_cancel, modules_update_reset_cancel, update_list, ChapterInfo,
     CheckReport, FileVersion, Generation, LuaRepoEntry, MangaInfoResult, ModuleMeta,
@@ -1673,6 +1674,13 @@ pub async fn modules_repo_list_cmd() -> Result<Vec<LuaRepoEntry>, String> {
 /// Look for module changes. `force` ignores dismissals and retry backoff.
 /// Returns a token the caller hands back to `modules_update_apply_cmd`, so
 /// confirming costs no further network round trip.
+/// True when the Lua tree has no modules yet, so the UI can run the first sync
+/// instead of showing an empty site list.
+#[tauri::command]
+pub fn modules_needs_first_sync_cmd() -> bool {
+    modules_needs_first_sync()
+}
+
 #[tauri::command]
 pub async fn modules_update_check_cmd(force: Option<bool>) -> Result<CheckReport, String> {
     let force = force.unwrap_or(false);
@@ -1734,6 +1742,13 @@ pub async fn modules_history_cmd(path: String) -> Result<Vec<FileVersion>, Strin
 #[tauri::command]
 pub async fn modules_revert_cmd(path: String, content_id: String) -> Result<UndoReport, String> {
     tauri::async_runtime::spawn_blocking(move || modules_revert_file(path, content_id))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub async fn modules_reset_cursor_cmd() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(modules_reset_cursor)
         .await
         .map_err(|e| format!("tarea cancelada: {e}"))?
 }

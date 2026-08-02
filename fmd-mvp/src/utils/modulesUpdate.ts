@@ -1,7 +1,7 @@
-import { relaunch } from "@tauri-apps/plugin-process";
 import * as api from "../api/tauri";
 import { appConfirm } from "../components/AppConfirm";
 import { SK } from "../constants";
+import { safeRelaunch } from "./restartGuard";
 import type { ModulesCheckReport, ModulesUpdateReport } from "../types";
 
 export type ModulesUpdateLog = (msg: string, kind?: "ok" | "err" | "") => void;
@@ -40,7 +40,8 @@ async function maybeRestart(log: ModulesUpdateLog): Promise<void> {
   const auto = parseBool(await api.settingsGet(SK.MODULES_UPDATER_AUTO_RESTART), false);
   if (auto) {
     log("Módulos actualizados — reiniciando…", "ok");
-    await relaunch();
+    // Even auto-restart asks when it would kill a download in flight.
+    await safeRelaunch("Se actualizaron los módulos Lua.");
     return;
   }
   const ok = await appConfirm({
@@ -49,7 +50,7 @@ async function maybeRestart(log: ModulesUpdateLog): Promise<void> {
     okLabel: "Reiniciar",
     cancelLabel: "Más tarde",
   });
-  if (ok) await relaunch();
+  if (ok) await safeRelaunch("Se actualizaron los módulos Lua.");
 }
 
 /**
@@ -77,7 +78,12 @@ export async function runModulesGithubUpdate(
     return { check, report: null, deferred: true };
   }
 
-  const warn = parseBool(await api.settingsGet(SK.MODULES_UPDATER_SHOW_WARNING), true);
+  // The warning is about losing local edits, so it only earns a modal when
+  // something is actually being overwritten or removed. A first sync — or any
+  // pure addition — has nothing to lose and should not interrogate the user.
+  const overwrites = check.update_count + check.delete_count;
+  const warn =
+    overwrites > 0 && parseBool(await api.settingsGet(SK.MODULES_UPDATER_SHOW_WARNING), true);
   if (warn) {
     const ok = await appConfirm({
       title: "Actualización de módulos",

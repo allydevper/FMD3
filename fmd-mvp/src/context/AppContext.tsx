@@ -21,7 +21,9 @@ import type {
 } from "../types";
 import * as api from "../api/tauri";
 import { runAppUpdateCheck } from "../utils/appUpdate";
-import { runModulesGithubUpdate } from "../utils/modulesUpdate";
+import { runModulesGithubUpdate, summarizeCheck } from "../utils/modulesUpdate";
+import { appToast } from "../components/AppToast";
+import { registerBusyProbe } from "../utils/restartGuard";
 
 export type LogKind = "ok" | "err" | "";
 export type AppTheme = "system" | "light" | "dark";
@@ -100,6 +102,8 @@ type AppContextValue = {
   /** Live progress of a running module sync; null when idle. */
   modulesJob: ModulesUpdateProgressEvent | null;
   cancelModulesJob: () => Promise<void>;
+  /** Version of a postponed app update, if any. */
+  appUpdatePending: string | null;
 };
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -162,6 +166,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /** Set by a silent check that found changes; cleared once they are applied. */
   const [modulesPending, setModulesPending] = useState<ModulesCheckReport | null>(null);
   const [modulesJob, setModulesJob] = useState<ModulesUpdateProgressEvent | null>(null);
+  /** Version the user postponed, so the reminder survives the session. */
+  const [appUpdatePending, setAppUpdatePending] = useState<string | null>(null);
   const favDownloadAfterRef = useRef(false);
   const [favAutoCheckSeq, setFavAutoCheckSeq] = useState(0);
   const [lastFavAutoCheck, setLastFavAutoCheck] = useState<FavoriteCheckResult[] | null>(
@@ -323,11 +329,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       modulesUpdateBusyRef.current = true;
       try {
         const { check, deferred } = await runModulesGithubUpdate(log, { silent });
-        // A silent pass never prompts; it just lights up the Módulos tab.
         setModulesPending(deferred ? check : null);
-        if (!deferred) await refreshModules();
+        if (deferred) {
+          // Silent must not mean invisible: without this the only sign is a
+          // banner inside a settings sub-tab nobody opens.
+          appToast({
+            message: `Módulos por actualizar: ${summarizeCheck(check)}`,
+            action: { label: "Ver", onClick: () => setActiveNav("options") },
+          });
+        } else {
+          await refreshModules();
+        }
       } catch (e) {
-        if (!silent) log(`Revisión automática de módulos: ${e}`, "err");
+        log(`Revisión de módulos: ${e}`, "err");
+        if (!silent) {
+          appToast({
+            message: "No se pudieron descargar los módulos.",
+            kind: "err",
+            action: {
+              label: "Reintentar",
+              onClick: () => void runAutoModulesCheckRef.current(false),
+            },
+          });
+        }
       } finally {
         modulesUpdateBusyRef.current = false;
       }
@@ -380,6 +404,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       un?.();
     };
   }, []);
+
+  // What a restart would interrupt. The queue is polled from the backend by
+  // `busyReasons`; these two only exist in memory.
+  useEffect(
+    () =>
+      registerBusyProbe(() => {
+        if (modulesUpdateBusyRef.current) return "actualización de módulos en curso";
+        const job = catalogJobRef.current;
+        if (job) return `catálogo en curso (${job.moduleName || job.moduleId})`;
+        return null;
+      }),
+    [],
+  );
 
   const cancelModulesJob = useCallback(async () => {
     try {
@@ -651,15 +688,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
 
         const checkUpdate = parseBool(await api.settingsGet(SK.CHECK_UPDATE_START), true);
+        let installingApp = false;
         if (!cancelled && checkUpdate) {
           try {
-            await runAppUpdateCheck(log);
+            const r = await runAppUpdateCheck(log);
+            installingApp = r.installing;
+            if (r.deferred) setAppUpdatePending(r.version ?? null);
           } catch {
             // runAppUpdateCheck already logged
           }
-          if (!cancelled) {
+          // If the app is about to be replaced there is no point syncing
+          // modules — the process restarts and the check runs again anyway.
+          if (!cancelled && !installingApp) {
             await runAutoModulesCheckRef.current(true);
           }
+        }
+
+        // The Lua tree no longer ships with the installer, so a fresh install
+        // starts with nothing to browse. Sync it out loud — an empty site list
+        // with no explanation reads as a broken app.
+        if (!cancelled && !installingApp && (await api.modulesNeedsFirstSync())) {
+          log("Primer arranque: descargando módulos…", "");
+          await runAutoModulesCheckRef.current(false);
         }
       } catch (e) {
         if (!cancelled) log(String(e), "err");
@@ -720,6 +770,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setModulesPending,
     modulesJob,
     cancelModulesJob,
+    appUpdatePending,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

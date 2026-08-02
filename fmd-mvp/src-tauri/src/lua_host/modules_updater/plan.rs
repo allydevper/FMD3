@@ -94,7 +94,10 @@ pub fn build(
                 continue;
             }
             entry.flag = ChangeKind::Delete.flag().into();
-            if entry.is_dismissed() && !force {
+            if force {
+                entry.dismissed_id = None;
+            }
+            if entry.is_dismissed() {
                 suppressed_count += 1;
                 continue;
             }
@@ -125,7 +128,13 @@ pub fn build(
         };
         entry.flag = kind.flag().into();
 
-        let dismissed = entry.is_dismissed() && !force;
+        if force {
+            // The user is looking on purpose, so an old "no thanks" no longer
+            // applies. Clearing it keeps the badge and the manual check telling
+            // the same story instead of one screaming while the other is mute.
+            entry.dismissed_id = None;
+        }
+        let dismissed = entry.is_dismissed();
         let backing_off = entry.attempts > 0 && !entry.retry_due(now) && !force;
         if dismissed || backing_off {
             if entry.attempts > 0 {
@@ -227,6 +236,21 @@ mod tests {
         assert!(e.retry_due(1_000 + 300));
         e.attempts = MAX_ATTEMPTS;
         assert!(!e.retry_due(i64::MAX / 2));
+    }
+
+    #[test]
+    fn a_forced_check_clears_an_old_dismissal() {
+        // Mirrors what `build` does under `force`: the badge (force = false)
+        // and «Revisar actualización» (force = true) must not disagree once the
+        // user has deliberately looked.
+        let mut e = entry("modules/A.lua", "bbb", Some("aaa"));
+        e.dismissed_id = Some("bbb".into());
+        assert!(e.is_dismissed());
+        let force = true;
+        if force {
+            e.dismissed_id = None;
+        }
+        assert!(!e.is_dismissed());
     }
 
     #[test]

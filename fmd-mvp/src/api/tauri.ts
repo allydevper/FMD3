@@ -403,6 +403,11 @@ export function vacuumDb() {
   return invoke("db_vacuum");
 }
 
+/** True when no Lua modules are installed yet, i.e. the app has never synced. */
+export function modulesNeedsFirstSync() {
+  return invoke<boolean>("modules_needs_first_sync_cmd");
+}
+
 /** Look for module changes. `force` ignores dismissals and retry backoff. */
 export function modulesUpdateCheck(force = false) {
   return invoke<ModulesCheckReport>("modules_update_check_cmd", { force });
@@ -442,6 +447,11 @@ export function modulesRevert(path: string, contentId: string) {
     path,
     contentId,
   });
+}
+
+/** Forget the change cursor; required after switching source. */
+export function modulesResetCursor() {
+  return invoke("modules_reset_cursor_cmd");
 }
 
 export function modulesGenerations() {

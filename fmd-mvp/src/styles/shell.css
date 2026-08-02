@@ -18,6 +18,7 @@
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -41,6 +42,25 @@
 .nav-item:hover {
   background: var(--hover-tint);
   color: var(--text);
+}
+
+/* Pending-work marker on the gear; the ring keeps it legible on the active
+   accent background as well as on the rail. */
+.nav-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--panel);
+  pointer-events: none;
+}
+
+.nav-item.active .nav-dot {
+  background: var(--on-accent);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .nav-item.active {
