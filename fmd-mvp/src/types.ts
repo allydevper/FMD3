@@ -86,6 +86,16 @@ export type LuaRepoEntry = {
   flag?: string;
   attempts?: number;
   last_attempt?: number | null;
+  /** Set when the user replaced this module with their own copy. */
+  pin?: ModulePin | null;
+};
+
+/** A module deliberately excluded from the official sync. */
+export type ModulePin = {
+  /** Path on disk, or a URL once the portal exists. */
+  origin: string;
+  pinned_at: number;
+  content_id: string;
 };
 
 /** Result of a check. `token` is handed back to `modulesUpdateApply`. */

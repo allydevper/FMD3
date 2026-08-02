@@ -126,13 +126,11 @@ const SITE_OVERSCAN = 10;
 const MOD_ROW_H = 32;
 const MOD_OVERSCAN = 10;
 
-type ModulesSource = "github" | "http_index" | "local_dir";
-
-const MODULES_SOURCE_OPTIONS: { value: ModulesSource; label: string }[] = [
-  { value: "github", label: "GitHub (FMD2 oficial)" },
-  { value: "http_index", label: "Portal (índice HTTP)" },
-  { value: "local_dir", label: "Carpeta local" },
-];
+function formatMb(bytes: number): string {
+  if (bytes <= 0) return "0 MB";
+  const mb = bytes / (1024 * 1024);
+  return mb < 0.1 ? "menos de 0,1 MB" : `${mb.toFixed(1).replace(".", ",")} MB`;
+}
 
 /** Progress phases emitted by the Rust updater, in user-facing Spanish. */
 const MODS_PHASE_LABEL: Record<string, string> = {
@@ -317,6 +315,9 @@ type ModRow = {
   /** Highlight: new or update from GitHub sync flags. */
   updated: boolean;
   badge: string | null;
+  /** Excluded from the official sync; the row shows where it came from. */
+  pinned: boolean;
+  pinOrigin: string | null;
 };
 
 /* ---------------------------------------------------------------------- */
@@ -405,6 +406,21 @@ function repoEntryToRow(e: LuaRepoEntry): ModRow {
   const msg = (e.last_message || "").trim() || "—";
   let badge: string | null = null;
   let updated = false;
+  if (e.pin) {
+    // A pin outranks every other state: this file is the user's, full stop.
+    return {
+      key: e.name,
+      file: e.name,
+      mtime,
+      when,
+      dateTitle: title,
+      msg: e.pin.origin,
+      updated: false,
+      badge: "Anclado",
+      pinned: true,
+      pinOrigin: e.pin.origin,
+    };
+  }
   if (flag === "new") {
     badge = "Nuevo";
     updated = true;
@@ -427,6 +443,8 @@ function repoEntryToRow(e: LuaRepoEntry): ModRow {
     msg,
     updated,
     badge,
+    pinned: false,
+    pinOrigin: null,
   };
 }
 
@@ -795,13 +813,13 @@ export function OptionsView() {
   const [s, setS] = useState<OptionsFormState>(DEFAULT_SETTINGS);
   const [modsWarn, setModsWarn] = useState(true);
   const [modsAutoRestart, setModsAutoRestart] = useState(false);
-  const [modsSource, setModsSource] = useState<ModulesSource>("github");
-  const [modsSourceUrl, setModsSourceUrl] = useState("");
-  const [modsBulkThreshold, setModsBulkThreshold] = useState(50);
-  const [modsThreads, setModsThreads] = useState(4);
   const [modsFetchMeta, setModsFetchMeta] = useState(true);
-  const [modsBackupGens, setModsBackupGens] = useState(5);
+  const [modsBackupGens, setModsBackupGens] = useState(3);
   const [modsBackupMb, setModsBackupMb] = useState(64);
+  const [modsBackupBytes, setModsBackupBytes] = useState(0);
+  const [modsBackupFlash, setModsBackupFlash] = useState<
+    "idle" | "working" | "done" | "error"
+  >("idle");
 
   const outputDirRef = useRef(outputDir);
   useEffect(() => {
@@ -1003,15 +1021,8 @@ export function OptionsView() {
       const n = Number((raw ?? "").trim());
       return Number.isFinite(n) && n > 0 ? n : fallback;
     };
-    const src = ((await get(SK.MODULES_SOURCE)) || "github").trim() as ModulesSource;
-    setModsSource(
-      MODULES_SOURCE_OPTIONS.some((o) => o.value === src) ? src : "github",
-    );
-    setModsSourceUrl((await get(SK.MODULES_SOURCE_URL)) ?? "");
-    setModsBulkThreshold(parseN(await get(SK.MODULES_BULK_THRESHOLD), 50));
-    setModsThreads(parseN(await get(SK.MODULES_THREADS), 4));
     setModsFetchMeta(parseB(await get(SK.MODULES_FETCH_METADATA), true));
-    setModsBackupGens(parseN(await get(SK.MODULES_BACKUP_GENERATIONS), 5));
+    setModsBackupGens(parseN(await get(SK.MODULES_BACKUP_GENERATIONS), 3));
     setModsBackupMb(parseN(await get(SK.MODULES_BACKUP_MAX_MB), 64));
     const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
     const updateListFullScan = parseB(await get(SK.UPDATE_LIST_FULL_SCAN), false);
@@ -1160,20 +1171,9 @@ export function OptionsView() {
     await api.settingsSet(SK.CHECK_UPDATE_START, boolStr(s.checkUpdateStart));
     await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, boolStr(modsWarn));
     await api.settingsSet(SK.MODULES_UPDATER_AUTO_RESTART, boolStr(modsAutoRestart));
-    // Content ids are not comparable across sources (git blob sha vs the
-    // portal's sha256), so a source switch must start from a clean cursor.
-    const prevSource = ((await api.settingsGet(SK.MODULES_SOURCE)) || "github").trim();
-    const prevUrl = (await api.settingsGet(SK.MODULES_SOURCE_URL)) ?? "";
-    await api.settingsSet(SK.MODULES_SOURCE, modsSource);
-    await api.settingsSet(SK.MODULES_SOURCE_URL, modsSourceUrl.trim());
-    await api.settingsSet(SK.MODULES_BULK_THRESHOLD, String(modsBulkThreshold));
-    await api.settingsSet(SK.MODULES_THREADS, String(modsThreads));
     await api.settingsSet(SK.MODULES_FETCH_METADATA, boolStr(modsFetchMeta));
     await api.settingsSet(SK.MODULES_BACKUP_GENERATIONS, String(modsBackupGens));
     await api.settingsSet(SK.MODULES_BACKUP_MAX_MB, String(modsBackupMb));
-    if (prevSource !== modsSource || prevUrl.trim() !== modsSourceUrl.trim()) {
-      await api.modulesResetCursor();
-    }
     await api.settingsSet(SK.UPDATE_LIST_NO_INFO, boolStr(s.updateListNoInfo));
     await api.settingsSet(SK.UPDATE_LIST_FULL_SCAN, boolStr(s.updateListFullScan));
     const enabled = modules.filter((m) => siteOn[m.id]).map((m) => m.id);
@@ -1221,10 +1221,6 @@ export function OptionsView() {
     saveFlash,
     modsWarn,
     modsAutoRestart,
-    modsSource,
-    modsSourceUrl,
-    modsBulkThreshold,
-    modsThreads,
     modsFetchMeta,
     modsBackupGens,
     modsBackupMb,
@@ -1641,10 +1637,29 @@ export function OptionsView() {
 
   const loadRepoEntries = useCallback(async () => {
     try {
-      const list = await api.modulesRepoList();
+      const [list, bytes] = await Promise.all([
+        api.modulesRepoList(),
+        api.modulesBackupSize().catch(() => 0),
+      ]);
       setRepoEntries(list);
+      setModsBackupBytes(bytes);
     } catch (e) {
       log(`No se pudo listar módulos: ${e}`, "err");
+    }
+  }, [log]);
+
+  const clearModulesBackups = useCallback(async () => {
+    setModsBackupFlash("working");
+    try {
+      const n = await api.modulesBackupClear();
+      setModsBackupBytes(0);
+      setModsBackupFlash("done");
+      log(`Copias de seguridad de módulos borradas (${n} puntos)`, "ok");
+      window.setTimeout(() => setModsBackupFlash("idle"), 2400);
+    } catch (e) {
+      setModsBackupFlash("error");
+      log(`No se pudieron borrar las copias: ${e}`, "err");
+      window.setTimeout(() => setModsBackupFlash("idle"), 2800);
     }
   }, [log]);
 
@@ -1692,6 +1707,10 @@ export function OptionsView() {
   }, [repoEntries]);
 
   const modulesPendingCount = modsPending.total;
+  const modsPinnedCount = useMemo(
+    () => repoEntries.filter((e) => e.pin).length,
+    [repoEntries],
+  );
   const [modsBannerHidden, setModsBannerHidden] = useState(false);
 
   // A fresh background result is news again, even if the banner was hidden.
@@ -1786,6 +1805,55 @@ export function OptionsView() {
       setModsChecking(false);
     }
   }, [modsChecking, refreshModules, loadRepoEntries, log]);
+
+  /** Replace one module with the user's own .lua and take it out of the sync. */
+  const pinModuleFile = useCallback(
+    async (path: string) => {
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: "Módulo Lua", extensions: ["lua"] }],
+      });
+      if (typeof picked !== "string") return;
+      const ok = await appConfirm({
+        title: "Anclar módulo",
+        message: `${path} pasará a ser tu copia y dejará de actualizarse desde FMD2 hasta que lo desancles. La versión actual se guarda en las copias de seguridad.`,
+        okLabel: "Anclar",
+        cancelLabel: "Cancelar",
+        items: [picked],
+      });
+      if (!ok) return;
+      try {
+        const r = await api.modulesPin(path, picked);
+        log(`${path} anclado (${r.refreshed_count} módulos cargados)`, "ok");
+        await refreshModules();
+        await loadRepoEntries();
+      } catch (e) {
+        log(`No se pudo anclar ${path}: ${e}`, "err");
+      }
+    },
+    [refreshModules, loadRepoEntries, log],
+  );
+
+  /** Hand a module back to the official sync. The file is left as it is. */
+  const unpinModuleFile = useCallback(
+    async (path: string) => {
+      const ok = await appConfirm({
+        title: "Desanclar módulo",
+        message: `${path} volverá a actualizarse desde FMD2. El archivo no se toca ahora: la próxima revisión te ofrecerá la versión oficial y tú decides.`,
+        okLabel: "Desanclar",
+        cancelLabel: "Cancelar",
+      });
+      if (!ok) return;
+      try {
+        await api.modulesUnpin(path);
+        log(`${path} desanclado`, "ok");
+        await loadRepoEntries();
+      } catch (e) {
+        log(`No se pudo desanclar ${path}: ${e}`, "err");
+      }
+    },
+    [loadRepoEntries, log],
+  );
 
   /** Per-file history: pick one stored version and write it back. */
   const revertModuleFile = useCallback(
@@ -3195,80 +3263,25 @@ export function OptionsView() {
                       className="ico ico-sm"
                       style={{ transform: modsSourceOpen ? "none" : "rotate(-90deg)" }}
                     />
-                    <span>Origen de los módulos</span>
+                    <span>Origen y copias de seguridad</span>
                     <span className="mods-source-current ell">
-                      {MODULES_SOURCE_OPTIONS.find((o) => o.value === modsSource)?.label}
+                      {modsPinnedCount
+                        ? `GitHub FMD2 · ${modsPinnedCount} anclado${modsPinnedCount > 1 ? "s" : ""}`
+                        : "GitHub FMD2"}
                     </span>
                   </button>
                   {modsSourceOpen ? (
                     <div className="st-nest-inner mods-source-body">
-                      <SelectRow
-                        id="opt-mods-source"
-                        label="Fuente"
-                        desc="De dónde se descargan los módulos Lua"
-                        value={modsSource}
-                        onChange={(v) => {
-                          setModsSource(v as ModulesSource);
-                          setDirty(true);
-                        }}
-                        options={MODULES_SOURCE_OPTIONS}
-                      />
-                      {modsSource !== "github" ? (
-                        <OptRow
-                          label={modsSource === "local_dir" ? "Carpeta" : "URL del índice"}
-                          desc={
-                            modsSource === "local_dir"
-                              ? "Carpeta con la misma estructura que lua/ (modules, templates, …)"
-                              : "Documento JSON del portal que lista los módulos y sus hashes"
-                          }
-                        >
-                          <input
-                            className="st-field st-mono"
-                            type="text"
-                            value={modsSourceUrl}
-                            placeholder={
-                              modsSource === "local_dir"
-                                ? "C:\\ruta\\a\\lua"
-                                : "https://portal.example/lua/index.json"
-                            }
-                            autoComplete="off"
-                            spellCheck={false}
-                            onChange={(e) => {
-                              setModsSourceUrl(e.target.value);
-                              setDirty(true);
-                            }}
-                          />
-                        </OptRow>
-                      ) : null}
-                      <BoundStepperRow
-                        id="opt-mods-bulk"
-                        label="Umbral de paquete"
-                        desc="A partir de cuántos archivos conviene bajar un único zip en vez de archivo por archivo"
-                        value={modsBulkThreshold}
-                        min={1}
-                        max={5000}
-                        unit="archivos"
-                        onChange={(v) => {
-                          setModsBulkThreshold(v);
-                          setDirty(true);
-                        }}
-                      />
-                      <BoundStepperRow
-                        id="opt-mods-threads"
-                        label="Descargas simultáneas"
-                        desc="Solo se usa cuando no hay paquete y toca bajar archivo por archivo"
-                        value={modsThreads}
-                        min={1}
-                        max={8}
-                        onChange={(v) => {
-                          setModsThreads(v);
-                          setDirty(true);
-                        }}
-                      />
+                      <OptRow
+                        label="Oficial"
+                        desc="Todos los módulos vienen de aquí. Si quieres usar tu propia versión de uno concreto, ánclalo desde su fila en la lista."
+                      >
+                        <span className="st-static mono">GitHub · dazedcat19/FMD2</span>
+                      </OptRow>
                       <SwitchRow
                         id="opt-mods-meta"
                         label="Traer fecha y mensaje de cada cambio"
-                        desc="GitHub no permite pedirlos en bloque, así que solo se consultan en cambios pequeños"
+                        desc="Rellena las dos últimas columnas."
                         checked={modsFetchMeta}
                         onChange={(v) => {
                           setModsFetchMeta(v);
@@ -3278,7 +3291,7 @@ export function OptionsView() {
                       <BoundStepperRow
                         id="opt-mods-gens"
                         label="Puntos de restauración"
-                        desc="Cuántas actualizaciones se pueden deshacer"
+                        desc="Cuántas actualizaciones puedes deshacer. Los puntos más antiguos se eliminan solos."
                         value={modsBackupGens}
                         min={1}
                         max={50}
@@ -3289,8 +3302,8 @@ export function OptionsView() {
                       />
                       <BoundStepperRow
                         id="opt-mods-mb"
-                        label="Tamaño de las copias"
-                        desc="Las más antiguas se descartan al superarlo; la última siempre se conserva"
+                        label="Espacio máximo para las copias"
+                        desc={`Suma de todas las copias juntas. Al superarlo se descartan las más antiguas, salvo la última. Ahora ocupan ${formatMb(modsBackupBytes)}.`}
                         value={modsBackupMb}
                         min={8}
                         max={2048}
@@ -3300,6 +3313,25 @@ export function OptionsView() {
                           setDirty(true);
                         }}
                       />
+                      <OptRow
+                        label="Vaciar copias de seguridad"
+                        desc="Borra todos los puntos de restauración. No toca los módulos; solo pierdes la posibilidad de deshacer."
+                      >
+                        <button
+                          type="button"
+                          className={`secondary${modsBackupFlash === "done" ? " is-saved" : ""}`}
+                          disabled={modsBackupFlash === "working" || modsBackupBytes === 0}
+                          onClick={() => void clearModulesBackups()}
+                        >
+                          {modsBackupFlash === "working"
+                            ? "Borrando…"
+                            : modsBackupFlash === "done"
+                              ? "Listo"
+                              : modsBackupFlash === "error"
+                                ? "Error"
+                                : "Vaciar"}
+                        </button>
+                      </OptRow>
                     </div>
                   ) : null}
                 </div>
@@ -3371,7 +3403,13 @@ export function OptionsView() {
                           const idx = modsRange.start + i;
                           const top = idx * MOD_ROW_H;
                           return (
-                            <div key={row.key} className={`mods-row${row.updated ? " updated" : ""}`} style={{ top }}>
+                            <div
+                              key={row.key}
+                              className={`mods-row${row.updated ? " updated" : ""}${
+                                row.pinned ? " pinned" : ""
+                              }`}
+                              style={{ top }}
+                            >
                               <div className="mods-name">
                                 <Icon ico={ICO.file} className="ico ico-sm" style={{ color: "var(--muted)" }} />
                                 <span className="ell mods-file">{row.file}</span>
@@ -3380,17 +3418,43 @@ export function OptionsView() {
                               <span className="mods-when" title={row.dateTitle}>
                                 {row.when}
                               </span>
-                              <span className={`ell mods-msg${row.msg === "—" ? " muted" : ""}`}>
+                              <span
+                                className={`ell mods-msg${row.msg === "—" ? " muted" : ""}`}
+                                title={row.pinOrigin ?? undefined}
+                              >
                                 {row.msg}
                               </span>
-                              <button
-                                type="button"
-                                className="sites-tbtn mods-revert"
-                                title="Revertir a una versión guardada"
-                                onClick={() => void revertModuleFile(row.file)}
-                              >
-                                Revertir
-                              </button>
+                              <div className="mods-actions">
+                                {row.pinned ? (
+                                  <button
+                                    type="button"
+                                    className="sites-tbtn"
+                                    title="Volver a actualizarlo desde FMD2"
+                                    onClick={() => void unpinModuleFile(row.file)}
+                                  >
+                                    Desanclar
+                                  </button>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="sites-tbtn"
+                                      title="Usar tu propio .lua y excluirlo del sync"
+                                      onClick={() => void pinModuleFile(row.file)}
+                                    >
+                                      Anclar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="sites-tbtn"
+                                      title="Revertir a una versión guardada"
+                                      onClick={() => void revertModuleFile(row.file)}
+                                    >
+                                      Revertir
+                                    </button>
+                                  </>
+                                )}
+                              </div>
                             </div>
                           );
                         })}

@@ -5,7 +5,7 @@
 //! failed halfway from leaving 666 phantom "new" entries behind.
 
 use super::model::{
-    ChangeKind, LuaRepoEntry, PlanItem, RepoState, SyncPlan, FLAG_FAILED, FLAG_NONE,
+    ChangeKind, LuaRepoEntry, PlanItem, RepoState, SyncPlan, FLAG_FAILED, FLAG_NONE, FLAG_PINNED,
 };
 use super::source::{RemoteEntry, Source};
 use super::state::{file_mtime_unix, local_file_path, now_unix};
@@ -81,6 +81,14 @@ pub fn build(
 
     for entry in state.entries.iter_mut() {
         resync_from_disk(entry, source);
+
+        // A pinned module belongs to the user, not to the source. It is skipped
+        // before anything else so it can never be updated *or* deleted, not even
+        // by an explicit forced check — that is the whole promise of a pin.
+        if entry.is_pinned() {
+            entry.flag = FLAG_PINNED.into();
+            continue;
+        }
 
         let Some(r) = remote_map.get(entry.name.as_str()) else {
             if !same_source {
@@ -210,6 +218,26 @@ mod tests {
         assert!(e.retry_due(1_000 + 300));
         e.attempts = MAX_ATTEMPTS;
         assert!(!e.retry_due(i64::MAX / 2));
+    }
+
+    /// The promise of a pin: the sync cannot touch it, forced or not.
+    #[test]
+    fn a_pinned_entry_is_skipped_and_unpinning_restores_it() {
+        let mut e = entry("modules/A.lua", "bbb", Some("mio"));
+        e.pin = Some(crate::lua_host::modules_updater::model::ModulePin {
+            origin: "C:/mios/A.lua".into(),
+            pinned_at: 0,
+            content_id: "mio".into(),
+        });
+        assert!(e.is_pinned());
+        // `build` skips pinned entries before any kind/force logic runs.
+        assert!(!e.is_current(), "difiere del remoto y aun así no se toca");
+
+        e.pin = None;
+        assert!(!e.is_pinned());
+        // Back under the source's control: now it is a pending update again.
+        assert!(!e.is_current());
+        assert!(e.retry_due(0));
     }
 
     /// Declining an update must not silence it: the reminder has to come back

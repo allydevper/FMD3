@@ -7,6 +7,8 @@ pub const FLAG_NEW: &str = "new";
 pub const FLAG_UPDATE: &str = "update";
 pub const FLAG_DELETE: &str = "delete";
 pub const FLAG_FAILED: &str = "failed";
+/// Deliberately excluded from the official sync — see [`ModulePin`].
+pub const FLAG_PINNED: &str = "pinned";
 
 /// Retry schedule for entries whose download failed, saturating at the last step.
 pub const BACKOFF_SECS: [i64; 5] = [300, 1_800, 7_200, 43_200, 86_400];
@@ -14,6 +16,21 @@ pub const BACKOFF_SECS: [i64; 5] = [300, 1_800, 7_200, 43_200, 86_400];
 pub const MAX_ATTEMPTS: u32 = 8;
 
 pub const STATE_SCHEMA: u32 = 2;
+
+/// A module the user replaced with their own copy.
+///
+/// FMD2 is always the base; a pin is the exception. While one is set the file
+/// is invisible to the sync — never updated, never deleted — so a hand-written
+/// or patched module survives every check until it is unpinned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModulePin {
+    /// Where the bytes came from: a path on disk today, a URL once the portal
+    /// exists. Shown to the user so a pin is never a mystery.
+    pub origin: String,
+    pub pinned_at: i64,
+    /// Content id of the pinned bytes, so a later hand-edit is detectable.
+    pub content_id: String,
+}
 
 /// One tracked file of the Lua tree. Persisted in `userdata/lua.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +58,9 @@ pub struct LuaRepoEntry {
     pub attempts: u32,
     #[serde(default)]
     pub last_attempt: Option<i64>,
+    /// Set when the user replaced this module with their own copy.
+    #[serde(default)]
+    pub pin: Option<ModulePin>,
 }
 
 pub fn default_flag() -> String {
@@ -60,7 +80,12 @@ impl LuaRepoEntry {
             flag: default_flag(),
             attempts: 0,
             last_attempt: None,
+            pin: None,
         }
+    }
+
+    pub fn is_pinned(&self) -> bool {
+        self.pin.is_some()
     }
 
     /// In sync when the bytes on disk carry the content id the source advertises.

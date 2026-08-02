@@ -253,7 +253,7 @@ pub fn versions_of(rel: &str) -> Vec<FileVersion> {
 /// cap: a bulk first sync can easily exceed it on its own, and that is exactly
 /// the one a user is most likely to want to undo.
 pub fn prune() {
-    let keep_n = settings_keys::usize_setting(settings_keys::MODULES_BACKUP_GENERATIONS, 5).max(1);
+    let keep_n = settings_keys::usize_setting(settings_keys::MODULES_BACKUP_GENERATIONS, 3).max(1);
     let max_bytes =
         settings_keys::usize_setting(settings_keys::MODULES_BACKUP_MAX_MB, 64) as u64 * 1024 * 1024;
 
@@ -312,6 +312,38 @@ fn gc_blobs(index: &IndexFile) {
             }
         }
     }
+}
+
+/// Total bytes held by every stored version, so the UI can show what the
+/// budget is actually being spent on.
+pub fn store_size() -> u64 {
+    fn walk(dir: &std::path::Path) -> u64 {
+        let Ok(rd) = fs::read_dir(dir) else { return 0 };
+        rd.flatten()
+            .map(|e| match e.file_type() {
+                Ok(t) if t.is_dir() => walk(&e.path()),
+                Ok(_) => e.metadata().map(|m| m.len()).unwrap_or(0),
+                Err(_) => 0,
+            })
+            .sum()
+    }
+    walk(&backup_dir().join("blobs"))
+}
+
+/// Throw away every stored version. Returns how many restore points went with
+/// them, since that is what the user loses.
+pub fn clear_all() -> Result<usize, String> {
+    let _guard = INDEX_LOCK.lock();
+    let removed = load_index().generations.len();
+    let blobs = backup_dir().join("blobs");
+    if blobs.is_dir() {
+        fs::remove_dir_all(&blobs).map_err(|e| format!("borrar copias: {e}"))?;
+    }
+    let index = index_path();
+    if index.is_file() {
+        fs::remove_file(&index).map_err(|e| format!("borrar índice de copias: {e}"))?;
+    }
+    Ok(removed)
 }
 
 /* ---------------------------------------------------------------------- */

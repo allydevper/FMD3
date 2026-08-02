@@ -4,9 +4,10 @@ use crate::catalog::{
 };
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
-    get_info, modules_generations, modules_history, modules_list, modules_match_url,
-    modules_needs_first_sync, modules_refresh, modules_repo_list, modules_reset_cursor,
-    modules_revert_file, modules_undo_generation,
+    get_info, modules_backup_clear, modules_backup_size, modules_generations, modules_history,
+    modules_list, modules_match_url, modules_needs_first_sync, modules_pin_file, modules_refresh,
+    modules_repo_list, modules_reset_cursor, modules_revert_file, modules_undo_generation,
+    modules_unpin_file,
     modules_update_apply, modules_update_check, modules_update_dismiss,
     modules_update_request_cancel, modules_update_reset_cancel, update_list, ChapterInfo,
     CheckReport, FileVersion, Generation, LuaRepoEntry, MangaInfoResult, ModuleMeta,
@@ -1742,6 +1743,35 @@ pub async fn modules_history_cmd(path: String) -> Result<Vec<FileVersion>, Strin
 #[tauri::command]
 pub async fn modules_revert_cmd(path: String, content_id: String) -> Result<UndoReport, String> {
     tauri::async_runtime::spawn_blocking(move || modules_revert_file(path, content_id))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub async fn modules_backup_size_cmd() -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(modules_backup_size)
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))
+}
+
+#[tauri::command]
+pub async fn modules_backup_clear_cmd() -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(modules_backup_clear)
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+/// Replace one module with the user's own copy and exclude it from the sync.
+#[tauri::command]
+pub async fn modules_pin_cmd(path: String, origin: String) -> Result<UndoReport, String> {
+    tauri::async_runtime::spawn_blocking(move || modules_pin_file(path, origin))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+#[tauri::command]
+pub async fn modules_unpin_cmd(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || modules_unpin_file(path))
         .await
         .map_err(|e| format!("tarea cancelada: {e}"))?
 }

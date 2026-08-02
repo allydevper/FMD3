@@ -449,6 +449,26 @@ export function modulesRevert(path: string, contentId: string) {
   });
 }
 
+/** Replace one module with the user's own copy and exclude it from the sync. */
+export function modulesPin(path: string, origin: string) {
+  return invoke<ModulesUndoReport>("modules_pin_cmd", { path, origin });
+}
+
+/** Hand a module back to the official sync (the file itself is left alone). */
+export function modulesUnpin(path: string) {
+  return invoke("modules_unpin_cmd", { path });
+}
+
+/** Bytes held by the restore points. */
+export function modulesBackupSize() {
+  return invoke<number>("modules_backup_size_cmd");
+}
+
+/** Discard every restore point; returns how many were removed. */
+export function modulesBackupClear() {
+  return invoke<number>("modules_backup_clear_cmd");
+}
+
 /** Forget the change cursor; required after switching source. */
 export function modulesResetCursor() {
   return invoke("modules_reset_cursor_cmd");

@@ -258,12 +258,9 @@ export const SK = {
   MODULES_ENABLED: "modules.enabled",
   MODULES_UPDATER_SHOW_WARNING: "modulesupdater.show_update_warning",
   MODULES_UPDATER_AUTO_RESTART: "modulesupdater.auto_restart",
-  MODULES_SOURCE: "modules.source",
-  MODULES_SOURCE_URL: "modules.source_url",
-  MODULES_BULK_THRESHOLD: "modules.updater.bulk_threshold",
-  MODULES_THREADS: "modules.updater.threads",
+  // Transport tuning (bulk threshold, worker count) stays backend-only: it is
+  // an implementation detail, not a decision to put in front of a user.
   MODULES_FETCH_METADATA: "modules.updater.fetch_metadata",
-  MODULES_METADATA_MAX_FILES: "modules.updater.metadata_max_files",
   MODULES_BACKUP_GENERATIONS: "modules.updater.backup_generations",
   MODULES_BACKUP_MAX_MB: "modules.updater.backup_max_mb",
   CATALOG_DB_URL: "catalog.db_url",

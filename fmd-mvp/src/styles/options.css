@@ -1310,6 +1310,13 @@
   padding: 2px 22px 10px;
 }
 
+/* Read-only value where a control would otherwise sit. */
+.st-static {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 /* Pending-updates notice left by a silent background check. */
 .mods-banner {
   flex: 0 0 auto;
@@ -1364,22 +1371,29 @@
   transition: width 120ms linear;
 }
 
-/* Per-row revert stays out of the way until the row is hovered. */
-.mods-revert {
-  justify-self: end;
+/* Row actions stay out of the way until the row is hovered. */
+.mods-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
   opacity: 0;
   transition: opacity 90ms ease;
 }
 
-.mods-row:hover .mods-revert,
-.mods-revert:focus-visible {
+.mods-row:hover .mods-actions,
+.mods-actions:focus-within {
+  opacity: 1;
+}
+
+/* A pinned module is the user's, so it stays legible without hovering. */
+.mods-row.pinned .mods-actions {
   opacity: 1;
 }
 
 .mods-head {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 74px;
+  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 148px;
   column-gap: 16px;
   padding: 9px 22px;
   background: var(--bg);
@@ -1412,7 +1426,7 @@
   right: 0;
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 74px;
+  grid-template-columns: minmax(0, 1.6fr) 116px minmax(0, 1fr) 148px;
   align-items: center;
   column-gap: 16px;
   padding: 0 22px;

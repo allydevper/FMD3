@@ -337,6 +337,112 @@ pub fn generations() -> Vec<Generation> {
     snapshot::generations()
 }
 
+/// Bytes currently held by the restore points.
+pub fn backup_size() -> u64 {
+    snapshot::store_size()
+}
+
+/// Discard every restore point. Returns how many were removed.
+pub fn backup_clear() -> Result<usize, String> {
+    let _guard = lock()?;
+    snapshot::clear_all()
+}
+
+/* ---------------------------------------------------------------------- */
+/* Pinning                                                                 */
+/* ---------------------------------------------------------------------- */
+
+/// Read the bytes a pin points at. A path on disk today; `http(s)://` is
+/// accepted so the portal can pin a published module without a redesign.
+fn read_pin_origin(origin: &str) -> Result<Vec<u8>, String> {
+    if origin.starts_with("http://") || origin.starts_with("https://") {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("FMD3-modules-updater")
+            .timeout(std::time::Duration::from_secs(
+                crate::settings_keys::http_timeout_secs().max(30),
+            ))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client.get(origin).send().map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+        return resp.bytes().map(|b| b.to_vec()).map_err(|e| e.to_string());
+    }
+    fs::read(origin).map_err(|e| format!("{origin}: {e}"))
+}
+
+/// Replace one module with the user's own copy and take it out of the sync.
+///
+/// The previous version is snapshotted first, so «Revertir» still works and the
+/// official file is one click away.
+pub fn pin_file(path: String, origin: String) -> Result<UndoReport, String> {
+    let _guard = lock()?;
+    let disk = state::safe_rel_path(&path)?;
+    let bytes = read_pin_origin(&origin)?;
+    if bytes.is_empty() {
+        return Err("El archivo de origen está vacío".into());
+    }
+
+    let gen = snapshot::begin("", "", &format!("anclar {path}"));
+    let before = gen.backup(&path)?;
+    state::write_atomic(&disk, &bytes)?;
+    let content_id = state::git_blob_sha(&bytes);
+    gen.record(&path, before, Some(content_id.clone()));
+    gen.commit();
+
+    let mut st = load_state();
+    // Pinning something the source never listed is legitimate: a module the
+    // user wrote themselves still deserves tracking.
+    if st.get_mut(&path).is_none() {
+        st.entries
+            .push(LuaRepoEntry::seeded(path.clone(), String::new(), None));
+        st.sort();
+    }
+    if let Some(entry) = st.get_mut(&path) {
+        entry.local_id = Some(content_id.clone());
+        entry.flag = model::FLAG_PINNED.into();
+        entry.clear_failure();
+        entry.pin = Some(model::ModulePin {
+            origin,
+            pinned_at: state::now_unix(),
+            content_id,
+        });
+    }
+    save_state(&st)?;
+    let refreshed = registry::refresh();
+
+    Ok(UndoReport {
+        restored: 1,
+        removed: 0,
+        failed: Vec::new(),
+        refreshed_count: refreshed,
+    })
+}
+
+/// Hand a module back to the official sync.
+///
+/// The file itself is left alone on purpose: the next check reports it as an
+/// update and the user decides. Silently overwriting their copy here would
+/// undo the pin *and* their work in one unprompted step.
+pub fn unpin_file(path: String) -> Result<(), String> {
+    let _guard = lock()?;
+    let mut st = load_state();
+    let entry = st
+        .get_mut(&path)
+        .ok_or_else(|| format!("«{path}» no está en la lista de módulos"))?;
+    if entry.pin.is_none() {
+        return Ok(());
+    }
+    entry.pin = None;
+    entry.flag = if entry.remote_id.is_empty() || entry.is_current() {
+        FLAG_NONE.into()
+    } else {
+        model::FLAG_UPDATE.into()
+    };
+    save_state(&st)
+}
+
 /// Forget the change cursor for the configured source. Needed after switching
 /// sources: a portal's sha256 ids mean nothing to a cursor recorded against
 /// GitHub blob shas, and the stored ETag would wrongly answer "unchanged".
