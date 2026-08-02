@@ -42,6 +42,20 @@ pub struct Favorite {
     pub enabled: bool,
     #[serde(default)]
     pub last_checked_at: String,
+    /// Multiline chapter links already acknowledged (FMD2 DownloadedChapterList).
+    #[serde(default)]
+    pub seen_chapter_links: String,
+    /// Multiline chapter links from the last check-only pass, awaiting enqueue.
+    #[serde(default)]
+    pub pending_new_links: String,
+    #[serde(default)]
+    pub date_added: String,
+    /// Series status from last GetInfo (ongoing / completed / …).
+    #[serde(default)]
+    pub status: String,
+    /// Last time new chapters were accepted (enqueued / download-after).
+    #[serde(default)]
+    pub last_updated_at: String,
 }
 
 fn default_true() -> bool {
@@ -121,6 +135,11 @@ fn map_favorite(r: &rusqlite::Row<'_>) -> rusqlite::Result<Favorite> {
         updated_at: r.get(9)?,
         enabled: r.get::<_, i64>(10)? != 0,
         last_checked_at: r.get(11)?,
+        seen_chapter_links: r.get(12)?,
+        pending_new_links: r.get(13)?,
+        date_added: r.get(14)?,
+        status: r.get(15)?,
+        last_updated_at: r.get(16)?,
     })
 }
 
@@ -151,7 +170,9 @@ fn map_queue_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
 
 const FAVORITE_SELECT: &str = "SELECT id, module_id, module_name, root_url, manga_url, title,
         last_chapter_link, last_chapter_name, chapter_count, updated_at,
-        COALESCE(enabled, 1), COALESCE(last_checked_at, '')
+        COALESCE(enabled, 1), COALESCE(last_checked_at, ''),
+        COALESCE(seen_chapter_links, ''), COALESCE(pending_new_links, ''),
+        COALESCE(date_added, ''), COALESCE(status, ''), COALESCE(last_updated_at, '')
  FROM favorites";
 
 const QUEUE_SELECT: &str = "SELECT id, manga_title, root_url, COALESCE(manga_url,''), COALESCE(module_id,''),
@@ -207,7 +228,12 @@ CREATE TABLE IF NOT EXISTS favorites (
     chapter_count INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
-    last_checked_at TEXT NOT NULL DEFAULT ''
+    last_checked_at TEXT NOT NULL DEFAULT '',
+    seen_chapter_links TEXT NOT NULL DEFAULT '',
+    pending_new_links TEXT NOT NULL DEFAULT '',
+    date_added TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
+    last_updated_at TEXT NOT NULL DEFAULT ''
 );
 "#;
 
@@ -367,6 +393,39 @@ pub fn open_favorites_db() -> Result<Db, String> {
         "ALTER TABLE favorites ADD COLUMN last_checked_at TEXT NOT NULL DEFAULT ''",
         [],
     );
+    let _ = conn.execute(
+        "ALTER TABLE favorites ADD COLUMN seen_chapter_links TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE favorites ADD COLUMN pending_new_links TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE favorites ADD COLUMN date_added TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE favorites ADD COLUMN status TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE favorites ADD COLUMN last_updated_at TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // Best-effort: seed seen from legacy last_chapter_link when seen is empty.
+    let _ = conn.execute_batch(
+        r#"
+        UPDATE favorites
+        SET seen_chapter_links = last_chapter_link
+        WHERE TRIM(COALESCE(seen_chapter_links, '')) = ''
+          AND TRIM(COALESCE(last_chapter_link, '')) != '';
+        UPDATE favorites
+        SET date_added = updated_at
+        WHERE TRIM(COALESCE(date_added, '')) = ''
+          AND TRIM(COALESCE(updated_at, '')) != '';
+        "#,
+    );
     Ok(Arc::new(Mutex::new(conn)))
 }
 
@@ -400,13 +459,24 @@ fn migrate_favorites_from_main(main: &Db, favorites: &Db) -> Result<(), String> 
     if !main_rows.is_empty() && fav_count == 0 {
         let fconn = favorites.lock();
         for fav in &main_rows {
+            let seen = if fav.seen_chapter_links.trim().is_empty() {
+                fav.last_chapter_link.as_str()
+            } else {
+                fav.seen_chapter_links.as_str()
+            };
+            let date_added = if fav.date_added.trim().is_empty() {
+                fav.updated_at.as_str()
+            } else {
+                fav.date_added.as_str()
+            };
             fconn
                 .execute(
                     "INSERT INTO favorites(
                         id, module_id, module_name, root_url, manga_url, title,
                         last_chapter_link, last_chapter_name, chapter_count, updated_at,
-                        enabled, last_checked_at
-                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                        enabled, last_checked_at, seen_chapter_links, pending_new_links,
+                        date_added, status, last_updated_at
+                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
                     params![
                         fav.id,
                         fav.module_id,
@@ -420,6 +490,11 @@ fn migrate_favorites_from_main(main: &Db, favorites: &Db) -> Result<(), String> 
                         fav.updated_at,
                         if fav.enabled { 1 } else { 0 },
                         fav.last_checked_at,
+                        seen,
+                        fav.pending_new_links,
+                        date_added,
+                        fav.status,
+                        fav.last_updated_at,
                     ],
                 )
                 .map_err(|e| e.to_string())?;
@@ -525,6 +600,51 @@ pub fn favorites_list(db: &Db) -> Result<Vec<Favorite>, String> {
     Ok(out)
 }
 
+/// Join chapter links into a multiline list (FMD2-style), deduped by mark key.
+pub fn join_chapter_links(links: &[String]) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for link in links {
+        let key = link_mark_key(link);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        out.push(link.trim().to_string());
+    }
+    out.join("\n")
+}
+
+/// Parse a multiline link list into canonical mark keys.
+pub fn parse_seen_keys(text: &str) -> std::collections::HashSet<String> {
+    text.lines()
+        .map(|l| link_mark_key(l))
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// Merge new links into an existing multiline seen list (case-insensitive by key).
+pub fn merge_chapter_links(existing: &str, new_links: &[String]) -> String {
+    let mut keys = parse_seen_keys(existing);
+    let mut out: Vec<String> = existing
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    for link in new_links {
+        let key = link_mark_key(link);
+        if key.is_empty() || !keys.insert(key) {
+            continue;
+        }
+        out.push(link.trim().to_string());
+    }
+    out.join("\n")
+}
+
+#[cfg(test)]
+pub fn count_link_lines(text: &str) -> usize {
+    text.lines().filter(|l| !l.trim().is_empty()).count()
+}
+
 pub fn favorites_add(
     db: &Db,
     module_id: &str,
@@ -535,6 +655,7 @@ pub fn favorites_add(
     last_chapter_link: &str,
     last_chapter_name: &str,
     chapter_count: i64,
+    seen_chapter_links: &str,
 ) -> Result<Favorite, String> {
     let ts = now();
     let conn = db.lock();
@@ -542,16 +663,26 @@ pub fn favorites_add(
         "INSERT INTO favorites(
             module_id, module_name, root_url, manga_url, title,
             last_chapter_link, last_chapter_name, chapter_count, updated_at,
-            enabled, last_checked_at
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,'')
+            enabled, last_checked_at, seen_chapter_links, pending_new_links,
+            date_added, status, last_updated_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,'',?10,'',?9,'','')
          ON CONFLICT(manga_url) DO UPDATE SET
             module_id=excluded.module_id,
             module_name=excluded.module_name,
             root_url=excluded.root_url,
             title=excluded.title,
-            last_chapter_link=excluded.last_chapter_link,
-            last_chapter_name=excluded.last_chapter_name,
-            chapter_count=excluded.chapter_count,
+            -- Never downgrade progress with an empty payload: an import that
+            -- carries no chapter data must not wipe what the user already has.
+            last_chapter_link=CASE WHEN TRIM(excluded.last_chapter_link) != ''
+                THEN excluded.last_chapter_link ELSE favorites.last_chapter_link END,
+            last_chapter_name=CASE WHEN TRIM(excluded.last_chapter_link) != ''
+                THEN excluded.last_chapter_name ELSE favorites.last_chapter_name END,
+            chapter_count=CASE WHEN excluded.chapter_count > 0
+                THEN excluded.chapter_count ELSE favorites.chapter_count END,
+            seen_chapter_links=CASE WHEN TRIM(excluded.seen_chapter_links) != ''
+                THEN excluded.seen_chapter_links ELSE favorites.seen_chapter_links END,
+            pending_new_links=CASE WHEN TRIM(excluded.seen_chapter_links) != ''
+                THEN '' ELSE favorites.pending_new_links END,
             updated_at=excluded.updated_at",
         params![
             module_id,
@@ -562,7 +693,8 @@ pub fn favorites_add(
             last_chapter_link,
             last_chapter_name,
             chapter_count,
-            ts
+            ts,
+            seen_chapter_links,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -573,6 +705,31 @@ pub fn favorites_add(
         map_favorite,
     )
     .map_err(|e| e.to_string())
+}
+
+/// Restore timestamps carried by an export. Empty values are ignored so a
+/// partial JSON never resets the dates already stored.
+pub fn favorites_restore_timestamps(
+    db: &Db,
+    manga_url: &str,
+    date_added: &str,
+    last_checked_at: &str,
+) -> Result<(), String> {
+    let date_added = date_added.trim();
+    let last_checked_at = last_checked_at.trim();
+    if date_added.is_empty() && last_checked_at.is_empty() {
+        return Ok(());
+    }
+    let conn = db.lock();
+    conn.execute(
+        "UPDATE favorites SET
+            date_added = CASE WHEN ?2 != '' THEN ?2 ELSE date_added END,
+            last_checked_at = CASE WHEN ?3 != '' THEN ?3 ELSE last_checked_at END
+         WHERE manga_url = ?1",
+        params![manga_url, date_added, last_checked_at],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn favorites_get(db: &Db, id: i64) -> Result<Favorite, String> {
@@ -605,19 +762,61 @@ pub fn favorites_touch_checked(db: &Db, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-pub fn favorites_update_progress(
+/// After a check-only pass: refresh UI fields + pending list; do NOT touch seen.
+pub fn favorites_update_after_check(
     db: &Db,
     id: i64,
     last_chapter_link: &str,
     last_chapter_name: &str,
     chapter_count: i64,
+    status: &str,
+    pending_new_links: &str,
 ) -> Result<(), String> {
     let ts = now();
     let conn = db.lock();
     conn.execute(
         "UPDATE favorites SET last_chapter_link=?1, last_chapter_name=?2,
-         chapter_count=?3, updated_at=?4, last_checked_at=?4 WHERE id=?5",
-        params![last_chapter_link, last_chapter_name, chapter_count, ts, id],
+         chapter_count=?3, status=?4, pending_new_links=?5,
+         last_checked_at=?6 WHERE id=?7",
+        params![
+            last_chapter_link,
+            last_chapter_name,
+            chapter_count,
+            status,
+            pending_new_links,
+            ts,
+            id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// After enqueueing new chapters: merge into seen, clear pending, bump last_updated_at.
+pub fn favorites_acknowledge_chapters(
+    db: &Db,
+    id: i64,
+    seen_chapter_links: &str,
+    last_chapter_link: &str,
+    last_chapter_name: &str,
+    chapter_count: i64,
+    status: &str,
+) -> Result<(), String> {
+    let ts = now();
+    let conn = db.lock();
+    conn.execute(
+        "UPDATE favorites SET seen_chapter_links=?1, pending_new_links='',
+         last_chapter_link=?2, last_chapter_name=?3, chapter_count=?4, status=?5,
+         last_updated_at=?6, last_checked_at=?6, updated_at=?6 WHERE id=?7",
+        params![
+            seen_chapter_links,
+            last_chapter_link,
+            last_chapter_name,
+            chapter_count,
+            status,
+            ts,
+            id
+        ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -1400,6 +1599,180 @@ mod tests {
             downloaded_chapters_list(&db, MID, MU).unwrap(),
             vec!["/manga/foo/c-1"]
         );
+    }
+
+    fn test_favorites_db() -> Db {
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(FAVORITES_DDL).expect("fav ddl");
+        Arc::new(Mutex::new(conn))
+    }
+
+    #[test]
+    fn reimport_without_chapter_data_keeps_existing_progress() {
+        let db = test_favorites_db();
+        let seen = join_chapter_links(&["/manga/foo/c-1".into(), "/manga/foo/c-2".into()]);
+        favorites_add(
+            &db, MID, "Site", "https://site.com", MU, "Foo",
+            "/manga/foo/c-2", "Ch 2", 2, &seen,
+        )
+        .unwrap();
+        favorites_update_after_check(
+            &db, 1, "/manga/foo/c-3", "Ch 3", 3, "ongoing", "/manga/foo/c-3",
+        )
+        .unwrap();
+        // A bare import row (no seen, no chapter data) must not reset anything.
+        let fav = favorites_add(
+            &db, MID, "Site", "https://site.com", MU, "Foo Renamed", "", "", 0, "",
+        )
+        .unwrap();
+        assert_eq!(fav.title, "Foo Renamed");
+        assert_eq!(parse_seen_keys(&fav.seen_chapter_links), parse_seen_keys(&seen));
+        assert_eq!(fav.last_chapter_link, "/manga/foo/c-3");
+        assert_eq!(fav.chapter_count, 3);
+        assert_eq!(count_link_lines(&fav.pending_new_links), 1);
+    }
+
+    #[test]
+    fn reimport_with_seen_replaces_it_and_clears_pending() {
+        let db = test_favorites_db();
+        favorites_add(
+            &db, MID, "Site", "https://site.com", MU, "Foo",
+            "/manga/foo/c-1", "Ch 1", 1, "/manga/foo/c-1",
+        )
+        .unwrap();
+        favorites_update_after_check(
+            &db, 1, "/manga/foo/c-2", "Ch 2", 2, "ongoing", "/manga/foo/c-2",
+        )
+        .unwrap();
+        let fav = favorites_add(
+            &db, MID, "Site", "https://site.com", MU, "Foo",
+            "/manga/foo/c-2", "Ch 2", 2, "/manga/foo/c-1\n/manga/foo/c-2",
+        )
+        .unwrap();
+        assert_eq!(parse_seen_keys(&fav.seen_chapter_links).len(), 2);
+        assert!(fav.pending_new_links.trim().is_empty());
+    }
+
+    #[test]
+    fn restore_timestamps_ignores_empty_values() {
+        let db = test_favorites_db();
+        let fav = favorites_add(
+            &db, MID, "Site", "https://site.com", MU, "Foo", "", "", 0, "",
+        )
+        .unwrap();
+        let original_added = fav.date_added.clone();
+        favorites_restore_timestamps(&db, MU, "", "").unwrap();
+        assert_eq!(favorites_get(&db, fav.id).unwrap().date_added, original_added);
+        favorites_restore_timestamps(&db, MU, "2020-01-01T00:00:00Z", "").unwrap();
+        let after = favorites_get(&db, fav.id).unwrap();
+        assert_eq!(after.date_added, "2020-01-01T00:00:00Z");
+        assert!(after.last_checked_at.is_empty());
+    }
+
+    #[test]
+    fn favorites_add_seeds_seen_from_links() {
+        let db = test_favorites_db();
+        let seen = join_chapter_links(&[
+            "https://site.com/manga/foo/c-1".into(),
+            "https://site.com/manga/foo/c-2".into(),
+        ]);
+        let fav = favorites_add(
+            &db,
+            MID,
+            "Site",
+            "https://site.com",
+            MU,
+            "Foo",
+            "https://site.com/manga/foo/c-2",
+            "Ch 2",
+            2,
+            &seen,
+        )
+        .unwrap();
+        assert!(!fav.date_added.is_empty());
+        let keys = parse_seen_keys(&fav.seen_chapter_links);
+        assert!(keys.contains("/manga/foo/c-1"));
+        assert!(keys.contains("/manga/foo/c-2"));
+    }
+
+    #[test]
+    fn favorites_check_only_does_not_mutate_seen() {
+        let db = test_favorites_db();
+        let seen = join_chapter_links(&["/manga/foo/c-1".into()]);
+        let fav = favorites_add(
+            &db, MID, "Site", "https://site.com", MU, "Foo",
+            "/manga/foo/c-1", "Ch 1", 1, &seen,
+        )
+        .unwrap();
+        favorites_update_after_check(
+            &db,
+            fav.id,
+            "/manga/foo/c-3",
+            "Ch 3",
+            3,
+            "ongoing",
+            "/manga/foo/c-2\n/manga/foo/c-3",
+        )
+        .unwrap();
+        let after = favorites_get(&db, fav.id).unwrap();
+        assert_eq!(
+            parse_seen_keys(&after.seen_chapter_links),
+            parse_seen_keys(&seen)
+        );
+        assert_eq!(count_link_lines(&after.pending_new_links), 2);
+        assert_eq!(after.chapter_count, 3);
+        assert_eq!(after.status, "ongoing");
+        assert_eq!(after.last_chapter_link, "/manga/foo/c-3");
+    }
+
+    #[test]
+    fn favorites_acknowledge_merges_seen_and_clears_pending() {
+        let db = test_favorites_db();
+        let seen = join_chapter_links(&["/manga/foo/c-1".into()]);
+        let fav = favorites_add(
+            &db, MID, "Site", "https://site.com", MU, "Foo",
+            "/manga/foo/c-1", "Ch 1", 1, &seen,
+        )
+        .unwrap();
+        favorites_update_after_check(
+            &db, fav.id, "/manga/foo/c-2", "Ch 2", 2, "ongoing", "/manga/foo/c-2",
+        )
+        .unwrap();
+        let merged = merge_chapter_links(&seen, &["/manga/foo/c-2".into()]);
+        favorites_acknowledge_chapters(
+            &db, fav.id, &merged, "/manga/foo/c-2", "Ch 2", 2, "ongoing",
+        )
+        .unwrap();
+        let after = favorites_get(&db, fav.id).unwrap();
+        assert!(after.pending_new_links.trim().is_empty());
+        assert!(parse_seen_keys(&after.seen_chapter_links).contains("/manga/foo/c-2"));
+        assert!(!after.last_updated_at.is_empty());
+    }
+
+    #[test]
+    fn empty_seen_means_all_remote_are_new() {
+        let seen = parse_seen_keys("");
+        let remote = ["/manga/foo/c-1", "/manga/foo/c-2"];
+        let news: Vec<_> = remote
+            .iter()
+            .filter(|link| {
+                let key = link_mark_key(link);
+                !key.is_empty() && !seen.contains(&key)
+            })
+            .collect();
+        assert_eq!(news.len(), 2);
+    }
+
+    #[test]
+    fn merge_chapter_links_dedupes_by_key() {
+        let base = "/manga/foo/c-1\nhttps://site.com/manga/foo/c-2";
+        let merged = merge_chapter_links(base, &[
+            "https://other.com/manga/foo/c-2/".into(),
+            "/manga/foo/c-3".into(),
+        ]);
+        let keys = parse_seen_keys(&merged);
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains("/manga/foo/c-3"));
     }
 }
 

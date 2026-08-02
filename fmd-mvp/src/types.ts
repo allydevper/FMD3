@@ -85,6 +85,11 @@ export type Favorite = {
   updated_at: string;
   enabled?: boolean;
   last_checked_at?: string;
+  seen_chapter_links?: string;
+  pending_new_links?: string;
+  date_added?: string;
+  status?: string;
+  last_updated_at?: string;
 };
 
 export type FavoriteAddRequest = {
@@ -94,6 +99,7 @@ export type FavoriteAddRequest = {
   manga_url: string;
   title: string;
   chapters: ChapterInfo[];
+  seen_chapter_links?: string;
 };
 
 export type FavoriteCheckResult = {

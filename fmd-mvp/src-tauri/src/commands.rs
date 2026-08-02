@@ -374,6 +374,9 @@ pub struct FavoriteAddRequest {
     pub manga_url: String,
     pub title: String,
     pub chapters: Vec<DownloadChapterInput>,
+    /// Optional explicit seen list (undo / restore). When empty, seeded from chapters.
+    #[serde(default)]
+    pub seen_chapter_links: String,
 }
 
 #[tauri::command]
@@ -391,6 +394,12 @@ pub fn favorites_add(
     } else {
         (String::new(), String::new(), 0)
     };
+    let seen = if !req.seen_chapter_links.trim().is_empty() {
+        req.seen_chapter_links.trim().to_string()
+    } else {
+        let links: Vec<String> = req.chapters.iter().map(|c| c.link.clone()).collect();
+        db::join_chapter_links(&links)
+    };
     db::favorites_add(
         &state.favorites,
         &req.module_id,
@@ -401,6 +410,7 @@ pub fn favorites_add(
         &last_link,
         &last_name,
         count,
+        &seen,
     )
 }
 
@@ -429,18 +439,25 @@ fn chapters_from_info(info: &MangaInfoResult) -> Vec<ChapterInfo> {
     info.chapters.clone()
 }
 
-fn find_new_chapters(fav: &Favorite, chapters: &[ChapterInfo]) -> (Vec<ChapterInfo>, bool) {
-    if fav.last_chapter_link.is_empty() {
-        return (vec![], true);
-    }
-    let last_key = crate::lua_host::remove_host_from_url(&fav.last_chapter_link);
-    if let Some(pos) = chapters.iter().position(|c| {
-        crate::lua_host::remove_host_from_url(&c.link) == last_key
-    }) {
-        (chapters[pos + 1..].to_vec(), true)
-    } else {
-        (vec![], false)
-    }
+fn db_mark_key_compat(link: &str) -> String {
+    db::mark_keys(&[link.to_string()])
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+/// New chapters = remote links not present in the favorite's seen set (FMD2 parity).
+/// Empty seen + non-empty remote → all chapters are new.
+pub(crate) fn find_new_chapters(fav: &Favorite, chapters: &[ChapterInfo]) -> Vec<ChapterInfo> {
+    let seen = db::parse_seen_keys(&fav.seen_chapter_links);
+    chapters
+        .iter()
+        .filter(|c| {
+            let key = db_mark_key_compat(&c.link);
+            !key.is_empty() && !seen.contains(&key)
+        })
+        .cloned()
+        .collect()
 }
 
 #[tauri::command]
@@ -496,13 +513,88 @@ pub async fn favorites_check_all(
     Ok(out)
 }
 
+fn tip_chapter(chapters: &[ChapterInfo]) -> (String, String) {
+    chapters
+        .last()
+        .map(|c| (c.link.clone(), c.name.clone()))
+        .unwrap_or_default()
+}
+
+fn enqueue_chapters(
+    app: &AppHandle,
+    state: &QueueState,
+    info: &MangaInfoResult,
+    manga_url_for_queue: &str,
+    chapters: &[ChapterInfo],
+) -> Result<usize, String> {
+    if chapters.is_empty() {
+        return Ok(0);
+    }
+    let output = db::resolve_output_dir(&state.db)?;
+    if output.trim().is_empty() {
+        return Err("No se pudo resolver la carpeta de salida".into());
+    }
+
+    let downloaded = db::downloaded_chapters_list(
+        &state.downloaded,
+        &info.module_id,
+        manga_url_for_queue,
+    )?;
+    let active = db::queue_active_chapter_links(&state.db, &info.module_id, manga_url_for_queue)?;
+    let skip: std::collections::HashSet<String> = downloaded
+        .into_iter()
+        .chain(active.into_iter())
+        .collect();
+
+    let items: Vec<NewQueueItem> = chapters
+        .iter()
+        .filter(|c| {
+            let key = db_mark_key_compat(&c.link);
+            !key.is_empty() && !skip.contains(&key)
+        })
+        .map(|c| {
+            let base = std::path::Path::new(&output);
+            let (manga_path, chapter_path, chapter_display) =
+                crate::lua_host::resolve_queue_item_paths(
+                    base,
+                    &info.title,
+                    c.index as usize,
+                    &c.name,
+                    &info.module_id,
+                    manga_url_for_queue,
+                );
+            NewQueueItem {
+                manga_title: info.title.clone(),
+                root_url: info.root_url.clone(),
+                manga_url: manga_url_for_queue.to_string(),
+                module_id: info.module_id.clone(),
+                chapter_index: c.index as i64,
+                chapter_name: c.name.clone(),
+                chapter_link: c.link.clone(),
+                output_dir: output.clone(),
+                manga_path: manga_path.display().to_string(),
+                chapter_path: chapter_path.display().to_string(),
+                chapter_display,
+                batch_id: String::new(),
+                pack_format: crate::settings_keys::pack_format(),
+            }
+        })
+        .collect();
+
+    if items.is_empty() {
+        return Ok(0);
+    }
+    let ids = db::queue_add_many(&state.db, &items)?;
+    queue::ensure_started(app);
+    Ok(ids.len())
+}
+
 async fn check_favorite_inner(
     app: &AppHandle,
     state: &QueueState,
     id: i64,
     enqueue: bool,
 ) -> Result<FavoriteCheckResult, String> {
-    let main = state.db.clone();
     let fav_db = state.favorites.clone();
     let fav = db::favorites_get(&fav_db, id)?;
     if !fav.enabled {
@@ -514,9 +606,16 @@ async fn check_favorite_inner(
             enqueued: 0,
         });
     }
+    if crate::settings_keys::module_disabled(&fav.module_id) {
+        let _ = db::favorites_touch_checked(&fav_db, id);
+        return Err(format!(
+            "Módulo no activado: {} ({})",
+            fav.module_name, fav.module_id
+        ));
+    }
+
     let manga_url = fav.manga_url.clone();
     let module_id = fav.module_id.clone();
-    /* Store one absolute form so the mark key matches what InfoView enqueues. */
     let manga_url_for_queue =
         crate::lua_host::maybe_fill_host(&fav.root_url, &fav.manga_url);
 
@@ -527,60 +626,141 @@ async fn check_favorite_inner(
     .map_err(|e| format!("tarea cancelada: {e}"))??;
 
     let chapters = chapters_from_info(&info);
-    let (new_chapters, matched) = find_new_chapters(&fav, &chapters);
+    let new_chapters = find_new_chapters(&fav, &chapters);
+    let (tip_link, tip_name) = tip_chapter(&chapters);
+    let pending_text = db::join_chapter_links(
+        &new_chapters
+            .iter()
+            .map(|c| c.link.clone())
+            .collect::<Vec<_>>(),
+    );
 
     let mut enqueued = 0usize;
-    if enqueue && matched && !new_chapters.is_empty() {
-        let output = db::resolve_output_dir(&main)?;
-        if output.trim().is_empty() {
-            return Err("No se pudo resolver la carpeta de salida".into());
-        }
-        let items: Vec<NewQueueItem> = new_chapters
-            .iter()
-            .map(|c| {
-                let base = std::path::Path::new(&output);
-                let (manga_path, chapter_path, chapter_display) =
-                    crate::lua_host::resolve_queue_item_paths(
-                        base,
-                        &info.title,
-                        c.index as usize,
-                        &c.name,
-                        &info.module_id,
-                        &manga_url_for_queue,
-                    );
-                NewQueueItem {
-                    manga_title: info.title.clone(),
-                    root_url: info.root_url.clone(),
-                    manga_url: manga_url_for_queue.clone(),
-                    module_id: info.module_id.clone(),
-                    chapter_index: c.index as i64,
-                    chapter_name: c.name.clone(),
-                    chapter_link: c.link.clone(),
-                    output_dir: output.clone(),
-                    manga_path: manga_path.display().to_string(),
-                    chapter_path: chapter_path.display().to_string(),
-                    chapter_display,
-                    batch_id: String::new(),
-                    pack_format: crate::settings_keys::pack_format(),
-                }
-            })
-            .collect();
-        let ids = db::queue_add_many(&main, &items)?;
-        enqueued = ids.len();
-        queue::ensure_started(app);
+    if enqueue && !new_chapters.is_empty() {
+        enqueued = enqueue_chapters(app, state, &info, &manga_url_for_queue, &new_chapters)?;
+        let merged = db::merge_chapter_links(
+            &fav.seen_chapter_links,
+            &new_chapters
+                .iter()
+                .map(|c| c.link.clone())
+                .collect::<Vec<_>>(),
+        );
+        db::favorites_acknowledge_chapters(
+            &fav_db,
+            id,
+            &merged,
+            &tip_link,
+            &tip_name,
+            chapters.len() as i64,
+            &info.status,
+        )?;
+    } else {
+        db::favorites_update_after_check(
+            &fav_db,
+            id,
+            &tip_link,
+            &tip_name,
+            chapters.len() as i64,
+            &info.status,
+            &pending_text,
+        )?;
     }
 
-    let (last_link, last_name) = if let Some(last) = chapters.last() {
-        (last.link.as_str(), last.name.as_str())
-    } else {
-        ("", "")
-    };
-    db::favorites_update_progress(&fav_db, id, last_link, last_name, chapters.len() as i64)?;
-    let _ = db::favorites_touch_checked(&fav_db, id);
     let favorite = db::favorites_get(&fav_db, id)?;
     Ok(FavoriteCheckResult {
         favorite,
         new_chapters,
+        enqueued,
+    })
+}
+
+/// Enqueue chapters stored in `pending_new_links` (Revisar → Descargar flow).
+#[tauri::command]
+pub async fn favorites_enqueue_pending(
+    app: AppHandle,
+    state: State<'_, QueueState>,
+    id: i64,
+) -> Result<FavoriteCheckResult, String> {
+    let fav_db = state.favorites.clone();
+    let fav = db::favorites_get(&fav_db, id)?;
+    if !fav.enabled {
+        return Ok(FavoriteCheckResult {
+            favorite: fav,
+            new_chapters: vec![],
+            enqueued: 0,
+        });
+    }
+    if crate::settings_keys::module_disabled(&fav.module_id) {
+        return Err(format!(
+            "Módulo no activado: {} ({})",
+            fav.module_name, fav.module_id
+        ));
+    }
+
+    let pending_keys = db::parse_seen_keys(&fav.pending_new_links);
+    if pending_keys.is_empty() {
+        let favorite = db::favorites_get(&fav_db, id)?;
+        return Ok(FavoriteCheckResult {
+            favorite,
+            new_chapters: vec![],
+            enqueued: 0,
+        });
+    }
+
+    let manga_url = fav.manga_url.clone();
+    let module_id = fav.module_id.clone();
+    let manga_url_for_queue =
+        crate::lua_host::maybe_fill_host(&fav.root_url, &fav.manga_url);
+
+    let info = tauri::async_runtime::spawn_blocking(move || {
+        get_info(&manga_url, Some(module_id.as_str()))
+    })
+    .await
+    .map_err(|e| format!("tarea cancelada: {e}"))??;
+
+    let chapters = chapters_from_info(&info);
+    let seen = db::parse_seen_keys(&fav.seen_chapter_links);
+    let mut to_enqueue: Vec<ChapterInfo> = chapters
+        .iter()
+        .filter(|c| {
+            let key = db_mark_key_compat(&c.link);
+            !key.is_empty() && pending_keys.contains(&key) && !seen.contains(&key)
+        })
+        .cloned()
+        .collect();
+
+    if to_enqueue.is_empty() {
+        to_enqueue = find_new_chapters(&fav, &chapters);
+    }
+
+    let (tip_link, tip_name) = tip_chapter(&chapters);
+    let enqueued = if to_enqueue.is_empty() {
+        0
+    } else {
+        enqueue_chapters(&app, state.inner(), &info, &manga_url_for_queue, &to_enqueue)?
+    };
+
+    let merged = db::merge_chapter_links(
+        &fav.seen_chapter_links,
+        &to_enqueue
+            .iter()
+            .map(|c| c.link.clone())
+            .collect::<Vec<_>>(),
+    );
+    db::favorites_acknowledge_chapters(
+        &fav_db,
+        id,
+        &merged,
+        &tip_link,
+        &tip_name,
+        chapters.len() as i64,
+        &info.status,
+    )?;
+
+    let favorite = db::favorites_get(&fav_db, id)?;
+    Ok(FavoriteCheckResult {
+        favorite,
+        new_chapters: to_enqueue,
         enqueued,
     })
 }
@@ -1181,6 +1361,97 @@ struct FavoriteImportItem {
     root_url: String,
     manga_url: String,
     title: String,
+    #[serde(default)]
+    seen_chapter_links: String,
+    #[serde(default)]
+    last_chapter_link: String,
+    #[serde(default)]
+    last_chapter_name: String,
+    #[serde(default)]
+    chapter_count: i64,
+    #[serde(default)]
+    date_added: String,
+    #[serde(default)]
+    last_checked_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct FavoriteExportItem {
+    module_id: String,
+    module_name: String,
+    root_url: String,
+    manga_url: String,
+    title: String,
+    seen_chapter_links: String,
+    last_chapter_link: String,
+    last_chapter_name: String,
+    chapter_count: i64,
+    enabled: bool,
+    status: String,
+    date_added: String,
+    last_checked_at: String,
+}
+
+fn favorites_to_export_json(db: &db::Db) -> Result<String, String> {
+    let list = db::favorites_list(db)?;
+    let items: Vec<FavoriteExportItem> = list
+        .into_iter()
+        .map(|f| FavoriteExportItem {
+            module_id: f.module_id,
+            module_name: f.module_name,
+            root_url: f.root_url,
+            manga_url: f.manga_url,
+            title: f.title,
+            seen_chapter_links: f.seen_chapter_links,
+            last_chapter_link: f.last_chapter_link,
+            last_chapter_name: f.last_chapter_name,
+            chapter_count: f.chapter_count,
+            enabled: f.enabled,
+            status: f.status,
+            date_added: f.date_added,
+            last_checked_at: f.last_checked_at,
+        })
+        .collect();
+    serde_json::to_string_pretty(&items).map_err(|e| e.to_string())
+}
+
+fn favorites_import_json(db: &db::Db, json: &str) -> Result<usize, String> {
+    let items: Vec<FavoriteImportItem> =
+        serde_json::from_str(json).map_err(|e| format!("JSON inválido: {e}"))?;
+    let mut n = 0usize;
+    for item in items {
+        let seen = if !item.seen_chapter_links.trim().is_empty() {
+            item.seen_chapter_links.trim().to_string()
+        } else if !item.last_chapter_link.trim().is_empty() {
+            item.last_chapter_link.trim().to_string()
+        } else {
+            String::new()
+        };
+        match db::favorites_add(
+            db,
+            &item.module_id,
+            &item.module_name,
+            &item.root_url,
+            &item.manga_url,
+            &item.title,
+            &item.last_chapter_link,
+            &item.last_chapter_name,
+            item.chapter_count,
+            &seen,
+        ) {
+            Ok(_) => {
+                let _ = db::favorites_restore_timestamps(
+                    db,
+                    &item.manga_url,
+                    &item.date_added,
+                    &item.last_checked_at,
+                );
+                n += 1;
+            }
+            Err(e) => eprintln!("favorites_import skip {}: {e}", item.manga_url),
+        }
+    }
+    Ok(n)
 }
 
 #[tauri::command]
@@ -1188,26 +1459,43 @@ pub fn favorites_import_list(
     state: State<QueueState>,
     json: String,
 ) -> Result<usize, String> {
-    let items: Vec<FavoriteImportItem> =
-        serde_json::from_str(&json).map_err(|e| format!("JSON inválido: {e}"))?;
-    let mut n = 0usize;
-    for item in items {
-        match db::favorites_add(
-            &state.favorites,
-            &item.module_id,
-            &item.module_name,
-            &item.root_url,
-            &item.manga_url,
-            &item.title,
-            "",
-            "",
-            0,
-        ) {
-            Ok(_) => n += 1,
-            Err(e) => eprintln!("favorites_import skip {}: {e}", item.manga_url),
+    favorites_import_json(&state.favorites, &json)
+}
+
+#[tauri::command]
+pub fn favorites_export_list(state: State<QueueState>) -> Result<String, String> {
+    favorites_to_export_json(&state.favorites)
+}
+
+#[tauri::command]
+pub fn favorites_export_to_path(
+    state: State<QueueState>,
+    path: String,
+) -> Result<(), String> {
+    let json = favorites_to_export_json(&state.favorites)?;
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("ruta vacía".into());
+    }
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    Ok(n)
+    std::fs::write(path, json).map_err(|e| format!("no se pudo guardar: {e}"))
+}
+
+#[tauri::command]
+pub fn favorites_import_from_path(
+    state: State<QueueState>,
+    path: String,
+) -> Result<usize, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("ruta vacía".into());
+    }
+    let json = std::fs::read_to_string(path).map_err(|e| format!("no se pudo leer: {e}"))?;
+    favorites_import_json(&state.favorites, &json)
 }
 
 #[tauri::command]

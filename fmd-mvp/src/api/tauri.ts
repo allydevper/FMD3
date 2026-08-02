@@ -315,8 +315,24 @@ export function favoritesCheckAll(enqueue: boolean) {
   return invoke<FavoriteCheckResult[]>("favorites_check_all", { enqueue });
 }
 
+export function favoritesEnqueuePending(id: number) {
+  return invoke<FavoriteCheckResult>("favorites_enqueue_pending", { id });
+}
+
 export function favoritesImportList(json: string) {
   return invoke<number>("favorites_import_list", { json });
+}
+
+export function favoritesExportList() {
+  return invoke<string>("favorites_export_list");
+}
+
+export function favoritesExportToPath(path: string) {
+  return invoke("favorites_export_to_path", { path });
+}
+
+export function favoritesImportFromPath(path: string) {
+  return invoke<number>("favorites_import_from_path", { path });
 }
 
 export function openExternal(path: string, args?: string) {
