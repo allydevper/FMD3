@@ -778,6 +778,8 @@ export function OptionsView() {
     setModulesPending,
     modulesJob,
     cancelModulesJob,
+    pendingOptionsTab,
+    clearPendingOptionsTab,
   } = useApp();
 
   const [optTab, setOptTab] = useState<OptTabId>("general");
@@ -1529,6 +1531,16 @@ export function OptionsView() {
   /* ---- Panel Sitios Web ---- */
 
   const [sitesTab, setSitesTab] = useState<SitesTabId>("list");
+
+  // Deep-link from elsewhere (the "hay módulos por actualizar" toast, the gear
+  // dot): land on the tab that actually holds the thing that was clicked.
+  useEffect(() => {
+    if (!pendingOptionsTab) return;
+    const { tab, sub } = pendingOptionsTab;
+    if (OPTIONS_CATS.some((c) => c.id === tab)) setOptTab(tab as OptTabId);
+    if (sub === "list" || sub === "mods") setSitesTab(sub);
+    clearPendingOptionsTab();
+  }, [pendingOptionsTab, clearPendingOptionsTab]);
   const [sitesQuery, setSitesQuery] = useState("");
   const [sitesOnlyActive, setSitesOnlyActive] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});

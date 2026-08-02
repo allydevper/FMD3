@@ -94,6 +94,7 @@ function Shell() {
     hideInfo,
     showMangaInfo,
     modulesPending,
+    openOptionsTab,
   } = useApp();
 
   useEffect(() => {
@@ -164,7 +165,11 @@ function Shell() {
             className={`nav-item icon-only${activeNav === "options" ? " active" : ""}`}
             data-nav="options"
             title={modulesPending ? "Opciones — hay módulos por actualizar" : "Opciones"}
-            onClick={() => setActiveNav("options")}
+            onClick={() =>
+              modulesPending
+                ? openOptionsTab({ tab: "websites", sub: "mods" })
+                : setActiveNav("options")
+            }
           >
             <Icon name="settings" className="ico ico-lg" />
             {modulesPending ? <span className="nav-dot" aria-hidden="true" /> : null}

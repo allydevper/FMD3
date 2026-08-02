@@ -35,6 +35,18 @@ export type StartCatalogJobArgs = {
   moduleId?: string | null;
 };
 
+/**
+ * Deep-link into a specific Options tab. `setActiveNav("options")` alone drops
+ * the user on whatever tab was last open, which is not where the thing they
+ * clicked actually lives.
+ */
+export type PendingOptionsTab = {
+  /** Matches `OptTabId` in OptionsView, e.g. "websites". */
+  tab: string;
+  /** Sub-tab within that panel, e.g. "mods". */
+  sub?: string;
+};
+
 export type PendingMangaOpen = {
   mangaUrl: string;
   moduleId: string | null;
@@ -104,6 +116,11 @@ type AppContextValue = {
   cancelModulesJob: () => Promise<void>;
   /** Version of a postponed app update, if any. */
   appUpdatePending: string | null;
+  /** Options tab to open next; OptionsView consumes and clears it. */
+  pendingOptionsTab: PendingOptionsTab | null;
+  /** Navigate to Options and land on a specific tab. */
+  openOptionsTab: (target: PendingOptionsTab) => void;
+  clearPendingOptionsTab: () => void;
 };
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -168,6 +185,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [modulesJob, setModulesJob] = useState<ModulesUpdateProgressEvent | null>(null);
   /** Version the user postponed, so the reminder survives the session. */
   const [appUpdatePending, setAppUpdatePending] = useState<string | null>(null);
+  const [pendingOptionsTab, setPendingOptionsTab] = useState<PendingOptionsTab | null>(null);
   const favDownloadAfterRef = useRef(false);
   const [favAutoCheckSeq, setFavAutoCheckSeq] = useState(0);
   const [lastFavAutoCheck, setLastFavAutoCheck] = useState<FavoriteCheckResult[] | null>(
@@ -323,6 +341,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return mods;
   }, [selectedModuleId]);
 
+  const openOptionsTab = useCallback((target: PendingOptionsTab) => {
+    setPendingOptionsTab(target);
+    setActiveNav("options");
+  }, []);
+
+  const clearPendingOptionsTab = useCallback(() => setPendingOptionsTab(null), []);
+
   const runAutoModulesCheck = useCallback(
     async (silent: boolean) => {
       if (modulesUpdateBusyRef.current) return;
@@ -335,7 +360,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // banner inside a settings sub-tab nobody opens.
           appToast({
             message: `Módulos por actualizar: ${summarizeCheck(check)}`,
-            action: { label: "Ver", onClick: () => setActiveNav("options") },
+            action: {
+              label: "Ver",
+              onClick: () => openOptionsTab({ tab: "websites", sub: "mods" }),
+            },
           });
         } else {
           await refreshModules();
@@ -771,6 +799,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     modulesJob,
     cancelModulesJob,
     appUpdatePending,
+    pendingOptionsTab,
+    openOptionsTab,
+    clearPendingOptionsTab,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
