@@ -202,6 +202,7 @@ pub fn downloaded_db_path() -> PathBuf {
 }
 
 const USERDATA_SPLIT_KEY: &str = "db.userdata_split";
+const SEEN_BACKFILL_KEY: &str = "db.favorites_seen_backfilled";
 
 const DOWNLOADED_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS downloaded_chapters (
@@ -413,13 +414,13 @@ pub fn open_favorites_db() -> Result<Db, String> {
         "ALTER TABLE favorites ADD COLUMN last_updated_at TEXT NOT NULL DEFAULT ''",
         [],
     );
-    // Best-effort: seed seen from legacy last_chapter_link when seen is empty.
+    // NOTE: `last_chapter_link` is a tip cursor ("newest chapter the site had at
+    // the last check"), not a seen list. Seeding it into `seen_chapter_links`
+    // would make the set-based detection report every other chapter as new, and
+    // would mark a tip the user never downloaded as seen. The real seen list is
+    // backfilled from `downloaded_chapters` in `backfill_seen_from_downloaded`.
     let _ = conn.execute_batch(
         r#"
-        UPDATE favorites
-        SET seen_chapter_links = last_chapter_link
-        WHERE TRIM(COALESCE(seen_chapter_links, '')) = ''
-          AND TRIM(COALESCE(last_chapter_link, '')) != '';
         UPDATE favorites
         SET date_added = updated_at
         WHERE TRIM(COALESCE(date_added, '')) = ''
@@ -511,6 +512,60 @@ fn migrate_favorites_from_main(main: &Db, favorites: &Db) -> Result<(), String> 
     Ok(())
 }
 
+/// True when `seen` still holds a legacy tip cursor rather than a real seen list:
+/// either empty, or a single line equal to `last_chapter_link`.
+fn seen_is_legacy_cursor(fav: &Favorite) -> bool {
+    let lines: Vec<&str> = fav
+        .seen_chapter_links
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    match lines.len() {
+        0 => true,
+        1 => {
+            let tip = link_mark_key(&fav.last_chapter_link);
+            !tip.is_empty() && link_mark_key(lines[0]) == tip
+        }
+        _ => false,
+    }
+}
+
+/// One-shot: rebuild `seen_chapter_links` from `downloaded_chapters`, the real
+/// equivalent of FMD2's DownloadedChapterList.
+///
+/// Pre-split installs only stored `last_chapter_link`, a tip cursor. Under the
+/// set-based detection that single link would make every *other* chapter look
+/// new, so we drop it and use what was actually downloaded. Favorites with a
+/// genuine multi-line list are left alone; ones with nothing downloaded end up
+/// with an empty `seen`, so the next check reports the whole series as new.
+fn backfill_seen_from_downloaded(main: &Db, favorites: &Db, downloaded: &Db) -> Result<(), String> {
+    if settings_get(main, SEEN_BACKFILL_KEY)?
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    for fav in favorites_list(favorites)? {
+        if !seen_is_legacy_cursor(&fav) {
+            continue;
+        }
+        let links = downloaded_chapters_list(downloaded, &fav.module_id, &fav.manga_url)?;
+        let seen = join_chapter_links(&links);
+        // Pending was computed against the bogus cursor; drop it so the badge
+        // reflects the next real check instead of stale counts.
+        let conn = favorites.lock();
+        conn.execute(
+            "UPDATE favorites SET seen_chapter_links=?1, pending_new_links='' WHERE id=?2",
+            params![seen, fav.id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    settings_set(main, SEEN_BACKFILL_KEY, "1")?;
+    Ok(())
+}
+
 /// Open main + favorites + downloaded-marks DBs.
 ///
 /// `userdata/downloaded.db` starts empty on existing installs: there is no migration
@@ -521,6 +576,7 @@ pub fn open_app_dbs() -> Result<(Db, Db, Db), String> {
     let favorites = open_favorites_db()?;
     migrate_favorites_from_main(&main, &favorites)?;
     let downloaded = open_downloaded_db()?;
+    backfill_seen_from_downloaded(&main, &favorites, &downloaded)?;
     Ok((main, favorites, downloaded))
 }
 
@@ -1605,6 +1661,89 @@ mod tests {
         let conn = Connection::open_in_memory().expect("open");
         conn.execute_batch(FAVORITES_DDL).expect("fav ddl");
         Arc::new(Mutex::new(conn))
+    }
+
+    #[test]
+    fn backfill_replaces_legacy_tip_cursor_with_downloaded_list() {
+        let main = test_main_db();
+        let favs = test_favorites_db();
+        let dl = test_db();
+        // Pre-split shape: seen holds only the tip cursor the old logic stored.
+        let fav = favorites_add(
+            &favs, MID, "Site", "https://site.com", MU, "Foo",
+            "/manga/foo/ch-12", "Ch 12", 12, "/manga/foo/ch-12",
+        )
+        .unwrap();
+        favorites_update_after_check(
+            &favs, fav.id, "/manga/foo/ch-12", "Ch 12", 12, "ongoing",
+            &(1..12).map(|n| format!("/manga/foo/ch-{n}")).collect::<Vec<_>>().join("\n"),
+        )
+        .unwrap();
+        for n in 1..=8 {
+            downloaded_chapters_mark(&dl, MID, MU, &format!("/manga/foo/ch-{n}")).unwrap();
+        }
+
+        backfill_seen_from_downloaded(&main, &favs, &dl).unwrap();
+
+        let after = favorites_get(&favs, fav.id).unwrap();
+        let keys = parse_seen_keys(&after.seen_chapter_links);
+        assert_eq!(keys.len(), 8, "seen debe venir de downloaded_chapters");
+        assert!(keys.contains("/manga/foo/ch-1"));
+        assert!(keys.contains("/manga/foo/ch-8"));
+        // The tip was never downloaded, so it must not count as seen.
+        assert!(!keys.contains("/manga/foo/ch-12"));
+        assert!(after.pending_new_links.trim().is_empty());
+    }
+
+    #[test]
+    fn backfill_leaves_real_seen_lists_alone_and_runs_once() {
+        let main = test_main_db();
+        let favs = test_favorites_db();
+        let dl = test_db();
+        let real = join_chapter_links(&["/manga/foo/ch-1".into(), "/manga/foo/ch-2".into()]);
+        let fav = favorites_add(
+            &favs, MID, "Site", "https://site.com", MU, "Foo",
+            "/manga/foo/ch-2", "Ch 2", 2, &real,
+        )
+        .unwrap();
+        downloaded_chapters_mark(&dl, MID, MU, "/manga/foo/ch-9").unwrap();
+
+        backfill_seen_from_downloaded(&main, &favs, &dl).unwrap();
+        let after = favorites_get(&favs, fav.id).unwrap();
+        assert_eq!(parse_seen_keys(&after.seen_chapter_links), parse_seen_keys(&real));
+
+        // Second run is a no-op even for rows that would now qualify.
+        let bare = favorites_add(
+            &favs, MID, "Site", "https://site.com", "https://site.com/manga/bar", "Bar",
+            "", "", 0, "",
+        )
+        .unwrap();
+        downloaded_chapters_mark(&dl, MID, "https://site.com/manga/bar", "/manga/bar/ch-1")
+            .unwrap();
+        backfill_seen_from_downloaded(&main, &favs, &dl).unwrap();
+        assert!(favorites_get(&favs, bare.id)
+            .unwrap()
+            .seen_chapter_links
+            .trim()
+            .is_empty());
+    }
+
+    #[test]
+    fn backfill_clears_cursor_when_nothing_was_downloaded() {
+        let main = test_main_db();
+        let favs = test_favorites_db();
+        let dl = test_db();
+        let fav = favorites_add(
+            &favs, MID, "Site", "https://site.com", MU, "Foo",
+            "/manga/foo/ch-5", "Ch 5", 5, "/manga/foo/ch-5",
+        )
+        .unwrap();
+        backfill_seen_from_downloaded(&main, &favs, &dl).unwrap();
+        assert!(favorites_get(&favs, fav.id)
+            .unwrap()
+            .seen_chapter_links
+            .trim()
+            .is_empty());
     }
 
     #[test]

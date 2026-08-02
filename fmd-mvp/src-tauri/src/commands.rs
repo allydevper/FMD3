@@ -1420,13 +1420,10 @@ fn favorites_import_json(db: &db::Db, json: &str) -> Result<usize, String> {
         serde_json::from_str(json).map_err(|e| format!("JSON inválido: {e}"))?;
     let mut n = 0usize;
     for item in items {
-        let seen = if !item.seen_chapter_links.trim().is_empty() {
-            item.seen_chapter_links.trim().to_string()
-        } else if !item.last_chapter_link.trim().is_empty() {
-            item.last_chapter_link.trim().to_string()
-        } else {
-            String::new()
-        };
+        // Only an explicit list counts as "seen". `last_chapter_link` is a tip
+        // cursor, and seeding it here would mark one chapter as read while
+        // every other one resurfaces as new on the first check.
+        let seen = item.seen_chapter_links.trim().to_string();
         match db::favorites_add(
             db,
             &item.module_id,
