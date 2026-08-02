@@ -907,7 +907,7 @@ export function DownloadsView() {
   function handleAddMore(g: MangaGroup) {
     const url = (g.mangaUrl || g.rootUrl || "").trim();
     if (!url) {
-      log("Este grupo no tiene URL de manga para abrir en Información.", "err");
+      log("Este grupo no tiene URL de manga para agregar más capítulos.", "err");
       return;
     }
     setPendingMangaOpen({ mangaUrl: url, moduleId: g.moduleId });

@@ -26,6 +26,8 @@ Changelog:
 [+] Opciones: comprobar versión al iniciar
 [*] Rutas largas, hilos de favoritos y reordenación de cola
 [*] Borrar tareas completadas al cerrar (opción)
+[*] «Información» pasa a llamarse «Explorar»
+[*] Opciones reordenadas: Descargas y Red separadas, Diálogos dentro de General
 
 0.1.0 (MVP · base)
 [+] Shell: Descargas, Información, Favoritos, Opciones, Sobre

@@ -16,7 +16,8 @@ import "./styles/index.css";
 
 const NAV_ITEMS: { id: NavId; label: string; icon: keyof typeof ICO; title: string }[] = [
   { id: "downloads", label: "Descargas", icon: "download", title: "Descargas" },
-  { id: "info", label: "Información", icon: "info", title: "Información" },
+  // El id sigue siendo "info" (NavId, data-nav, CSS); solo cambia la etiqueta.
+  { id: "info", label: "Explorar", icon: "info", title: "Explorar" },
   { id: "favorites", label: "Favoritos", icon: "heart", title: "Favoritos" },
   { id: "about", label: "Sobre", icon: "about", title: "Sobre" },
 ];

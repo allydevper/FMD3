@@ -1084,7 +1084,7 @@ export function FavoritesView() {
                               type="button"
                               className="ell fav-manga fav-manga-link"
                               style={{ color: enabled ? "var(--text)" : "var(--muted)" }}
-                              title="Abrir en Info"
+                              title="Abrir en Explorar"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 openFavoriteInInfo(it);
@@ -1197,7 +1197,7 @@ export function FavoritesView() {
               }}
             >
               <Icon ico={ICO.info} className="ico ico-sm" />
-              <span>Ver info</span>
+              <span>Ver información</span>
             </button>
             <button
               type="button"
