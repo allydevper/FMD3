@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 pub type Db = Arc<Mutex<Connection>>;
 
-/// Directory containing the running executable (portable default for "Guardar en").
+/// Directory containing the running executable.
 pub fn exe_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -16,14 +16,24 @@ pub fn exe_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Saved `default_output_dir`, or exe directory when unset.
+/// Portable default for "Guardar en": `downloads/` beside the executable.
+///
+/// The subfolder matters — the exe directory itself is also the install
+/// directory, so downloading straight into it leaves every manga folder loose
+/// among the app's own files. Nothing creates this eagerly; the download path
+/// runs `create_dir_all` on the chapter directory, which creates it on first use.
+pub fn default_download_dir() -> PathBuf {
+    exe_dir().join("downloads")
+}
+
+/// Saved `default_output_dir`, or the default download folder when unset.
 pub fn resolve_output_dir(db: &Db) -> Result<String, String> {
     let saved = settings_get(db, "default_output_dir")?.unwrap_or_default();
     let t = saved.trim();
     if !t.is_empty() {
         return Ok(t.to_string());
     }
-    Ok(exe_dir().to_string_lossy().into_owned())
+    Ok(default_download_dir().to_string_lossy().into_owned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

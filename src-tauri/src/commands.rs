@@ -354,10 +354,10 @@ pub fn settings_set(state: State<QueueState>, key: String, value: String) -> Res
     db::settings_set(&state.db, &key, &value)
 }
 
-/// Default "Guardar en" path = folder of the running executable.
+/// Default "Guardar en" path = `downloads/` beside the running executable.
 #[tauri::command]
 pub fn default_save_dir() -> Result<String, String> {
-    Ok(db::exe_dir().to_string_lossy().into_owned())
+    Ok(db::default_download_dir().to_string_lossy().into_owned())
 }
 
 /// Ruta de ejemplo para la vista previa de Ajustes, construida con los valores
