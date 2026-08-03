@@ -111,7 +111,7 @@ pub fn fetch_from_server(
                 .ok()
                 .flatten()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "FMD-MVP/0.1".into()),
+                .unwrap_or_else(|| "FMD3/0.1".into()),
         )
         .timeout(std::time::Duration::from_secs(
             crate::settings_keys::http_timeout_secs().max(30),

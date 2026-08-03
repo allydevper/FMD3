@@ -12,13 +12,13 @@ fn main() {
     });
     let out = PathBuf::from(std::env::args().nth(2).unwrap_or_else(|| {
         std::env::temp_dir()
-            .join("fmd-mvp-leercapitulo")
+            .join("fmd3-leercapitulo")
             .display()
             .to_string()
     }));
 
     println!("GetInfo: {manga}");
-    let info = match fmd_mvp_lib::lua_host::get_info(&manga, Some(MODULE_ID)) {
+    let info = match fmd3_lib::lua_host::get_info(&manga, Some(MODULE_ID)) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("ERROR GetInfo: {e}");
@@ -38,7 +38,7 @@ fn main() {
     println!("chapter[0]: {} -> {}", ch.name, ch.link);
 
     println!("download_chapter → {}", out.display());
-    match fmd_mvp_lib::download_chapter_for_test(
+    match fmd3_lib::download_chapter_for_test(
         &ch.link,
         Some(info.module_id.as_str()),
         Some(manga.as_str()),

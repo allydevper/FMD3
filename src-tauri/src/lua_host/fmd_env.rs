@@ -9,7 +9,7 @@ pub fn register_fmd_env(lua: &Lua) -> mlua::Result<()> {
     // FMD2 SimpleTranslator.LastSelected — UI language code
     env.set("SelectedLanguage", "en")?;
     env.set("Directory", "")?;
-    env.set("ExeName", "fmd-mvp")?;
+    env.set("ExeName", "FMD3")?;
     env.set("Version", "0.1.0")?;
     env.set("Revision", "0")?;
     env.set(

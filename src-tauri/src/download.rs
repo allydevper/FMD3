@@ -36,7 +36,7 @@ fn build_client() -> Result<Client, String> {
         .flatten()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FMD-MVP/0.1".into()
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FMD3/0.1".into()
         });
     let timeout = Duration::from_secs(crate::settings_keys::http_timeout_secs().max(5));
     let mut builder = Client::builder().user_agent(ua).timeout(timeout);

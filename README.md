@@ -1,4 +1,4 @@
-# FMD3 — FMD Host (Rust + Tauri + Lua)
+# FMD3 — Host de descargas (Rust + Tauri + Lua)
 
 Host de escritorio que **reutiliza** los módulos Lua de FMD2 sin Lazarus.
 
@@ -17,7 +17,7 @@ Host de escritorio que **reutiliza** los módulos Lua de FMD2 sin Lazarus.
 2. Tras `GetInfo`, los `chapter.link` se normalizan **sin host** (como FMD2 `RemoveHostFromURLsPair`); `GetPageNumber` recibe path relativo y el Lua hace `MaybeFillHost(RootURL, URL)`.  
 3. Ante antibot: WebsiteBypass + Duktape (`use_webdriver: false` por defecto).
 
-Datos: `%AppData%/fmd-mvp/fmd-mvp.db` y `data/<module_id>.db`.
+Datos: `%AppData%/FMD3/fmd3.db` y `data/<module_id>.db`.
 
 ## Setup (Windows)
 
@@ -55,7 +55,7 @@ npm run tauri build
 ```
 
 El instalador **no** empaqueta `lua/`. El modules-updater descarga el árbol
-completo a `%AppData%\fmd-mvp\userdata\lua` en el primer arranque y esa es la
+completo a `%AppData%\FMD3\userdata\lua` en el primer arranque y esa es la
 única copia que existe en una instalación — así una actualización de la app no
 pisa los módulos que el usuario ya sincronizó. Ver `docs/RELEASE-UPDATER.md`.
 

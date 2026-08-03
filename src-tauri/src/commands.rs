@@ -1506,7 +1506,7 @@ pub fn chapter_mark_keys(links: Vec<String>) -> Vec<String> {
 fn log_file_path(db: &db::Db) -> Result<std::path::PathBuf, String> {
     let name = db::settings_get(db, crate::settings_keys::LOG_FILE)?
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "fmd-mvp.log".into());
+        .unwrap_or_else(|| "fmd3.log".into());
     let name = name.trim().trim_start_matches(['/', '\\']);
     if name.is_empty() || name.contains("..") {
         return Err("nombre de log inválido".into());
@@ -1725,7 +1725,7 @@ pub async fn catalog_download_fmd2db(url: String) -> Result<String, String> {
                     .ok()
                     .flatten()
                     .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| "FMD-MVP/0.1".into()),
+                    .unwrap_or_else(|| "FMD3/0.1".into()),
             )
             .timeout(std::time::Duration::from_secs(
                 crate::settings_keys::http_timeout_secs().max(1),

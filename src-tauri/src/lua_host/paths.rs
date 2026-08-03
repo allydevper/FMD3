@@ -65,7 +65,7 @@ fn has_modules(dir: &std::path::Path) -> bool {
     dir.join("modules").is_dir()
 }
 
-/// `%APPDATA%/fmd-mvp/userdata/lua` — beside `lua.json` and `lua_backup/`,
+/// `%APPDATA%/FMD3/userdata/lua` — beside `lua.json` and `lua_backup/`,
 /// and outside anything the installer writes.
 fn user_lua_dir() -> PathBuf {
     crate::db::userdata_path().join("lua")

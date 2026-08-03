@@ -10,7 +10,7 @@ fn log_file_path() -> Option<PathBuf> {
         .ok()
         .flatten()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "fmd-mvp.log".into());
+        .unwrap_or_else(|| "fmd3.log".into());
     let name = name.trim().trim_start_matches(['/', '\\']);
     if name.is_empty() || name.contains("..") {
         return None;

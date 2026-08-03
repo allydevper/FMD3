@@ -1,5 +1,5 @@
 //! Per-module manga catalog (`data/<module_id>.db`), FMD2-compatible `masterlist`.
-//! MVP metadata/cover live in shared `fmd-mvp.db` table `manga_cache` (never ALTER/UPDATE masterlist).
+//! MVP metadata/cover live in shared `fmd3.db` table `manga_cache` (never ALTER/UPDATE masterlist).
 
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
@@ -161,7 +161,7 @@ fn data_dir() -> PathBuf {
 }
 
 fn app_db_path() -> PathBuf {
-    crate::db::db_path().join("fmd-mvp.db")
+    crate::db::db_path().join("fmd3.db")
 }
 
 pub fn catalog_db_path(module_id: &str) -> PathBuf {
@@ -302,7 +302,7 @@ fn backfill_hidden_columns(conn: &Connection) {
     });
 }
 
-/// ATTACH shared `fmd-mvp.db` as `appdb`; DETACH on drop.
+/// ATTACH shared `fmd3.db` as `appdb`; DETACH on drop.
 struct AppDbAttach<'a>(&'a Connection);
 
 impl<'a> AppDbAttach<'a> {

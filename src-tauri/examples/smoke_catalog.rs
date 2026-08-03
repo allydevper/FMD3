@@ -7,7 +7,7 @@ fn main() {
     if args.first().map(|s| s.as_str()) == Some("--import") && args.len() >= 2 {
         let path = &args[1];
         println!("Import {path} → {LOLI}");
-        match fmd_mvp_lib::catalog_import_for_test(LOLI, path) {
+        match fmd3_lib::catalog_import_for_test(LOLI, path) {
             Ok(st) => {
                 println!("OK count={} path={}", st.count, st.path);
             }
@@ -19,7 +19,7 @@ fn main() {
         args.drain(0..2);
     } else {
         println!("UpdateList LoliVault ({LOLI})…");
-        match fmd_mvp_lib::catalog_update_for_test(LOLI) {
+        match fmd3_lib::catalog_update_for_test(LOLI) {
             Ok(st) => {
                 println!(
                     "OK inserted={} total_in_db={} pages={}",
@@ -37,7 +37,7 @@ fn main() {
         }
     }
 
-    let hits = fmd_mvp_lib::catalog_search_for_test(LOLI, "", 5, 0).unwrap_or_default();
+    let hits = fmd3_lib::catalog_search_for_test(LOLI, "", 5, 0).unwrap_or_default();
     println!("sample {}:", hits.len());
     for h in &hits {
         println!("  {} -> {}", h.title, h.link);

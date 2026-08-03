@@ -23,10 +23,10 @@ fn parse_args() -> (Option<String>, String, PathBuf) {
 }
 
 fn resolve_module_id(spec: &str) -> Option<String> {
-    if let Some(m) = fmd_mvp_lib::lua_host::find_by_id(spec) {
+    if let Some(m) = fmd3_lib::lua_host::find_by_id(spec) {
         return Some(m.id);
     }
-    fmd_mvp_lib::lua_host::modules_list()
+    fmd3_lib::lua_host::modules_list()
         .into_iter()
         .find(|m| m.name.eq_ignore_ascii_case(spec))
         .map(|m| m.id)
@@ -45,7 +45,7 @@ fn main() {
         println!("module: Auto");
     }
     println!("GetPageNumber: {chapter}");
-    match fmd_mvp_lib::lua_host::get_page_links(&chapter, module_id.as_deref()) {
+    match fmd3_lib::lua_host::get_page_links(&chapter, module_id.as_deref()) {
         Ok(result) => {
             println!("module_id: {}", result.module_id);
             println!("referer: {}", result.referer);
@@ -59,7 +59,7 @@ fn main() {
             }
             let referer = result.referer.clone();
             let take: Vec<String> = result.pages.into_iter().take(2).collect();
-            let dl = fmd_mvp_lib::download_pages_with_referer_for_test(
+            let dl = fmd3_lib::download_pages_with_referer_for_test(
                 &out,
                 "Smoke",
                 0,

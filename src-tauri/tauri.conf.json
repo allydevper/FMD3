@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "fmd-mvp",
+  "productName": "FMD3",
   "version": "0.1.0",
-  "identifier": "com.wilmer.fmd-mvp",
+  "identifier": "com.wilmer.fmd3",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "FMD Host",
+        "title": "FMD3",
         "width": 1280,
         "height": 820,
         "minWidth": 1024,
@@ -24,7 +24,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/fmd-mvp/covers/**", "$APPDATA/**/fmd-mvp/covers/**"]
+        "scope": ["$APPDATA/FMD3/covers/**", "$APPDATA/**/FMD3/covers/**"]
       }
     }
   },

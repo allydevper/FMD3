@@ -16,10 +16,10 @@ fn parse_args() -> (Option<String>, String) {
 }
 
 fn resolve_module_id(spec: &str) -> Option<String> {
-    if let Some(m) = fmd_mvp_lib::lua_host::find_by_id(spec) {
+    if let Some(m) = fmd3_lib::lua_host::find_by_id(spec) {
         return Some(m.id);
     }
-    let list = fmd_mvp_lib::lua_host::modules_list();
+    let list = fmd3_lib::lua_host::modules_list();
     list.into_iter()
         .find(|m| m.name.eq_ignore_ascii_case(spec))
         .map(|m| m.id)
@@ -38,7 +38,7 @@ fn main() {
         println!("module: Auto");
     }
     println!("GetInfo: {url}");
-    match fmd_mvp_lib::lua_host::get_info(&url, module_id.as_deref()) {
+    match fmd3_lib::lua_host::get_info(&url, module_id.as_deref()) {
         Ok(info) => {
             println!("module_id: {}", info.module_id);
             println!("module_name: {}", info.module_name);

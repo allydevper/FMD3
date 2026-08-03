@@ -10,7 +10,7 @@ const GITHUB_URL = "https://github.com/allydevper/FMD3";
 const FMD2_URL = "https://github.com/dazedcat19/FMD2";
 const GPL_URL = "https://www.gnu.org/licenses/gpl-2.0.html";
 
-const CHANGELOG = `FMD Host (FMD3)
+const CHANGELOG = `FMD3
 Cliente Tauri + React + módulos Lua de Free Manga Downloader 2
 
 Changelog:
@@ -142,7 +142,7 @@ export function AboutView() {
               <div className="about-card">
                 <div className="about-kv">
                   <span className="about-kv-k">Proyecto</span>
-                  <span className="about-kv-v">FMD Host (FMD3)</span>
+                  <span className="about-kv-v">FMD3</span>
                 </div>
                 <div className="about-kv">
                   <span className="about-kv-k">Basado en</span>
@@ -213,7 +213,7 @@ export function AboutView() {
         <footer className="about-footer">
           <span className="about-footer-stat">
             <span className="fav-dot" style={{ background: "var(--accent)" }}></span>
-            <span>FMD Host · FMD3</span>
+            <span>FMD3</span>
           </span>
           <span className="about-footer-muted mono">{runtimeLabel}</span>
           <span className="about-footer-muted mono">{modulesLabel}</span>

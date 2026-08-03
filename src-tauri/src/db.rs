@@ -186,7 +186,7 @@ const QUEUE_SELECT: &str = "SELECT id, manga_title, root_url, COALESCE(manga_url
 
 pub fn db_path() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("fmd-mvp")
+    base.join("FMD3")
 }
 
 pub fn userdata_path() -> PathBuf {
@@ -260,12 +260,12 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool, String> {
     Ok(n > 0)
 }
 
-/// Open main app DB (`fmd-mvp.db`): settings, queue, manga_cache. Favorites and
+/// Open main app DB (`fmd3.db`): settings, queue, manga_cache. Favorites and
 /// downloaded marks live in their own files under `userdata/`.
 pub fn open_db() -> Result<Db, String> {
     let dir = db_path();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join("fmd-mvp.db");
+    let path = dir.join("fmd3.db");
     let conn = Connection::open(&path).map_err(|e| e.to_string())?;
     configure_connection(&conn)?;
     conn.execute_batch(
@@ -594,7 +594,7 @@ pub fn settings_get(db: &Db, key: &str) -> Result<Option<String>, String> {
 /// Read a setting without holding QueueState (used by HttpClient / FlareSolverr).
 pub fn settings_get_direct(key: &str) -> Result<Option<String>, String> {
     let dir = db_path();
-    let path = dir.join("fmd-mvp.db");
+    let path = dir.join("fmd3.db");
     if !path.exists() {
         return Ok(None);
     }
@@ -612,7 +612,7 @@ pub fn settings_get_direct(key: &str) -> Result<Option<String>, String> {
 pub fn settings_set_direct(key: &str, value: &str) -> Result<(), String> {
     let dir = db_path();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join("fmd-mvp.db");
+    let path = dir.join("fmd3.db");
     let conn = Connection::open(&path).map_err(|e| e.to_string())?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS settings (

@@ -40,8 +40,8 @@ Without `TAURI_SIGNING_PRIVATE_KEY`, the NSIS build will not produce `.sig` upda
 1. Bump version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` (keep them in sync).
 2. Build with signing env set (above).
 3. From `src-tauri/target/release/bundle/nsis/` take:
-   - `fmd-mvp_<version>_x64-setup.exe`
-   - `fmd-mvp_<version>_x64-setup.exe.sig`
+   - `FMD3_<version>_x64-setup.exe`
+   - `FMD3_<version>_x64-setup.exe.sig`
 4. Create `latest.json` (example for `0.2.0`):
 
 ```json
@@ -52,7 +52,7 @@ Without `TAURI_SIGNING_PRIVATE_KEY`, the NSIS build will not produce `.sig` upda
   "platforms": {
     "windows-x86_64": {
       "signature": "<paste FULL contents of the .sig file>",
-      "url": "https://github.com/allydevper/FMD3/releases/download/v0.2.0/fmd-mvp_0.2.0_x64-setup.exe"
+      "url": "https://github.com/allydevper/FMD3/releases/download/v0.2.0/FMD3_0.2.0_x64-setup.exe"
     }
   }
 }

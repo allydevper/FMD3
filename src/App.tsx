@@ -111,7 +111,7 @@ function Shell() {
         if (cancelled) return;
         setModules(mods);
         // Fuente/módulo: InfoView restaura ui.selected_module; no pisar aquí.
-        log("DB lista (favoritos/cola en AppData/fmd-mvp).", "ok");
+        log("DB lista (favoritos/cola en AppData/FMD3).", "ok");
       } catch (e) {
         log(String(e), "err");
       }

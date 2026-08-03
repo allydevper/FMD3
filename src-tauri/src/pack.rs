@@ -963,7 +963,7 @@ fn pack_epub(
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>{title}</dc:title>
     <dc:language>en</dc:language>
-    <dc:identifier id="BookId">fmd-mvp-{title}</dc:identifier>
+    <dc:identifier id="BookId">fmd3-{title}</dc:identifier>
   </metadata>
   <manifest>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
@@ -981,7 +981,7 @@ fn pack_epub(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head>
-    <meta name="dtb:uid" content="fmd-mvp-{title}"/>
+    <meta name="dtb:uid" content="fmd3-{title}"/>
   </head>
   <docTitle><text>{title}</text></docTitle>
   <navMap>
