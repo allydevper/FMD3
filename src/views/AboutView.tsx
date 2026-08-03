@@ -16,6 +16,16 @@ Cliente Tauri + React + módulos Lua de Free Manga Downloader 2
 Changelog:
 ([!] Importante, [+] Añadido, [-] Eliminado, [*] Cambio/corrección)
 
+0.1.0 (02.08.2026)
+[!] El proyecto pasa a llamarse FMD3 (antes «FMD Host» / fmd-mvp)
+[!] Los datos se guardan en %AppData%/FMD3 — una instalación anterior no se migra sola
+[+] Updater de módulos Lua: sincroniza el árbol desde GitHub con progreso y reinicio
+[+] Importar favoritos y capítulos descargados desde FMD2 o desde otro FMD3
+[+] Exportar favoritos y marcas de descarga a una carpeta con fecha
+[+] Ocultar y volver a mostrar favoritos sin llegar a borrarlos
+[*] Las descargas van a «downloads», junto al ejecutable en vez de sueltas a su lado
+[-] El árbol Lazarus de FMD2 sale del repositorio: queda solo este cliente
+
 0.1.0 (01.08.2026)
 [+] Favoritos: menú contextual, revisión de capítulos y miniatura
 [+] Papelera de títulos ocultos (restaurar / eliminar)
@@ -29,14 +39,14 @@ Changelog:
 [*] «Información» pasa a llamarse «Explorar»
 [*] Opciones reordenadas: Descargas y Red separadas, Diálogos dentro de General
 
-0.1.0 (MVP · base)
+0.1.0 (base)
 [+] Shell: Descargas, Información, Favoritos, Opciones, Sobre
 [+] Cola de descarga con SQLite y progreso en vivo
 [+] Favoritos: revisar capítulos nuevos y encolar
 [+] Catálogo + filtro avanzado (UI) + GetInfo
 [+] Opciones alineadas a FMD2 (guardar en, renombrado, sitios, módulos)
 [+] Bypass Cloudflare / websitebypass FMD2 (+ Duktape)
-[*] Mismos módulos Lua que FMD2 (recursos empaquetados)
+[*] Mismos módulos Lua que FMD2 (mismo árbol de módulos y plantillas)
 
 — Historial completo de FMD2 —
 https://github.com/dazedcat19/FMD2`;
@@ -82,8 +92,8 @@ export function AboutView() {
                 <span className="mono">{version}</span>
               </div>
               <div className="about-meta-row">
-                <span className="about-meta-k">Revisión</span>
-                <span className="mono">MVP</span>
+                <span className="about-meta-k">Licencia</span>
+                <span className="mono">GPLv2</span>
               </div>
             </div>
             <div className="about-header-sep"></div>
@@ -197,10 +207,15 @@ export function AboutView() {
                 <li>Duktape — challenges websitebypass (paridad FMD2)</li>
               </ul>
 
-              <h2 className="about-h">Recursos FMD2 empaquetados</h2>
+              <h2 className="about-h">Módulos Lua</h2>
               <ul className="about-list about-list-compact">
                 <li>Módulos, plantillas, utils y websitebypass del árbol FMD2</li>
                 <li>Compatible con la misma API Lua que el cliente Lazarus</li>
+                <li>
+                  El instalador no los incluye: el updater los descarga a
+                  <span className="mono"> %AppData%/FMD3/userdata/lua</span>, de modo que actualizar la
+                  app nunca pisa lo que ya sincronizaste
+                </li>
               </ul>
             </div>
           </div>
