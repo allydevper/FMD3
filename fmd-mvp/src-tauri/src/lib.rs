@@ -232,6 +232,19 @@ pub fn run() {
     let queue_state = QueueState::new(db, favorites, downloaded);
 
     tauri::Builder::default()
+        // Remember window size / position / maximized across restarts.
+        //
+        // VISIBLE is deliberately excluded: this app hides to the tray, so closing
+        // while minimized would persist "invisible" and the next launch would start
+        // with no window at all. Startup visibility is owned by TRAY_START_MINIMIZED.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
