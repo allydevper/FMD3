@@ -814,6 +814,26 @@ pub fn favorites_restore_meta(
     Ok(())
 }
 
+/// Copy a live DB file to `dest`, WAL included.
+///
+/// The lock is held across checkpoint *and* copy: the running app writes through a
+/// WAL, so copying the bare file would silently drop everything not yet merged, and
+/// a writer slipping in between the two steps would tear the copy.
+pub fn export_copy(db: &Db, src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    let conn = db.lock();
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+        .map_err(|e| format!("no se pudo consolidar el WAL: {e}"))?;
+    std::fs::copy(src, dest)
+        .map(|_| ())
+        .map_err(|e| format!("no se pudo escribir {}: {e}", dest.display()))
+}
+
+pub fn downloaded_chapters_count(db: &Db) -> Result<i64, String> {
+    let conn = db.lock();
+    conn.query_row("SELECT COUNT(*) FROM downloaded_chapters", [], |r| r.get(0))
+        .map_err(|e| e.to_string())
+}
+
 /// `(module_id, canonical path key) -> stored manga_url`, so an importer can reuse
 /// the URL form already in the table instead of inserting a near-duplicate row
 /// (`manga_url` is UNIQUE, and trailing-slash / host variants would slip past it).
@@ -1794,6 +1814,56 @@ mod tests {
         ];
         assert_eq!(downloaded_chapters_import_bulk(&db, &rows).unwrap(), 0);
         assert!(downloaded_chapters_list(&db, MID, MU).unwrap().is_empty());
+    }
+
+    #[test]
+    fn export_copy_carries_rows_still_living_in_the_wal() {
+        // The whole point of the checkpoint: with journal_mode=WAL the recent writes
+        // sit in `-wal`, so a bare file copy would hand back a stale DB.
+        let dir = std::env::temp_dir().join(format!("fmd3-export-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("downloaded.db");
+
+        let conn = Connection::open(&src).unwrap();
+        configure_connection(&conn).unwrap(); // sets journal_mode=WAL
+        conn.execute_batch(DOWNLOADED_DDL).unwrap();
+        let db: Db = Arc::new(Mutex::new(conn));
+        let rows: Vec<(String, String, String, String)> = (1..=3)
+            .map(|i| {
+                (
+                    MID.to_string(),
+                    mark_key(MU),
+                    mark_key(&format!("/manga/foo/c-{i}")),
+                    String::new(),
+                )
+            })
+            .collect();
+        downloaded_chapters_import_bulk(&db, &rows).unwrap();
+
+        // Negative control: a bare copy right now misses the rows, which is exactly
+        // the bug the checkpoint exists to prevent.
+        let naive = dir.join("naive.db");
+        std::fs::copy(&src, &naive).unwrap();
+        // Not even the schema has landed yet, so this errors rather than returning 0.
+        let stale: i64 = Connection::open(&naive)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM downloaded_chapters", [], |r| r.get(0))
+            .unwrap_or(0);
+        assert_eq!(stale, 0, "el WAL ya estaba consolidado; el test no prueba nada");
+
+        let dest = dir.join("copy.db");
+        export_copy(&db, &src, &dest).unwrap();
+
+        // Open the copy standalone — no `-wal` alongside it — and expect all 3 rows.
+        let copy = Connection::open(&dest).unwrap();
+        let n: i64 = copy
+            .query_row("SELECT COUNT(*) FROM downloaded_chapters", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3, "la copia perdió filas que estaban en el WAL");
+
+        drop(copy);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

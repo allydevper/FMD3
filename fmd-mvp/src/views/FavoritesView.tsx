@@ -108,6 +108,7 @@ export function FavoritesView() {
   );
   const [importMenu, setImportMenu] = useState<{ x: number; y: number } | null>(null);
   const [importBusy, setImportBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
 
   const [cat, setCat] = useState("all");
   const [filter, setFilter] = useState<FavFilter>("Todo");
@@ -775,6 +776,29 @@ export function FavoritesView() {
     })();
   };
 
+  /**
+   * Export favorites + marks as the same `.db` pair the importer reads, into a
+   * timestamped subfolder of the picked one so nothing is ever overwritten.
+   */
+  const handleExportDb = () => {
+    void (async () => {
+      setExportBusy(true);
+      try {
+        const dest = await open({ directory: true, multiple: false });
+        if (!dest || Array.isArray(dest)) return;
+        const r = await api.favoritesExportDb(dest);
+        log(
+          `Exportado a ${r.dir}: ${r.favorites} favoritos, ${r.marks} capítulos marcados`,
+          "ok",
+        );
+      } catch (e) {
+        log(String(e), "err");
+      } finally {
+        setExportBusy(false);
+      }
+    })();
+  };
+
   const handleDeleteSelected = async () => {
     const ids = [...selectedIds];
     if (!ids.length) return;
@@ -884,6 +908,16 @@ export function FavoritesView() {
             >
               <Icon name="import" className="ico ico-sm" />
               {importBusy ? "Importando…" : "Importar"}
+            </button>
+            <button
+              type="button"
+              className="fav-btn-ghost"
+              title="Exportar favoritos y capítulos descargados como .db"
+              disabled={exportBusy}
+              onClick={handleExportDb}
+            >
+              <Icon name="download" className="ico ico-sm" />
+              {exportBusy ? "Exportando…" : "Exportar"}
             </button>
           </div>
         </header>

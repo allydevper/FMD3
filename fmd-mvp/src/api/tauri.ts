@@ -352,6 +352,19 @@ export function favoritesImportDb(path: string) {
   return invoke<DbImportReport>("favorites_import_db", { path });
 }
 
+export interface DbExportReport {
+  /** Folder actually written to (a timestamped subfolder of the picked one). */
+  dir: string;
+  files: string[];
+  favorites: number;
+  marks: number;
+}
+
+/** Export favorites + downloaded marks as `.db` files `favoritesImportDb` reads back. */
+export function favoritesExportDb(dir: string) {
+  return invoke<DbExportReport>("favorites_export_db", { dir });
+}
+
 export function openExternal(path: string, args?: string) {
   return invoke("shell_open_external", { path, args: args ?? null });
 }

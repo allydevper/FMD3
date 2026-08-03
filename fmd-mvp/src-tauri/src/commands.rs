@@ -1432,6 +1432,49 @@ pub fn favorites_import_db(
     )
 }
 
+#[derive(Debug, Serialize)]
+pub struct DbExportReport {
+    /// Folder actually written to (a timestamped subfolder of the picked one).
+    pub dir: String,
+    pub files: Vec<String>,
+    pub favorites: usize,
+    pub marks: i64,
+}
+
+/// Export favorites + downloaded marks as a pair of `.db` files that
+/// `favorites_import_db` reads back. `dir` is the folder the user picked.
+#[tauri::command]
+pub fn favorites_export_db(
+    state: State<QueueState>,
+    dir: String,
+) -> Result<DbExportReport, String> {
+    let dir = dir.trim();
+    if dir.is_empty() {
+        return Err("ruta vacía".into());
+    }
+    // Write into a timestamped subfolder so an export never overwrites a previous
+    // one — or, worse, a live `userdata` the user happened to point at.
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let out = std::path::Path::new(dir).join(format!("fmd3-export-{stamp}"));
+    std::fs::create_dir_all(&out).map_err(|e| format!("no se pudo crear {}: {e}", out.display()))?;
+
+    let mut files = Vec::new();
+    for (db, src, name) in [
+        (&state.favorites, db::favorites_db_path(), "favorites.db"),
+        (&state.downloaded, db::downloaded_db_path(), "downloaded.db"),
+    ] {
+        db::export_copy(db, &src, &out.join(name))?;
+        files.push(name.to_string());
+    }
+
+    Ok(DbExportReport {
+        dir: out.to_string_lossy().to_string(),
+        files,
+        favorites: db::favorites_list(&state.favorites)?.len(),
+        marks: db::downloaded_chapters_count(&state.downloaded)?,
+    })
+}
+
 #[tauri::command]
 pub fn downloaded_chapters_list(
     state: State<QueueState>,

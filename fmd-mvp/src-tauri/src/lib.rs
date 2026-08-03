@@ -352,6 +352,7 @@ pub fn run() {
             commands::favorites_enqueue_pending,
             commands::favorites_download_all,
             commands::favorites_import_db,
+            commands::favorites_export_db,
             commands::queue_list,
             commands::queue_add,
             commands::queue_reorder,
