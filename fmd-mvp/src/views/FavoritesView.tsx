@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Icon } from "../components/Icon";
 import { appToastUndo } from "../components/AppToast";
 import { ICO } from "../icons";
@@ -104,6 +104,8 @@ export function FavoritesView() {
   const [favCtxMenu, setFavCtxMenu] = useState<{ x: number; y: number; ids: number[] } | null>(
     null,
   );
+  const [importMenu, setImportMenu] = useState<{ x: number; y: number } | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
 
   const [cat, setCat] = useState("all");
   const [filter, setFilter] = useState<FavFilter>("Todo");
@@ -520,6 +522,20 @@ export function FavoritesView() {
     };
   }, [favCtxMenu]);
 
+  useEffect(() => {
+    if (!importMenu) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setImportMenu(null);
+    };
+    const onScroll = () => setImportMenu(null);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [importMenu]);
+
   const ctxFavs = useMemo(() => {
     if (!favCtxMenu) return [] as Favorite[];
     return favCtxMenu.ids
@@ -703,43 +719,41 @@ export function FavoritesView() {
     })();
   };
 
-  const handleImportList = () => {
+  /**
+   * Import favorites + downloaded marks from an FMD2 or FMD3 install. `mode` picks
+   * a whole `userdata` folder or a single `.db`; the backend detects which app
+   * wrote it from the schema (both name their favorites file `favorites.db`).
+   */
+  const handleImportDb = (mode: "dir" | "file") => {
+    setImportMenu(null);
     void (async () => {
+      setImportBusy(true);
       try {
-        const picked = await open({
-          multiple: false,
-          filters: [{ name: "JSON", extensions: ["json"] }],
-        });
-        if (!picked || Array.isArray(picked)) {
-          const json = window.prompt(
-            "Pega el JSON de favoritos (sin capítulos, el primer check marca todos como nuevos):",
+        const picked = await open(
+          mode === "dir"
+            ? { directory: true, multiple: false }
+            : { multiple: false, filters: [{ name: "Base de datos", extensions: ["db"] }] },
+        );
+        if (!picked || Array.isArray(picked)) return;
+        const r = await api.favoritesImportDb(picked);
+        log(
+          `${r.sources.join(" + ") || "Importado"}: ${r.favorites_added} favoritos, ` +
+            `${r.marks_added} capítulos marcados` +
+            (r.favorites_skipped ? ` (${r.favorites_skipped} omitidos)` : ""),
+          "ok",
+        );
+        if (r.unknown_modules.length) {
+          log(
+            `Módulos no instalados, favoritos omitidos: ${r.unknown_modules.join(", ")}`,
+            "err",
           );
-          if (json == null || !json.trim()) return;
-          const n = await api.favoritesImportList(json.trim());
-          log(`Importados ${n} favoritos`, "ok");
-        } else {
-          const n = await api.favoritesImportFromPath(picked);
-          log(`Importados ${n} favoritos`, "ok");
         }
+        for (const w of r.warnings) log(w, "err");
         await refreshFavorites();
       } catch (e) {
         log(String(e), "err");
-      }
-    })();
-  };
-
-  const handleExportList = () => {
-    void (async () => {
-      try {
-        const dest = await save({
-          defaultPath: "favorites.json",
-          filters: [{ name: "JSON", extensions: ["json"] }],
-        });
-        if (!dest) return;
-        await api.favoritesExportToPath(dest);
-        log("Lista de favoritos exportada", "ok");
-      } catch (e) {
-        log(String(e), "err");
+      } finally {
+        setImportBusy(false);
       }
     })();
   };
@@ -840,20 +854,19 @@ export function FavoritesView() {
             <button
               type="button"
               className="fav-btn-ghost"
-              title="Importar lista JSON"
-              onClick={handleImportList}
+              title="Importar favoritos y capítulos descargados desde FMD2 o FMD3"
+              disabled={importBusy}
+              aria-haspopup="menu"
+              aria-expanded={!!importMenu}
+              onClick={(ev) => {
+                const r = ev.currentTarget.getBoundingClientRect();
+                setImportMenu((prev) =>
+                  prev ? null : { x: Math.max(8, r.right - 300), y: r.bottom + 6 },
+                );
+              }}
             >
               <Icon name="import" className="ico ico-sm" />
-              Importar
-            </button>
-            <button
-              type="button"
-              className="fav-btn-ghost"
-              title="Exportar lista JSON"
-              onClick={handleExportList}
-            >
-              <Icon name="download" className="ico ico-sm" />
-              Exportar
+              {importBusy ? "Importando…" : "Importar"}
             </button>
           </div>
         </header>
@@ -1169,6 +1182,45 @@ export function FavoritesView() {
           </div>
         </div>
       </div>
+
+      {importMenu ? (
+        <div className="dl-ctx-layer">
+          <div
+            className="dl-ctx-backdrop"
+            onClick={() => setImportMenu(null)}
+            onContextMenu={(ev) => {
+              ev.preventDefault();
+              setImportMenu(null);
+            }}
+          />
+          <div
+            className="dl-ctx-menu"
+            style={{ left: importMenu.x, top: importMenu.y, minWidth: 300 }}
+            role="menu"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              title="Importa favoritos y capítulos descargados de una vez"
+              onClick={() => handleImportDb("dir")}
+            >
+              <Icon ico={ICO.folder} className="ico ico-sm" />
+              <span>Favoritos y descargas (carpeta userdata)</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              title="Importa solo lo que contenga el archivo que elijas"
+              onClick={() => handleImportDb("file")}
+            >
+              <Icon name="import" className="ico ico-sm" />
+              <span>Un solo .db (favoritos o descargas)</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {favCtxMenu ? (
         <div className="dl-ctx-layer">

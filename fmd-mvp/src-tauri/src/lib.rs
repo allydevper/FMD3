@@ -3,6 +3,7 @@ mod catalog_job;
 mod commands;
 mod cover_cache;
 mod db;
+mod db_import;
 mod download;
 mod image_integrity;
 pub mod lua_host;
@@ -350,10 +351,7 @@ pub fn run() {
             commands::favorites_check_all,
             commands::favorites_enqueue_pending,
             commands::favorites_download_all,
-            commands::favorites_import_list,
-            commands::favorites_export_list,
-            commands::favorites_export_to_path,
-            commands::favorites_import_from_path,
+            commands::favorites_import_db,
             commands::queue_list,
             commands::queue_add,
             commands::queue_reorder,

@@ -334,20 +334,22 @@ export function favoritesDownloadAll(id: number) {
   return invoke<FavoriteCheckResult>("favorites_download_all", { id });
 }
 
-export function favoritesImportList(json: string) {
-  return invoke<number>("favorites_import_list", { json });
+export interface DbImportReport {
+  favorites_added: number;
+  favorites_skipped: number;
+  marks_added: number;
+  unknown_modules: string[];
+  /** What was read, e.g. `favorites.db (FMD2)`. */
+  sources: string[];
+  warnings: string[];
 }
 
-export function favoritesExportList() {
-  return invoke<string>("favorites_export_list");
-}
-
-export function favoritesExportToPath(path: string) {
-  return invoke("favorites_export_to_path", { path });
-}
-
-export function favoritesImportFromPath(path: string) {
-  return invoke<number>("favorites_import_from_path", { path });
+/**
+ * Import favorites + downloaded marks from an FMD2 or FMD3 install.
+ * `path` is a `userdata` folder or a single `.db`; the flavor comes from the schema.
+ */
+export function favoritesImportDb(path: string) {
+  return invoke<DbImportReport>("favorites_import_db", { path });
 }
 
 export function openExternal(path: string, args?: string) {

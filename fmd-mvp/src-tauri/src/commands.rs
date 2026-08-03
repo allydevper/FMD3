@@ -1412,145 +1412,24 @@ pub fn download_chapters(
     queue_add(app, state, req)
 }
 
-#[derive(Debug, Deserialize)]
-struct FavoriteImportItem {
-    module_id: String,
-    module_name: String,
-    root_url: String,
-    manga_url: String,
-    title: String,
-    #[serde(default)]
-    seen_chapter_links: String,
-    #[serde(default)]
-    last_chapter_link: String,
-    #[serde(default)]
-    last_chapter_name: String,
-    #[serde(default)]
-    chapter_count: i64,
-    #[serde(default)]
-    date_added: String,
-    #[serde(default)]
-    last_checked_at: String,
-}
-
-#[derive(Debug, Serialize)]
-struct FavoriteExportItem {
-    module_id: String,
-    module_name: String,
-    root_url: String,
-    manga_url: String,
-    title: String,
-    seen_chapter_links: String,
-    last_chapter_link: String,
-    last_chapter_name: String,
-    chapter_count: i64,
-    enabled: bool,
-    status: String,
-    date_added: String,
-    last_checked_at: String,
-}
-
-fn favorites_to_export_json(db: &db::Db) -> Result<String, String> {
-    let list = db::favorites_list(db)?;
-    let items: Vec<FavoriteExportItem> = list
-        .into_iter()
-        .map(|f| FavoriteExportItem {
-            module_id: f.module_id,
-            module_name: f.module_name,
-            root_url: f.root_url,
-            manga_url: f.manga_url,
-            title: f.title,
-            seen_chapter_links: f.seen_chapter_links,
-            last_chapter_link: f.last_chapter_link,
-            last_chapter_name: f.last_chapter_name,
-            chapter_count: f.chapter_count,
-            enabled: f.enabled,
-            status: f.status,
-            date_added: f.date_added,
-            last_checked_at: f.last_checked_at,
-        })
-        .collect();
-    serde_json::to_string_pretty(&items).map_err(|e| e.to_string())
-}
-
-fn favorites_import_json(db: &db::Db, json: &str) -> Result<usize, String> {
-    let items: Vec<FavoriteImportItem> =
-        serde_json::from_str(json).map_err(|e| format!("JSON inválido: {e}"))?;
-    let mut n = 0usize;
-    for item in items {
-        // Only an explicit list counts as "seen". `last_chapter_link` is a tip
-        // cursor, and seeding it here would mark one chapter as read while
-        // every other one resurfaces as new on the first check.
-        let seen = item.seen_chapter_links.trim().to_string();
-        match db::favorites_add(
-            db,
-            &item.module_id,
-            &item.module_name,
-            &item.root_url,
-            &item.manga_url,
-            &item.title,
-            &item.last_chapter_link,
-            &item.last_chapter_name,
-            item.chapter_count,
-            &seen,
-        ) {
-            Ok(_) => {
-                let _ = db::favorites_restore_timestamps(
-                    db,
-                    &item.manga_url,
-                    &item.date_added,
-                    &item.last_checked_at,
-                );
-                n += 1;
-            }
-            Err(e) => eprintln!("favorites_import skip {}: {e}", item.manga_url),
-        }
-    }
-    Ok(n)
-}
-
+/// Import favorites + downloaded-chapter marks from an FMD2 **or** FMD3 install.
+/// `path` is a `userdata` folder or a single `.db`; the flavor comes from the schema.
 #[tauri::command]
-pub fn favorites_import_list(
-    state: State<QueueState>,
-    json: String,
-) -> Result<usize, String> {
-    favorites_import_json(&state.favorites, &json)
-}
-
-#[tauri::command]
-pub fn favorites_export_list(state: State<QueueState>) -> Result<String, String> {
-    favorites_to_export_json(&state.favorites)
-}
-
-#[tauri::command]
-pub fn favorites_export_to_path(
+pub fn favorites_import_db(
     state: State<QueueState>,
     path: String,
-) -> Result<(), String> {
-    let json = favorites_to_export_json(&state.favorites)?;
+) -> Result<crate::db_import::DbImportReport, String> {
     let path = path.trim();
     if path.is_empty() {
         return Err("ruta vacía".into());
     }
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-    }
-    std::fs::write(path, json).map_err(|e| format!("no se pudo guardar: {e}"))
-}
-
-#[tauri::command]
-pub fn favorites_import_from_path(
-    state: State<QueueState>,
-    path: String,
-) -> Result<usize, String> {
-    let path = path.trim();
-    if path.is_empty() {
-        return Err("ruta vacía".into());
-    }
-    let json = std::fs::read_to_string(path).map_err(|e| format!("no se pudo leer: {e}"))?;
-    favorites_import_json(&state.favorites, &json)
+    // Deliberately not gated on `settings_keys::module_disabled`: a disabled module
+    // must not block recovering the favorite. The report warns about them instead.
+    crate::db_import::run(
+        &state.favorites,
+        &state.downloaded,
+        std::path::Path::new(path),
+    )
 }
 
 #[tauri::command]

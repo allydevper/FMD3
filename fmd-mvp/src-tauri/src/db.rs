@@ -788,6 +788,59 @@ pub fn favorites_restore_timestamps(
     Ok(())
 }
 
+/// Restore `last_updated_at` / `status` from an import. Kept separate from
+/// `favorites_restore_timestamps` so that signature and its tests stay put.
+/// Empty values are ignored, so a partial source never clears what is stored.
+pub fn favorites_restore_meta(
+    db: &Db,
+    manga_url: &str,
+    last_updated_at: &str,
+    status: &str,
+) -> Result<(), String> {
+    let ts = last_updated_at.trim();
+    let status = status.trim();
+    if ts.is_empty() && status.is_empty() {
+        return Ok(());
+    }
+    let conn = db.lock();
+    conn.execute(
+        "UPDATE favorites SET
+            last_updated_at = CASE WHEN ?2 != '' THEN ?2 ELSE last_updated_at END,
+            status = CASE WHEN ?3 != '' THEN ?3 ELSE status END
+         WHERE manga_url = ?1",
+        params![manga_url, ts, status],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// `(module_id, canonical path key) -> stored manga_url`, so an importer can reuse
+/// the URL form already in the table instead of inserting a near-duplicate row
+/// (`manga_url` is UNIQUE, and trailing-slash / host variants would slip past it).
+pub fn favorites_path_key_index(
+    db: &Db,
+) -> Result<std::collections::HashMap<(String, String), String>, String> {
+    let conn = db.lock();
+    let mut stmt = conn
+        .prepare("SELECT module_id, manga_url FROM favorites")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (module_id, manga_url) = row.map_err(|e| e.to_string())?;
+        let key = link_mark_key(&manga_url);
+        if key.is_empty() {
+            continue;
+        }
+        out.insert((module_id, key), manga_url);
+    }
+    Ok(out)
+}
+
 pub fn favorites_get(db: &Db, id: i64) -> Result<Favorite, String> {
     let conn = db.lock();
     conn.query_row(
@@ -1312,6 +1365,53 @@ pub fn mark_keys(links: &[String]) -> Vec<String> {
     links.iter().map(|l| link_mark_key(l)).collect()
 }
 
+/// Canonical key for a single link, for importers that build rows in bulk.
+/// Thin wrapper so `link_mark_key` stays the one definition.
+pub fn mark_key(link: &str) -> String {
+    link_mark_key(link)
+}
+
+/// Bulk-insert already-canonical `(module_id, manga_url, chapter_link, downloaded_at)`
+/// marks in one transaction. An empty `downloaded_at` is stamped with import time —
+/// FMD2 records none, while an FMD3 source carries the original worth preserving.
+/// Returns how many rows were actually new.
+///
+/// Deliberately *not* `downloaded_chapters_mark` in a loop: that one scans every
+/// row of the module on each call to drop legacy non-canonical variants, which is
+/// O(n²) and unusable for the hundreds of thousands of rows an import carries.
+/// Callers must pass keys from `mark_key`, so there is nothing legacy to clean.
+pub fn downloaded_chapters_import_bulk(
+    db: &Db,
+    rows: &[(String, String, String, String)],
+) -> Result<usize, String> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let fallback = now();
+    let mut conn = db.lock();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut inserted = 0usize;
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT OR IGNORE INTO downloaded_chapters(module_id, manga_url, chapter_link, downloaded_at)
+                 VALUES(?1,?2,?3,?4)",
+            )
+            .map_err(|e| e.to_string())?;
+        for (mid, mu, link, at) in rows {
+            if mid.is_empty() || mu.is_empty() || link.is_empty() {
+                continue;
+            }
+            let at = if at.trim().is_empty() { &fallback } else { at };
+            inserted += stmt
+                .execute(params![mid, mu, link, at])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(inserted)
+}
+
 /// Record a chapter as downloaded. Write-once: a chapter that is already marked
 /// is left untouched (re-downloading must not move `downloaded_at`).
 pub fn downloaded_chapters_mark(
@@ -1661,6 +1761,104 @@ mod tests {
         let conn = Connection::open_in_memory().expect("open");
         conn.execute_batch(FAVORITES_DDL).expect("fav ddl");
         Arc::new(Mutex::new(conn))
+    }
+
+    #[test]
+    fn import_bulk_is_idempotent_and_matches_mark() {
+        let db = test_db();
+        let rows: Vec<(String, String, String, String)> = ["/manga/foo/c-1", "/manga/foo/c-2"]
+            .iter()
+            .map(|c| (MID.to_string(), mark_key(MU), mark_key(c), String::new()))
+            .collect();
+
+        assert_eq!(downloaded_chapters_import_bulk(&db, &rows).unwrap(), 2);
+        // Second pass inserts nothing and must not duplicate.
+        assert_eq!(downloaded_chapters_import_bulk(&db, &rows).unwrap(), 0);
+        assert_eq!(
+            downloaded_chapters_list(&db, MID, MU).unwrap(),
+            vec!["/manga/foo/c-1", "/manga/foo/c-2"]
+        );
+
+        // A later single mark of an already-imported chapter is a no-op too.
+        downloaded_chapters_mark(&db, MID, MU, "/manga/foo/C-1/").unwrap();
+        assert_eq!(downloaded_chapters_list(&db, MID, MU).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn import_bulk_skips_empty_tuples() {
+        let db = test_db();
+        let rows = vec![
+            (String::new(), mark_key(MU), mark_key("/manga/foo/c-1"), String::new()),
+            (MID.to_string(), String::new(), mark_key("/manga/foo/c-2"), String::new()),
+            (MID.to_string(), mark_key(MU), String::new(), String::new()),
+        ];
+        assert_eq!(downloaded_chapters_import_bulk(&db, &rows).unwrap(), 0);
+        assert!(downloaded_chapters_list(&db, MID, MU).unwrap().is_empty());
+    }
+
+    #[test]
+    fn import_bulk_preserves_a_supplied_timestamp() {
+        let db = test_db();
+        let at = "2026-01-02T03:04:05+00:00";
+        let rows = vec![(
+            MID.to_string(),
+            mark_key(MU),
+            mark_key("/manga/foo/c-1"),
+            at.to_string(),
+        )];
+        downloaded_chapters_import_bulk(&db, &rows).unwrap();
+
+        let stored: String = db
+            .lock()
+            .query_row(
+                "SELECT downloaded_at FROM downloaded_chapters",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, at);
+    }
+
+    #[test]
+    fn path_key_index_maps_url_variants_to_the_stored_form() {
+        let favs = test_favorites_db();
+        favorites_add(
+            &favs,
+            MID,
+            "Mod",
+            "https://site.com",
+            "https://site.com/manga/foo/",
+            "Foo",
+            "",
+            "",
+            0,
+            "",
+        )
+        .unwrap();
+
+        let idx = favorites_path_key_index(&favs).unwrap();
+        // A relative FMD2 link canonicalizes onto the stored absolute URL, so an
+        // import reuses that row instead of inserting a near-duplicate.
+        let key = (MID.to_string(), mark_key("/manga/foo/"));
+        assert_eq!(idx.get(&key).map(String::as_str), Some("https://site.com/manga/foo/"));
+        assert!(idx.get(&(MID.to_string(), mark_key("/manga/bar"))).is_none());
+    }
+
+    #[test]
+    fn restore_meta_ignores_empty_values() {
+        let favs = test_favorites_db();
+        let url = "https://site.com/manga/foo";
+        favorites_add(&favs, MID, "Mod", "https://site.com", url, "Foo", "", "", 0, "").unwrap();
+
+        favorites_restore_meta(&favs, url, "2026-07-28T22:33:25.429+00:00", "1").unwrap();
+        let fav = &favorites_list(&favs).unwrap()[0];
+        assert_eq!(fav.last_updated_at, "2026-07-28T22:33:25.429+00:00");
+        assert_eq!(fav.status, "1");
+
+        favorites_restore_meta(&favs, url, "", "").unwrap();
+        let fav = &favorites_list(&favs).unwrap()[0];
+        assert_eq!(fav.last_updated_at, "2026-07-28T22:33:25.429+00:00");
+        assert_eq!(fav.status, "1");
     }
 
     #[test]
