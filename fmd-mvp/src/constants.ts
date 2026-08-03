@@ -273,6 +273,7 @@ export const SK = {
   UI_GOTO_FAV: "ui.goto_favorites_on_add",
   UI_NEW_DAYS: "ui.new_days",
   UI_DL_LEFT_BAR: "ui.dl_show_left_bar",
+  UI_FAV_LEFT_BAR: "ui.fav_show_left_bar",
   /** Last selected website/source in the Info «Fuente» combo. */
   UI_SELECTED_MODULE: "ui.selected_module",
   APP_THEME: "app.theme",

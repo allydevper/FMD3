@@ -12,6 +12,8 @@ import {
   loadFavoritesCached,
 } from "../utils/favoritesCache";
 import { maybeFillHost } from "../utils/url";
+import { SK } from "../constants";
+import { settingBool } from "../utils/settings";
 
 function pendingLinkCount(text: string | undefined): number {
   if (!text) return 0;
@@ -114,6 +116,21 @@ export function FavoritesView() {
   const [sortKey, setSortKey] = useState<SortKey>("new");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      // true = panel visible (expanded), same convention as downloads.
+      setTreeCollapsed(!(await settingBool(SK.UI_FAV_LEFT_BAR, true)));
+    })();
+  }, [activeNav]);
+
+  function toggleTreeCollapsed() {
+    setTreeCollapsed((c) => {
+      const next = !c;
+      void api.settingsSet(SK.UI_FAV_LEFT_BAR, next ? "0" : "1");
+      return next;
+    });
+  }
 
   const queryInputRef = useRef<HTMLInputElement>(null);
   const favScanning = catalogJob?.mode === "favorites";
@@ -881,7 +898,7 @@ export function FavoritesView() {
               className="fav-tree-notch"
               title={treeCollapsed ? "Mostrar filtros" : "Ocultar filtros"}
               aria-expanded={!treeCollapsed}
-              onClick={() => setTreeCollapsed((v) => !v)}
+              onClick={toggleTreeCollapsed}
             >
               <Icon
                 ico={ICO.chevron}
