@@ -196,6 +196,10 @@ pub fn db_path_for_test() -> std::path::PathBuf {
     db::db_path()
 }
 
+pub fn default_download_dir_for_test() -> std::path::PathBuf {
+    db::default_download_dir()
+}
+
 pub fn favorites_list_for_test(db: &db::Db) -> Result<Vec<db::Favorite>, String> {
     db::favorites_list(db)
 }

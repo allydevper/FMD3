@@ -20,10 +20,19 @@ pub fn exe_dir() -> PathBuf {
 ///
 /// The subfolder matters — the exe directory itself is also the install
 /// directory, so downloading straight into it leaves every manga folder loose
-/// among the app's own files. Nothing creates this eagerly; the download path
-/// runs `create_dir_all` on the chapter directory, which creates it on first use.
+/// among the app's own files.
+///
+/// Creates the folder on the way out. The download path would create it anyway,
+/// but the settings UI shows this string before anything is downloaded, and a
+/// "Guardar en" pointing at a folder that does not exist yet is confusing — the
+/// file picker cannot even open there. A failure here is not fatal: the path is
+/// still returned, and `create_dir_all` on the chapter directory retries later.
 pub fn default_download_dir() -> PathBuf {
-    exe_dir().join("downloads")
+    let dir = exe_dir().join("downloads");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("no se pudo crear {}: {e}", dir.display());
+    }
+    dir
 }
 
 /// Saved `default_output_dir`, or the default download folder when unset.
