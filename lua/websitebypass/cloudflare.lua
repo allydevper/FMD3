@@ -349,6 +349,15 @@ function _m.bypass(self, METHOD, URL)
 	local result = 0
 	local maxretry = 3
 
+	-- IUAM (Duktape) can't solve Turnstile; when there's no webdriver to fall
+	-- back to, retrying it is pure waste (~3s) and HTTP.Reset() below would
+	-- also wipe a Referer the WebView bypass still needs. Detected once, up
+	-- front, from the response that got us into this bypass in the first
+	-- place — same markers Rust's `looks_like_cloudflare` uses for Turnstile.
+	local body0 = HTTP.Document.ToString() or ''
+	local modern_challenge = body0:find('Just a moment', 1, true) ~= nil
+		or body0:find('challenge-platform', 1, true) ~= nil
+
 	load_config()
 
 	webdriver_exe = 'python'
@@ -382,7 +391,12 @@ function _m.bypass(self, METHOD, URL)
 			testing_url(METHOD, URL)
 		end
 		if result ~= 0 or HTTP.Terminated then
-			break 
+			break
+		end
+		if modern_challenge and not use_webdriver then
+			-- No FlareSolverr configured to try instead; stop here and let the
+			-- caller fall through to the embedded WebView.
+			break
 		end
 		-- delay before retry
 		self:sleepOrBreak(1000)

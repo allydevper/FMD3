@@ -172,7 +172,7 @@ function GetPageNumber()
 			print('KuManga: la ficha del capítulo sigue en Cloudflare')
 			return information_not_found
 		end
-		local cid = landing:match('/manga/leer/(%d+)') or landing:match('/manga/c/(%d+)')
+		local cid = landing:match('href="/*manga/leer/(%d+)"') or landing:match('href="/*manga/c/(%d+)"')
 		if not cid then
 			print('KuManga: no hay /manga/leer/ en la ficha (' .. tostring(#landing) .. ' bytes)')
 			return information_not_found

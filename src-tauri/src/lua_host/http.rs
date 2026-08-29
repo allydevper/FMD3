@@ -8,8 +8,22 @@ use std::sync::Arc;
 
 // Match FMD2 UserAgentDefault (httpsendthread.pas)
 const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
-const CF_SESSION_KEY: &str = "http_cf_session";
+/// Cloudflare sessions are stored one-per-host (`{PREFIX}::{host}`), never in a
+/// single global key: cookies/UA obtained for one site must never be applied
+/// to a client talking to a different site.
+const CF_SESSION_KEY_PREFIX: &str = "http_cf_session";
 const MAX_REDIRECTS: u32 = 5;
+
+fn cf_session_key(host: &str) -> String {
+    format!("{CF_SESSION_KEY_PREFIX}::{host}")
+}
+
+/// Lowercased host of `url`, used to scope the Cloudflare session cache/store.
+pub(crate) fn host_of(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+}
 
 /// The inner state is built lazily: constructing it opens several SQLite
 /// connections and a `reqwest` client (own tokio thread + TLS init). The
@@ -44,6 +58,10 @@ struct HttpInner {
     /// client field then holds a degraded fallback, so requests must refuse to
     /// run rather than silently bypass the user's proxy.
     init_err: Option<String>,
+    /// Host this client's cached Cloudflare session (cookies/UA) is scoped to.
+    /// `None` until the first request picks one; never applied to a different
+    /// host (see `ensure_cf_session_loaded`).
+    host: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -178,21 +196,21 @@ fn merge_set_cookie(cookies: &mut HashMap<String, String>, headers: &reqwest::he
     }
 }
 
-fn load_cf_session() -> CfSession {
-    crate::db::settings_get_direct(CF_SESSION_KEY)
+fn load_cf_session(host: &str) -> CfSession {
+    crate::db::settings_get_direct(&cf_session_key(host))
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
-fn save_cf_session(ua: &str, cookies: &HashMap<String, String>) {
+fn save_cf_session(host: &str, ua: &str, cookies: &HashMap<String, String>) {
     let session = CfSession {
         user_agent: ua.to_string(),
         cookies: cookies.clone(),
     };
     if let Ok(json) = serde_json::to_string(&session) {
-        let _ = crate::db::settings_set_direct(CF_SESSION_KEY, &json);
+        let _ = crate::db::settings_set_direct(&cf_session_key(host), &json);
     }
 }
 
@@ -231,29 +249,22 @@ fn header_get_ci(map: &HashMap<String, String>, key: &str) -> Option<String> {
 }
 
 impl HttpInner {
-    /// Reads settings from SQLite and builds the reqwest client. Only called on
-    /// first actual use of an `HttpClient`.
+    /// Builds the reqwest client. Only called on first actual use of an
+    /// `HttpClient`. No Cloudflare session is preloaded here: which host this
+    /// client will talk to isn't known yet, and loading a session requires a
+    /// host to scope it to (see `ensure_cf_session_loaded`, called per-request
+    /// once the target URL is known).
     fn build() -> Self {
-        let saved = load_cf_session();
-        let ua = ua_for_client(&saved);
+        let ua = configured_user_agent("");
         let (client, init_err) = build_client_or_default(&ua);
-        let mut headers = default_browser_headers();
-        let cookies = saved.cookies;
-        if !cookies.is_empty() {
-            let cookie_hdr = cookies
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("; ");
-            headers.insert("Cookie".into(), cookie_hdr);
-        }
+        let headers = default_browser_headers();
         HttpInner {
             client,
             document: Vec::new(),
             pending_body: String::new(),
             headers,
             response_headers: HashMap::new(),
-            cookies,
+            cookies: HashMap::new(),
             result_code: 0,
             user_agent: ua,
             mime_type: String::new(),
@@ -263,6 +274,7 @@ impl HttpInner {
             enabled_cookies: true,
             bypass_depth: 0,
             init_err,
+            host: None,
         }
     }
 }
@@ -332,6 +344,7 @@ impl HttpClient {
             // settings, so it is fresher than the parent's. Carrying the
             // parent's error over would reject requests on a working client.
             init_err,
+            host: inner.host.clone(),
         };
         let cell = once_cell::sync::OnceCell::new();
         let _ = cell.set(Mutex::new(forked));
@@ -375,13 +388,17 @@ impl HttpClient {
             );
             return false;
         }
+        let Some(host) = host_of(url) else {
+            super::lua_log::emit_lua_log("Cloudflare: URL inválida, no se puede aislar la sesión por dominio.");
+            return false;
+        };
         super::lua_log::emit_lua_log(&format!("Cloudflare: abriendo navegador para {url}"));
         let http = self.clone();
         let Some(session) = super::cf_webview::solve_for_html(url, move || http.is_terminated()) else {
             return false;
         };
-        self.apply_webview_session(&session.user_agent, &session.cookies);
-        self.persist_session();
+        self.apply_webview_session(&host, &session.user_agent, &session.cookies);
+        self.persist_session(&host);
         if session.html.trim().is_empty() {
             super::lua_log::emit_lua_log("Cloudflare: el navegador no devolvió HTML.");
             return false;
@@ -402,17 +419,49 @@ impl HttpClient {
         }
     }
 
-    pub fn persist_session(&self) {
+    /// Persists this client's Cloudflare session (cookies/UA) under `host`.
+    /// Never call with a host other than the one the current cookies were
+    /// obtained for.
+    pub fn persist_session(&self, host: &str) {
         let inner = self.inner().lock();
-        save_cf_session(&inner.user_agent, &inner.cookies);
+        save_cf_session(host, &inner.user_agent, &inner.cookies);
     }
 
     pub fn is_terminated(&self) -> bool {
         self.inner().lock().terminated
     }
 
+    /// Loads the Cloudflare session cached for `host` into this client, if it
+    /// isn't already bound to a host. Called once per client, from the first
+    /// request that knows the target host — `HttpInner::build()` runs before
+    /// any URL is known, so it cannot scope a session by itself.
+    ///
+    /// A client already bound to a different host keeps its current
+    /// cookies/UA rather than switching: in practice one `HttpClient` talks to
+    /// one site for its whole lifetime (one per Lua module), so this only
+    /// guards against ever mixing a stale/foreign session in.
+    fn ensure_cf_session_loaded(&self, host: &str) {
+        let mut inner = self.inner().lock();
+        if inner.host.is_some() {
+            return;
+        }
+        let saved = load_cf_session(host);
+        let ua = ua_for_client(&saved);
+        if ua != inner.user_agent {
+            inner.user_agent = ua;
+            Self::rebuild_client_locked(&mut inner);
+        }
+        if !saved.cookies.is_empty() {
+            inner.cookies = saved.cookies;
+            Self::sync_cookie_header(&mut inner);
+        }
+        inner.host = Some(host.to_string());
+    }
+
     /// Merge cookies + UA from the embedded WebView (cf_clearance must match that UA).
-    pub fn apply_webview_session(&self, ua: &str, cookies: &HashMap<String, String>) {
+    /// `host` must be the host the session was solved for; it binds this
+    /// client to that host so a later request never re-scopes it elsewhere.
+    pub fn apply_webview_session(&self, host: &str, ua: &str, cookies: &HashMap<String, String>) {
         let mut inner = self.inner().lock();
         let ua = ua.trim();
         if !ua.is_empty() && ua != inner.user_agent {
@@ -427,6 +476,7 @@ impl HttpClient {
                 inner.cookies.insert(k.clone(), v.clone());
             }
         }
+        inner.host = Some(host.to_string());
         Self::sync_cookie_header(&mut inner);
     }
 
@@ -501,6 +551,9 @@ impl HttpClient {
     }
 
     fn send_raw(&self, method: &str, url: &str, body: Option<&str>) -> bool {
+        if let Some(host) = host_of(url) {
+            self.ensure_cf_session_loaded(&host);
+        }
         let (mut headers, mime, follow, max_retries) = {
             let inner = self.inner().lock();
             if inner.terminated {
@@ -667,19 +720,22 @@ impl HttpClient {
 
         super::lua_log::emit_lua_log(&format!("Cloudflare: bloqueo en {url}"));
 
-        let modern_challenge = {
-            let inner = self.inner().lock();
-            let body = String::from_utf8_lossy(&inner.document);
-            body.contains("Just a moment") || body.contains("challenge-platform")
-        };
-        // IUAM Lua cannot solve Turnstile; skipping it avoids 3s of failed retries
-        // and HTTP.Reset() wiping a usable Referer before the WebView runs.
-        if !modern_challenge {
-            if super::website_bypass_host::try_bypass(self, method, url) {
-                self.persist_session();
-                if !self.response_looks_like_cloudflare() {
-                    return;
-                }
+        let host = host_of(url);
+        if host.is_none() {
+            super::lua_log::emit_lua_log(
+                "Cloudflare: URL inválida, no se puede aislar la sesión por dominio.",
+            );
+        }
+
+        // `cloudflare.lua` itself decides whether to skip IUAM (it can't solve
+        // Turnstile) while still trying FlareSolverr when configured — see
+        // `_m.bypass`. Always call in so that path stays reachable.
+        if super::website_bypass_host::try_bypass(self, method, url) {
+            if let Some(h) = host.as_deref() {
+                self.persist_session(h);
+            }
+            if !self.response_looks_like_cloudflare() {
+                return;
             }
         }
 
@@ -697,8 +753,10 @@ impl HttpClient {
         }) else {
             return;
         };
-        self.apply_webview_session(&session.user_agent, &session.cookies);
-        self.persist_session();
+        if let Some(h) = host.as_deref() {
+            self.apply_webview_session(h, &session.user_agent, &session.cookies);
+            self.persist_session(h);
+        }
         if session.html.trim().is_empty() {
             self.begin_bypass();
             let _ = self.request_nobypass(method, url);
@@ -712,8 +770,10 @@ impl HttpClient {
                     return;
                 };
                 session = again;
-                self.apply_webview_session(&session.user_agent, &session.cookies);
-                self.persist_session();
+                if let Some(h) = host.as_deref() {
+                    self.apply_webview_session(h, &session.user_agent, &session.cookies);
+                    self.persist_session(h);
+                }
             }
         }
         if !session.html.trim().is_empty() {

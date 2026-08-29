@@ -288,7 +288,9 @@ pub fn try_bypass(http: &HttpClient, method: &str, url: &str) -> bool {
 
     let ok = result.unwrap_or(false);
     if ok {
-        http.persist_session();
+        if let Some(host) = super::http::host_of(url) {
+            http.persist_session(&host);
+        }
     }
     ok
 }

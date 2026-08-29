@@ -91,6 +91,9 @@ pub struct WebviewCfSession {
     pub user_agent: String,
     pub cookies: HashMap<String, String>,
     pub html: String,
+    /// Host this session (cookies/UA) was solved for. Cached sessions must
+    /// never be handed out for a different host — see `solve()`.
+    pub host: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -123,10 +126,18 @@ pub fn solve(url: &str, abort: impl Fn() -> bool) -> Option<WebviewCfSession> {
     if abort() {
         return None;
     }
+    let host = Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()));
     {
         let last = LAST_OK.lock();
         if let Some(prev) = last.as_ref() {
-            if prev.at.elapsed() < REUSE_TTL && has_clearance(&prev.session.cookies) {
+            // Cookies (incl. cf_clearance) from one site must never be handed
+            // to a caller resolving Cloudflare for a different site.
+            if prev.at.elapsed() < REUSE_TTL
+                && prev.session.host == host
+                && has_clearance(&prev.session.cookies)
+            {
                 lua_log::emit_lua_log("Cloudflare: reutilizando cookies de la sesión anterior.");
                 return Some(prev.session.clone());
             }
@@ -252,14 +263,30 @@ fn hide_window(window: &WebviewWindow) {
     let _ = window.hide();
 }
 
-fn dump_timeout_html(window: &WebviewWindow) {
-    if let Some(html) = webview_html(window) {
-        let dump = std::env::temp_dir().join("fmd3-kumanga-leer.html");
-        let _ = std::fs::write(&dump, &html);
+/// Writes `html` to the app's debug folder, only when logging is enabled.
+/// Never dumps unconditionally: this HTML can carry signed/tokenized CDN URLs.
+fn dump_html(html: &str, reason: &str) {
+    if !crate::settings_keys::bool_setting(crate::settings_keys::LOG_ENABLED, false) {
+        return;
+    }
+    let dir = crate::db::db_path().join("debug");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("cf-webview-{reason}.html"));
+    if std::fs::write(&path, html).is_ok() {
         lua_log::emit_lua_log(&format!(
-            "Cloudflare: HTML del lector guardado ({} bytes).",
+            "Cloudflare: HTML guardado en {} ({} bytes).",
+            path.display(),
             html.len()
         ));
+    }
+}
+
+fn dump_timeout_html(window: &WebviewWindow) {
+    if let Some(html) = webview_html(window) {
+        // `dump_html` already logs when it actually writes (log.enabled).
+        dump_html(&html, "timeout");
     }
 }
 
@@ -276,21 +303,26 @@ fn try_collect(window: &WebviewWindow, url: &Url) -> Option<WebviewCfSession> {
     if let Some(n) = probe.count {
         lua_log::emit_lua_log(&format!("Cloudflare: {n} páginas en el lector."));
     }
-    let cookies = window
-        .cookies_for_url(url.clone())
-        .ok()
-        .or_else(|| window.cookies().ok())
-        .unwrap_or_default();
-    let map = cookie_map(&cookies);
+    let host = url.host_str()?.to_ascii_lowercase();
+    let (raw_cookies, via_fallback) = match window.cookies_for_url(url.clone()).ok() {
+        Some(c) => (c, false),
+        None => (window.cookies().unwrap_or_default(), true),
+    };
+    if via_fallback {
+        lua_log::emit_lua_log(
+            "Cloudflare: cookies_for_url falló; filtrando por dominio antes de usarlas.",
+        );
+    }
+    let map = cookie_map(&raw_cookies, &host);
     let ua = webview_user_agent(window).unwrap_or_default();
     let page = webview_html(window).unwrap_or_default();
     let html = format!("<script>{script}</script>\n{page}");
-    let dump = std::env::temp_dir().join("fmd3-kumanga-leer.html");
-    let _ = std::fs::write(&dump, &html);
+    dump_html(&html, "leer");
     Some(WebviewCfSession {
         user_agent: ua,
         cookies: map,
         html,
+        host: Some(host),
     })
 }
 
@@ -378,12 +410,24 @@ fn eval_json(window: &WebviewWindow, js: &str, timeout: Duration) -> Option<Stri
     rx.recv_timeout(timeout).ok()
 }
 
-fn cookie_map(cookies: &[tauri::webview::Cookie<'static>]) -> HashMap<String, String> {
+/// Keeps only cookies scoped to `host` (or the target host as a subdomain of
+/// the cookie's domain). Cookies with no `Domain` attribute are host-only and
+/// kept as-is — the best signal available, notably from the `window.cookies()`
+/// fallback in `try_collect`, which otherwise returns the WebView's whole
+/// cookie jar (shared across sites navigated in the same `cf-bypass` window).
+fn cookie_map(cookies: &[tauri::webview::Cookie<'static>], host: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for c in cookies {
         let name = c.name().trim();
         if name.is_empty() {
             continue;
+        }
+        if let Some(domain) = c.domain() {
+            let domain = domain.trim_start_matches('.').to_ascii_lowercase();
+            let matches = host == domain || host.ends_with(&format!(".{domain}"));
+            if !matches {
+                continue;
+            }
         }
         map.insert(name.to_string(), c.value().to_string());
     }
