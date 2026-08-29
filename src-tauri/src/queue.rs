@@ -230,14 +230,18 @@ pub fn start_worker(app: AppHandle) {
                         Ok(Ok(())) => {}
                         Ok(Err(e)) => {
                             let max = crate::settings_keys::task_retries();
+                            let line = format!("✗ {}: {e}", item.chapter_name);
                             crate::log_file::append(&format!("ERR {}: {e}", item.chapter_name));
+                            crate::lua_host::emit_lua_log(&line);
                             let _ = db::queue_fail_or_retry(&db_item, item_id, &e, max);
                             maybe_notify_group_done(&app_item, &item);
                         }
                         Err(e) => {
                             let max = crate::settings_keys::task_retries();
                             let msg = format!("tarea cancelada: {e}");
+                            let line = format!("✗ {}: {msg}", item.chapter_name);
                             crate::log_file::append(&format!("ERR {}: {msg}", item.chapter_name));
+                            crate::lua_host::emit_lua_log(&line);
                             let _ = db::queue_fail_or_retry(&db_item, item_id, &msg, max);
                             maybe_notify_group_done(&app_item, &item);
                         }

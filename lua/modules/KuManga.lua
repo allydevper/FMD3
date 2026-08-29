@@ -100,43 +100,126 @@ function GetNameAndLink()
 	return no_error
 end
 
+local function isCloudflareBody(body)
+	if body == nil or body == '' then return false end
+	local b = body:lower()
+	return b:find('just a moment', 1, true)
+		or b:find('challenge-platform', 1, true)
+		or b:find('cf-browser-verification', 1, true)
+end
+
+-- img.php?src=HEX hides the real CDN URL; downloading the proxy saves HTML as .jpg.
+local readerUrl = ''
+
+local function unwrapImgUrl(i)
+	i = (i or ''):gsub('\\', '')
+	if i == '' then return i end
+	local hex = i:match('img%.php%?src=([0-9A-Fa-f]+)')
+	if hex then
+		local ok, decoded = pcall(function()
+			return require('fmd.crypto').HexToStr(hex)
+		end)
+		if ok and type(decoded) == 'string' and decoded:match('^https?://') then
+			return decoded
+		end
+	end
+	return i
+end
+
+local function addPageLink(base, i)
+	i = unwrapImgUrl(i)
+	if i == nil or i == '' then return false end
+	if i:match('^https?://') or i:match('^//') then
+		TASK.PageLinks.Add(i)
+	else
+		TASK.PageLinks.Add(base .. i)
+	end
+	return true
+end
+
+local function addPagesFrom(body)
+	if isCloudflareBody(body) then return false end
+	local base = body:match('<base href="(.-)"')
+	if base == nil or base == '' then base = MODULE.RootURL end
+	local s = body:match('var%s+pUrl%s*=%s*(.-);')
+		or body:match('let%s+pUrl%s*=%s*(.-);')
+		or body:match('pUrl%s*=%s*(.-);')
+	local n = 0
+	local src = s or body
+	for i in src:gmatch('"imgURL"%s*:%s*"(.-)"') do
+		if addPageLink(base, i) then n = n + 1 end
+	end
+	if n == 0 then
+		for i in src:gmatch('imgURL":"(.-)"') do
+			if addPageLink(base, i) then n = n + 1 end
+		end
+	end
+	return n > 0
+end
+
 -- Get the page count for the current chapter.
 function GetPageNumber()
 	local u = MaybeFillHost(MODULE.RootURL, URL)
 
-	-- Landing page /manga/{id}/capitulo/{n} → reader /manga/leer/{chapterId}
 	if u:find('/capitulo/') then
-		if not HTTP.GET(u) then return net_problem end
+		print('KuManga: GET ficha ' .. u)
+		if not HTTP.GET(u) then
+			print('KuManga: GET ficha falló (red)')
+			return net_problem
+		end
 		local landing = HTTP.Document.ToString() or ''
-		local leer = landing:match('href="(/*manga/leer/%d+)"')
-		if not leer then
-			local cid = landing:match('/manga/c/(%d+)')
-			if cid then leer = '/manga/leer/' .. cid end
+		if isCloudflareBody(landing) then
+			print('KuManga: la ficha del capítulo sigue en Cloudflare')
+			return information_not_found
 		end
-		if not leer then return net_problem end
-		u = MaybeFillHost(MODULE.RootURL, leer)
-	else
-		u = u:gsub('/c/', '/leer/')
+		local cid = landing:match('/manga/leer/(%d+)') or landing:match('/manga/c/(%d+)')
+		if not cid then
+			print('KuManga: no hay /manga/leer/ en la ficha (' .. tostring(#landing) .. ' bytes)')
+			return information_not_found
+		end
+		HTTP.Headers.Values['Referer'] = ' ' .. u
+		u = MaybeFillHost(MODULE.RootURL, '/manga/leer/' .. cid)
 	end
+	readerUrl = u
 
-	if not HTTP.GET(u) then return net_problem end
-
+	print('KuManga: GET lector ' .. u)
+	if not HTTP.GET(u) then
+		print('KuManga: GET lector falló (red)')
+		return net_problem
+	end
 	local body = HTTP.Document.ToString() or ''
-	local base = body:match('<base href="(.-)"')
-	if base == nil or base == '' then base = MODULE.RootURL end
-	local s = body:match('var%s+pUrl%s*=%s*(.-);')
-	if s then
-		for i in s:gmatch('imgURL":"(.-)"') do
-			TASK.PageLinks.Add(base .. i:gsub('\\',''))
+	print('KuManga title: ' .. (body:match('<title>(.-)</title>') or '?'))
+	if addPagesFrom(body) then
+		print('KuManga: páginas OK (' .. TASK.PageLinks[0] .. ')')
+		return no_error
+	end
+	print('KuManga: sin pUrl en reqwest (' .. tostring(#body) .. ' bytes); abriendo navegador interno')
+	if HTTP.CaptureInBrowser(u) then
+		body = HTTP.Document.ToString() or ''
+		print('KuManga title(nav): ' .. (body:match('<title>(.-)</title>') or '?') .. ' (' .. tostring(#body) .. ' bytes)')
+		if addPagesFrom(body) then
+			print('KuManga: páginas OK (navegador) (' .. TASK.PageLinks[0] .. ')')
+			return no_error
 		end
 	end
-	return no_error
+	if isCloudflareBody(body) then
+		print('KuManga: el lector sigue en Cloudflare, sin pUrl')
+	else
+		print('KuManga: sin pUrl en el lector (' .. tostring(#body) .. ' bytes)')
+	end
+	return information_not_found
 end
 
 function BeforeDownloadImage()
-	if TASK.CurrentDownloadChapterPtr < TASK.ChapterLinks.Count then
-		HTTP.Headers.Values['Referer'] = ' ' .. MaybeFillHost(MODULE.RootURL, TASK.ChapterLinks[TASK.CurrentDownloadChapterPtr])
+	local ref = readerUrl
+	if ref == nil or ref == '' then
+		if TASK.CurrentDownloadChapterPtr < TASK.ChapterLinks.Count then
+			ref = MaybeFillHost(MODULE.RootURL, TASK.ChapterLinks[TASK.CurrentDownloadChapterPtr])
+		else
+			ref = MODULE.RootURL
+		end
 	end
+	HTTP.Headers.Values['Referer'] = ' ' .. ref
 	return true
 end
 

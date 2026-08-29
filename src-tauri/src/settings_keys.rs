@@ -5,6 +5,8 @@ pub const HTTP_USER_AGENT: &str = "http.user_agent";
 pub const HTTP_PROXY: &str = "http.proxy";
 pub const HTTP_TIMEOUT_SECS: &str = "http.timeout_secs";
 pub const HTTP_RETRIES: &str = "http.retries";
+/// Open the embedded WebView when a response looks like Cloudflare (opt-in).
+pub const HTTP_CF_INTERNAL_BROWSER: &str = "http.cf_internal_browser";
 
 pub const DOWNLOAD_MAX_THREADS: &str = "download.max_threads";
 pub const DOWNLOAD_PACK_FORMAT: &str = "download.pack_format";
@@ -155,6 +157,12 @@ pub fn http_timeout_secs() -> u64 {
 
 pub fn http_retries() -> usize {
     usize_setting(HTTP_RETRIES, 5)
+}
+
+/// When false (default), Cloudflare pages are left for retries / WARP / VPN.
+/// Modules can still call `HTTP.CaptureInBrowser` (KuManga reader).
+pub fn cf_internal_browser() -> bool {
+    bool_setting(HTTP_CF_INTERNAL_BROWSER, false)
 }
 
 pub fn pack_format() -> String {

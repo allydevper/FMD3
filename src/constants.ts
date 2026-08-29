@@ -232,6 +232,7 @@ export const GENRE_TRI_CYCLE: GenreTri[] = ["ignore", "include", "exclude"];
 export const SK = {
   UA: "http.user_agent",
   PROXY: "http.proxy",
+  CF_INTERNAL_BROWSER: "http.cf_internal_browser",
   TIMEOUT: "http.timeout_secs",
   HTTP_RETRIES: "http.retries",
   MAX_THREADS: "download.max_threads",

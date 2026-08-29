@@ -247,6 +247,7 @@ pub fn run() {
                     tauri_plugin_window_state::StateFlags::all()
                         - tauri_plugin_window_state::StateFlags::VISIBLE,
                 )
+                .with_denylist(&["cf-bypass"])
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
@@ -263,6 +264,7 @@ pub fn run() {
         })
         .setup(|app| {
             crate::lua_host::set_lua_log_app(app.handle().clone());
+            crate::lua_host::set_cf_webview_app(app.handle().clone());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 crate::lua_host::ensure_loaded();
@@ -285,6 +287,11 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Cloudflare's helper window is not the app: closing it must not
+            // ask to quit, vacuum DBs, or hide the main UI to the tray.
+            if window.label() != "main" {
+                return;
+            }
             // FMD2 parity: minimize → tray (not close → tray).
             if matches!(event, tauri::WindowEvent::Resized(_)) {
                 let to_tray = crate::settings_keys::bool_setting(

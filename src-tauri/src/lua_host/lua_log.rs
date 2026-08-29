@@ -19,6 +19,8 @@ pub fn emit_lua_log(msg: &str) {
     crate::log_file::append(line);
     if let Some(app) = APP.get() {
         let _ = app.emit("lua-log", line);
+        // External CF helper webview has no Tauri JS; still deliver to the UI.
+        let _ = app.emit_to("main", "lua-log", line);
     }
 }
 

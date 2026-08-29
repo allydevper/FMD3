@@ -135,6 +135,20 @@ fn configured_user_agent(session_ua: &str) -> String {
     }
 }
 
+/// `cf_clearance` is bound to the WebView UA that obtained it. Prefer that over
+/// the settings UA, or Cloudflare rejects the cookie immediately.
+fn ua_for_client(saved: &CfSession) -> String {
+    let has_cf = saved
+        .cookies
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("cf_clearance"));
+    if has_cf && !saved.user_agent.trim().is_empty() {
+        saved.user_agent.clone()
+    } else {
+        configured_user_agent(&saved.user_agent)
+    }
+}
+
 fn resolve_redirect(base: &str, location: &str) -> String {
     let loc = location.trim();
     if loc.is_empty() {
@@ -200,19 +214,14 @@ fn default_browser_headers() -> HashMap<String, String> {
 fn looks_like_cloudflare(status: u16, server: &str, body: &str) -> bool {
     let server = server.to_lowercase();
     let cf_server = server.contains("cloudflare") || server.contains("ddos-guard");
-    if matches!(status, 403 | 429 | 503) && cf_server {
+    if matches!(status, 403 | 429 | 503) && (cf_server || body.is_empty()) {
         return true;
     }
-    // Some edges return 200 + challenge HTML
-    if cf_server
-        && (body.contains("challenge-platform")
-            || body.contains("Just a moment")
-            || body.contains("cf-browser-verification")
-            || body.contains("__cf_chl"))
-    {
-        return true;
-    }
-    false
+    body.contains("challenge-platform")
+        || body.contains("Just a moment")
+        || body.contains("cf-browser-verification")
+        || body.contains("__cf_chl")
+        || body.contains("cdn-cgi/challenge")
 }
 
 fn header_get_ci(map: &HashMap<String, String>, key: &str) -> Option<String> {
@@ -226,7 +235,7 @@ impl HttpInner {
     /// first actual use of an `HttpClient`.
     fn build() -> Self {
         let saved = load_cf_session();
-        let ua = configured_user_agent(&saved.user_agent);
+        let ua = ua_for_client(&saved);
         let (client, init_err) = build_client_or_default(&ua);
         let mut headers = default_browser_headers();
         let cookies = saved.cookies;
@@ -282,6 +291,15 @@ impl HttpClient {
 
     pub fn set_document_bytes(&self, bytes: Vec<u8>) {
         self.inner().lock().document = bytes;
+    }
+
+    fn adopt_webview_document(&self, html: &str) {
+        let mut inner = self.inner().lock();
+        inner.document = html.as_bytes().to_vec();
+        inner.result_code = 200;
+        inner
+            .response_headers
+            .insert("Server".into(), "webview".into());
     }
 
     pub fn set_terminated(&self, terminated: bool) {
@@ -349,6 +367,24 @@ impl HttpClient {
         self.get(url)
     }
 
+    /// Load `url` in the embedded WebView, wait for the challenge, copy HTML into Document.
+    pub fn capture_in_browser(&self, url: &str) -> bool {
+        super::lua_log::emit_lua_log(&format!("Cloudflare: abriendo navegador para {url}"));
+        let http = self.clone();
+        let Some(session) = super::cf_webview::solve_for_html(url, move || http.is_terminated()) else {
+            return false;
+        };
+        self.apply_webview_session(&session.user_agent, &session.cookies);
+        self.persist_session();
+        if session.html.trim().is_empty() {
+            super::lua_log::emit_lua_log("Cloudflare: el navegador no devolvió HTML.");
+            return false;
+        }
+        self.adopt_webview_document(&session.html);
+        super::cf_webview::remember(session);
+        true
+    }
+
     pub fn begin_bypass(&self) {
         self.inner().lock().bypass_depth += 1;
     }
@@ -363,6 +399,37 @@ impl HttpClient {
     pub fn persist_session(&self) {
         let inner = self.inner().lock();
         save_cf_session(&inner.user_agent, &inner.cookies);
+    }
+
+    pub fn is_terminated(&self) -> bool {
+        self.inner().lock().terminated
+    }
+
+    /// Merge cookies + UA from the embedded WebView (cf_clearance must match that UA).
+    pub fn apply_webview_session(&self, ua: &str, cookies: &HashMap<String, String>) {
+        let mut inner = self.inner().lock();
+        let ua = ua.trim();
+        if !ua.is_empty() && ua != inner.user_agent {
+            inner.user_agent = ua.to_string();
+            Self::rebuild_client_locked(&mut inner);
+        }
+        if !ua.is_empty() {
+            inner.headers.insert("User-Agent".into(), ua.to_string());
+        }
+        for (k, v) in cookies {
+            if !k.is_empty() {
+                inner.cookies.insert(k.clone(), v.clone());
+            }
+        }
+        Self::sync_cookie_header(&mut inner);
+    }
+
+    fn response_looks_like_cloudflare(&self) -> bool {
+        let inner = self.inner().lock();
+        let server = header_get_ci(&inner.response_headers, "Server").unwrap_or_default();
+        let lossy = String::from_utf8_lossy(&inner.document);
+        let preview: String = lossy.chars().take(8000).collect();
+        looks_like_cloudflare(inner.result_code, &server, &preview)
     }
 
     fn rebuild_client_locked(inner: &mut HttpInner) {
@@ -588,20 +655,71 @@ impl HttpClient {
         if depth > 0 {
             return;
         }
-        let (status, server, body_preview) = {
-            let inner = self.inner().lock();
-            let server = header_get_ci(&inner.response_headers, "Server").unwrap_or_default();
-            let lossy = String::from_utf8_lossy(&inner.document);
-            let preview: String = lossy.chars().take(800).collect();
-            (inner.result_code, server, preview)
-        };
-        if !looks_like_cloudflare(status, &server, &body_preview) {
+        if !self.response_looks_like_cloudflare() {
             return;
         }
 
-        if super::website_bypass_host::try_bypass(self, method, url) {
-            self.persist_session();
+        super::lua_log::emit_lua_log(&format!("Cloudflare: bloqueo en {url}"));
+
+        let modern_challenge = {
+            let inner = self.inner().lock();
+            let body = String::from_utf8_lossy(&inner.document);
+            body.contains("Just a moment") || body.contains("challenge-platform")
+        };
+        // IUAM Lua cannot solve Turnstile; skipping it avoids 3s of failed retries
+        // and HTTP.Reset() wiping a usable Referer before the WebView runs.
+        if !modern_challenge {
+            if super::website_bypass_host::try_bypass(self, method, url) {
+                self.persist_session();
+                if !self.response_looks_like_cloudflare() {
+                    return;
+                }
+            }
         }
+
+        if !crate::settings_keys::cf_internal_browser() {
+            super::lua_log::emit_lua_log(
+                "Cloudflare: navegador interno desactivado (WARP/VPN + reintento, o actívalo en Red).",
+            );
+            return;
+        }
+
+        let http = self.clone();
+        let Some(mut session) = super::cf_webview::solve(url, {
+            let http = http.clone();
+            move || http.is_terminated()
+        }) else {
+            return;
+        };
+        self.apply_webview_session(&session.user_agent, &session.cookies);
+        self.persist_session();
+        if session.html.trim().is_empty() {
+            self.begin_bypass();
+            let _ = self.request_nobypass(method, url);
+            self.end_bypass();
+            if self.response_looks_like_cloudflare() {
+                super::cf_webview::forget();
+                let Some(again) = super::cf_webview::solve(url, {
+                    let http = http.clone();
+                    move || http.is_terminated()
+                }) else {
+                    return;
+                };
+                session = again;
+                self.apply_webview_session(&session.user_agent, &session.cookies);
+                self.persist_session();
+            }
+        }
+        if !session.html.trim().is_empty() {
+            self.adopt_webview_document(&session.html);
+        } else if self.response_looks_like_cloudflare() {
+            super::cf_webview::forget();
+            super::lua_log::emit_lua_log(
+                "Cloudflare: no se pudo leer la página ni siquiera en el navegador interno.",
+            );
+            return;
+        }
+        super::cf_webview::remember(session);
     }
 
     fn get(&self, url: &str) -> bool {
@@ -783,6 +901,11 @@ impl UserData for HttpClient {
                 "GET" => {
                     let this = this.clone();
                     let f = lua.create_function(move |_, url: String| Ok(this.get(&url)))?;
+                    Ok(Value::Function(f))
+                }
+                "CaptureInBrowser" => {
+                    let this = this.clone();
+                    let f = lua.create_function(move |_, url: String| Ok(this.capture_in_browser(&url)))?;
                     Ok(Value::Function(f))
                 }
                 "POST" => {

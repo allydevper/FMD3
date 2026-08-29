@@ -269,7 +269,15 @@ function _m.applyCookies(self, parsedJSON, url, http_m)
 end
 
 function load_config()
-	local config_json = [[lua\websitebypass\websitebypass_config.json]]
+	local config_json = rawget(_G, 'FMD_WEBSITEBYPASS_CONFIG')
+	if type(config_json) ~= 'string' or config_json == '' then
+		config_json = [[lua\websitebypass\websitebypass_config.json]]
+	end
+	use_webdriver = false
+	webdriver_testing = false
+	webdriver_debug = false
+	webdriver_ip = "localhost"
+	webdriver_port = 8191
 	if not (fileExist(config_json)) then
 		local config_table = {
 		use_webdriver = false,
@@ -284,8 +292,10 @@ function load_config()
 		local file_w, err_w = io.open(config_json, "w")
 
 		if not file_w then
-			-- Handle the error if the file couldn't be opened
-			LOGGER.SendError("Error opening file: " .. tostring(err_w))
+			-- Relative cwd paths often miss; keep in-memory defaults.
+			if type(err_w) == 'string' and not err_w:find('No such file', 1, true) then
+				LOGGER.SendError("Error opening file: " .. tostring(err_w))
+			end
 		else
 			-- 3. Write the JSON string to the file
 			file_w:write(json_string)
@@ -299,8 +309,9 @@ function load_config()
 	local file, err = io.open(config_json, "r")
 
 	if not file then
-		-- Handle the error if the file couldn't be opened
-		LOGGER.SendError("Error opening file: " .. tostring(err))
+		if type(err) == 'string' and not err:find('No such file', 1, true) then
+			LOGGER.SendError("Error opening file: " .. tostring(err))
+		end
 	else
 		-- Read the entire file content into a string
 		local content = file:read("*a")

@@ -134,6 +134,7 @@ function formatMb(bytes: number): string {
 
 type OptionsFormState = {
   ua: string;
+  cfInternalBrowser: boolean;
   useProxy: boolean;
   proxyType: string;
   proxyHost: string;
@@ -199,6 +200,7 @@ type OptionsFormState = {
 
 const DEFAULT_SETTINGS: OptionsFormState = {
   ua: DEFAULT_USER_AGENT,
+  cfInternalBrowser: false,
   useProxy: false,
   proxyType: "http",
   proxyHost: "",
@@ -913,6 +915,7 @@ export function OptionsView() {
     const savedUa = ((await get(SK.UA)) ?? "").trim();
     const proxyRaw = (await get(SK.PROXY)) ?? "";
     const parsed = parseProxyUrl(proxyRaw);
+    const cfInternalBrowser = parseB(await get(SK.CF_INTERNAL_BROWSER), false);
     const packRaw = (await get(SK.PACK)) ?? "none";
     const packOk = (PACK_FORMATS as readonly string[]).includes(packRaw) ? packRaw : "none";
     const enabledRaw = (await get(SK.MODULES_ENABLED)) ?? "[]";
@@ -1023,6 +1026,7 @@ export function OptionsView() {
     setS((prev) => ({
       ...prev,
       ua: savedUa || DEFAULT_USER_AGENT,
+      cfInternalBrowser,
       useProxy: Boolean(proxyRaw.trim()),
       proxyType: parsed.type,
       proxyHost: parsed.host,
@@ -1098,6 +1102,7 @@ export function OptionsView() {
     try {
     const uaVal = s.ua.trim();
     await api.settingsSet(SK.UA, uaVal === DEFAULT_USER_AGENT ? "" : uaVal);
+    await api.settingsSet(SK.CF_INTERNAL_BROWSER, boolStr(s.cfInternalBrowser));
     await api.settingsSet(
       SK.PROXY,
       s.useProxy ? composeProxyUrl(s.proxyType, s.proxyHost, s.proxyPort, s.proxyUser, s.proxyPass) : "",
@@ -2277,6 +2282,13 @@ export function OptionsView() {
                           onChange={(e) => update("ua", e.target.value)}
                         />
                       </OptRow>
+                      <SwitchRow
+                        id="set-cf-internal-browser"
+                        label="Navegador interno (Cloudflare)"
+                        desc="Alternativa si WARP/VPN y los reintentos no bastan. KuManga puede abrirlo solo para el lector."
+                        checked={s.cfInternalBrowser}
+                        onChange={(v) => update("cfInternalBrowser", v)}
+                      />
                       <SwitchRow
                         id="set-use-proxy"
                         label="Usar proxy"

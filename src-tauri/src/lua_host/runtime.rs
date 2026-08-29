@@ -1515,6 +1515,17 @@ fn resolve_module_path(
     Ok((meta, path))
 }
 
+fn is_html_payload(bytes: &[u8]) -> bool {
+    let n = bytes.len().min(512);
+    let t = String::from_utf8_lossy(&bytes[..n])
+        .trim_start()
+        .to_ascii_lowercase();
+    t.starts_with("<!doctype")
+        || t.starts_with("<html")
+        || t.starts_with("<head")
+        || t.contains("just a moment")
+}
+
 fn ext_from_bytes(bytes: &[u8]) -> &'static str {
     if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
         return "jpg";
@@ -2143,6 +2154,13 @@ pub fn download_chapter(
                                 .push(format!("Página {}: vacía", i + 1));
                             continue;
                         }
+                        if is_html_payload(&raw) {
+                            errors_m.lock().push(format!(
+                                "Página {}: el servidor devolvió HTML en vez de imagen",
+                                i + 1
+                            ));
+                            continue;
+                        }
                         let (bytes, conv_ext) = maybe_convert_image_bytes(&raw);
                         let ext = conv_ext
                             .map(|s| s.to_string())
@@ -2302,6 +2320,12 @@ pub fn download_chapter(
         } else {
             let raw = http.document_bytes();
             if raw.is_empty() {
+                None
+            } else if is_html_payload(&raw) {
+                errors.push(format!(
+                    "Página {}: el servidor devolvió HTML en vez de imagen",
+                    i + 1
+                ));
                 None
             } else {
                 let (bytes, conv_ext) = maybe_convert_image_bytes(&raw);

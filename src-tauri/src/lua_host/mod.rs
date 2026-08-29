@@ -1,3 +1,4 @@
+mod cf_webview;
 mod crypto;
 mod duktape_js;
 mod fmd_env;
@@ -14,7 +15,9 @@ mod runtime;
 mod strings;
 mod website_bypass_host;
 
+pub use cf_webview::set_app_handle as set_cf_webview_app;
 pub use lua_log::set_app_handle as set_lua_log_app;
+pub use lua_log::emit_lua_log;
 pub use modules_updater::{
     apply as modules_update_apply, check as modules_update_check,
     dismiss as modules_update_dismiss, generations as modules_generations,
