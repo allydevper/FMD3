@@ -369,6 +369,12 @@ impl HttpClient {
 
     /// Load `url` in the embedded WebView, wait for the challenge, copy HTML into Document.
     pub fn capture_in_browser(&self, url: &str) -> bool {
+        if !crate::settings_keys::cf_internal_browser() {
+            super::lua_log::emit_lua_log(
+                "Cloudflare: navegador interno desactivado (actívalo en Red).",
+            );
+            return false;
+        }
         super::lua_log::emit_lua_log(&format!("Cloudflare: abriendo navegador para {url}"));
         let http = self.clone();
         let Some(session) = super::cf_webview::solve_for_html(url, move || http.is_terminated()) else {

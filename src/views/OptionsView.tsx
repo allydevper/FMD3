@@ -2285,7 +2285,7 @@ export function OptionsView() {
                       <SwitchRow
                         id="set-cf-internal-browser"
                         label="Navegador interno (Cloudflare)"
-                        desc="Alternativa si WARP/VPN y los reintentos no bastan. KuManga puede abrirlo solo para el lector."
+                        desc="Alternativa si WARP/VPN no basta. No combinar con Usar proxy."
                         checked={s.cfInternalBrowser}
                         onChange={(v) => update("cfInternalBrowser", v)}
                       />

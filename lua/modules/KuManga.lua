@@ -201,6 +201,8 @@ function GetPageNumber()
 			print('KuManga: páginas OK (navegador) (' .. TASK.PageLinks[0] .. ')')
 			return no_error
 		end
+	else
+		print('KuManga: navegador interno no disponible (actívalo en Red)')
 	end
 	if isCloudflareBody(body) then
 		print('KuManga: el lector sigue en Cloudflare, sin pUrl')

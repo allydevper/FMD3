@@ -159,8 +159,8 @@ pub fn http_retries() -> usize {
     usize_setting(HTTP_RETRIES, 5)
 }
 
-/// When false (default), Cloudflare pages are left for retries / WARP / VPN.
-/// Modules can still call `HTTP.CaptureInBrowser` (KuManga reader).
+/// When false (default), no embedded WebView: Cloudflare is left for retries / WARP,
+/// and `HTTP.CaptureInBrowser` (KuManga reader) is also skipped.
 pub fn cf_internal_browser() -> bool {
     bool_setting(HTTP_CF_INTERNAL_BROWSER, false)
 }
