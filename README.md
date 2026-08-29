@@ -43,7 +43,9 @@ publicada**, así que por ahora la única forma de usarlo es compilarlo.
 - **Empaquetado** — capítulos a ZIP/CBZ y afines, con renombrado configurable.
 - **Módulos Lua** — 669 sitios (611 archivos), sincronizados desde GitHub por el
   updater interno.
-- **Antibot** — websitebypass de FMD2 + Duktape embebido.
+- **Antibot** — websitebypass de FMD2 + Duktape. Para varios bloqueos de
+  Cloudflare conviene [Cloudflare One](https://one.one.one.one/) (WARP) y
+  reintentar; en Ajustes → Red hay un navegador interno opcional si no basta.
 - **Self-updater** — comprobación de versión vía GitHub Releases.
 
 ## Instalación
@@ -100,9 +102,15 @@ El HTTP lo hace `reqwest` desde Rust, no el WebView.
 
 ### Cloudflare (paridad con FMD2)
 
+Para algunos bloqueos se recomienda instalar el cliente
+[Cloudflare One](https://one.one.one.one/) (WARP) y reintentar la descarga.
+
 FMD2 **no** usa FlareSolverr por defecto: solo intenta el challenge IUAM legacy
 con Duktape. Los sitios con Cloudflare moderno (Turnstile, `challenge-platform`)
 fallan igual en FMD2 y aquí si no hay cookies válidas.
+
+En Ajustes → Red, **Navegador interno (Cloudflare)** abre una ventana de la app
+cuando WARP no alcanza (incluye el lector de KuManga). No lo combines con proxy.
 
 Opcional, como FMD2 con webdriver: pon `"use_webdriver": true` en
 `lua/websitebypass/websitebypass_config.json` y ten Python + FlareSolverr

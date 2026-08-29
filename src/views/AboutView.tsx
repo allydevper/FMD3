@@ -175,6 +175,8 @@ export function AboutView() {
               <p className="about-lead">
                 Cliente de escritorio (Rust + Tauri + React) que reutiliza los módulos Lua de Free Manga
                 Downloader 2: misma sesión HTTP, websitebypass/Duktape, y catálogo/favoritos/cola en SQLite.
+                Para algunos bloqueos de Cloudflare se recomienda instalar Cloudflare One (WARP) y reintentar;
+                en Opciones → Red hay un navegador interno si eso no basta.
               </p>
 
               <h2 className="about-h">Desarrollador FMD3</h2>

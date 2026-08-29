@@ -2285,7 +2285,7 @@ export function OptionsView() {
                       <SwitchRow
                         id="set-cf-internal-browser"
                         label="Navegador interno (Cloudflare)"
-                        desc="Alternativa si WARP/VPN no basta. No combinar con Usar proxy."
+                        desc="Para algunos bloqueos conviene instalar Cloudflare One (WARP) y reintentar. Activa esto si no basta. No combinar con Usar proxy."
                         checked={s.cfInternalBrowser}
                         onChange={(v) => update("cfInternalBrowser", v)}
                       />
