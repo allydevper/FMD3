@@ -1237,7 +1237,7 @@ pub fn get_info(manga_url: &str, module_id: Option<&str>) -> Result<MangaInfoRes
         return Err("URL vacía.".into());
     }
     // Soft check: only reject clearly non-URLs (plain text). Host/module
-    // resolution stays with resolve_for_url / selected module (FMD2-like).
+    // resolution: listing id if it owns the URL, otherwise match by host.
     if !manga_url.contains("://") && !manga_url.starts_with("//") {
         let looks_like_host = manga_url
             .split(['/', '?', '#'])

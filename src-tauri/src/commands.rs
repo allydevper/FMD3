@@ -6,7 +6,7 @@ use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
     get_info, modules_backup_clear, modules_backup_size, modules_generations, modules_history,
     modules_list, modules_match_url, modules_needs_first_sync, modules_pin_file,
-    modules_pin_keep_local, modules_refresh,
+    modules_pin_keep_local, modules_refresh, requested_module_owns_url,
     modules_repo_list, modules_reset_cursor, modules_revert_file, modules_undo_generation,
     modules_unpin_file,
     modules_update_apply, modules_update_check, modules_update_dismiss,
@@ -30,7 +30,8 @@ pub async fn get_manga_info(
     }
     let module_id = module_id.filter(|s| !s.is_empty());
     if let Some(id) = module_id.as_deref() {
-        if crate::settings_keys::module_disabled(id) {
+        // Don't block a pasted URL from another host (listing was KuManga, URL is manga-oni).
+        if crate::settings_keys::module_disabled(id) && requested_module_owns_url(id, &url) {
             return Err(
                 "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
             );
@@ -1081,30 +1082,31 @@ fn delete_chapter_files_for_item(
     let chapter_fs = crate::paths::fs_path(&chapter_dir);
 
     // Packed archive next to the chapter folder (…/cap.zip when folder was …/cap).
+    // Also try the pre-fix `with_extension` name so `049.2` → `049.pdf` still deletes.
     for ext in ["zip", "cbz", "pdf", "epub"] {
-        let archive = chapter_dir.with_extension(ext);
-        let archive_fs = crate::paths::fs_path(&archive);
-        if !archive_fs.is_file() {
-            continue;
+        for archive in crate::pack::chapter_archive_candidates(&chapter_dir, ext) {
+            let archive_fs = crate::paths::fs_path(&archive);
+            if !archive_fs.is_file() {
+                continue;
+            }
+            let cmp = path_under_base(&archive, &base_canon, &base)?;
+            std::fs::remove_file(&archive_fs)
+                .map_err(|e| format!("no se pudo borrar {}: {e}", cmp.display()))?;
+            deleted.push(cmp.display().to_string());
         }
-        let cmp = path_under_base(&archive, &base_canon, &base)?;
-        std::fs::remove_file(&archive_fs)
-            .map_err(|e| format!("no se pudo borrar {}: {e}", cmp.display()))?;
-        deleted.push(cmp.display().to_string());
     }
     // Leftover atomic-write temps (…/cap.zip.partial).
     for ext in ["zip", "cbz", "pdf", "epub"] {
-        let partial = std::path::PathBuf::from(format!(
-            "{}.partial",
-            chapter_dir.with_extension(ext).display()
-        ));
-        let partial_fs = crate::paths::fs_path(&partial);
-        if !partial_fs.is_file() {
-            continue;
-        }
-        if let Ok(cmp) = path_under_base(&partial, &base_canon, &base) {
-            let _ = std::fs::remove_file(&partial_fs);
-            deleted.push(cmp.display().to_string());
+        for archive in crate::pack::chapter_archive_candidates(&chapter_dir, ext) {
+            let partial = std::path::PathBuf::from(format!("{}.partial", archive.display()));
+            let partial_fs = crate::paths::fs_path(&partial);
+            if !partial_fs.is_file() {
+                continue;
+            }
+            if let Ok(cmp) = path_under_base(&partial, &base_canon, &base) {
+                let _ = std::fs::remove_file(&partial_fs);
+                deleted.push(cmp.display().to_string());
+            }
         }
     }
 
@@ -1188,8 +1190,7 @@ pub fn queue_open_item_content(state: State<QueueState>, id: i64) -> Result<Stri
 /// Prefer packed archive next to `chapter_path`, else the chapter directory itself.
 fn resolve_chapter_content_path(chapter_path: &std::path::Path) -> Option<std::path::PathBuf> {
     for ext in ["pdf", "cbz", "zip", "epub"] {
-        let archive = chapter_path.with_extension(ext);
-        if crate::paths::fs_path(&archive).is_file() {
+        if let Some(archive) = crate::pack::find_chapter_archive(chapter_path, ext) {
             return Some(archive);
         }
     }
@@ -1336,8 +1337,7 @@ fn pick_open_folder(
         return chapter_path.to_path_buf();
     }
     for ext in ["pdf", "cbz", "zip", "epub"] {
-        let archive = chapter_path.with_extension(ext);
-        if crate::paths::fs_path(&archive).is_file() {
+        if let Some(archive) = crate::pack::find_chapter_archive(chapter_path, ext) {
             return archive
                 .parent()
                 .map(|p| p.to_path_buf())

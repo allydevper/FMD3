@@ -88,6 +88,26 @@ export function mangaPathKey(link: string): string {
   }
 }
 
+/** Hostname without `www.`, or empty if `url` has no host (relative path). */
+export function urlHostKey(url: string): string {
+  const s = (url || "").trim();
+  if (!s) return "";
+  try {
+    const href = s.startsWith("//") ? `https:${s}` : s;
+    const u = new URL(href);
+    return (u.hostname || "").replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/** True when an absolute URL belongs to this module's RootURL host. */
+export function urlMatchesModuleHost(url: string, rootUrl: string): boolean {
+  const a = urlHostKey(url);
+  const b = urlHostKey(rootUrl);
+  return !!a && !!b && a === b;
+}
+
 /** True if two manga URLs/links likely point to the same title. */
 export function urlsReferToSameManga(a: string, b: string): boolean {
   if (!a || !b) return false;

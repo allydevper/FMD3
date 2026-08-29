@@ -36,7 +36,14 @@ import {
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
 import { confirmIfEnabled } from "../../utils/settings";
-import { catalogLinkKey, maybeFillHost, normalizeMangaUrl, resolveCover, urlsReferToSameManga } from "../../utils/url";
+import {
+  catalogLinkKey,
+  maybeFillHost,
+  normalizeMangaUrl,
+  resolveCover,
+  urlMatchesModuleHost,
+  urlsReferToSameManga,
+} from "../../utils/url";
 import {
   favoritesCacheRemove,
   favoritesCacheUpsert,
@@ -1573,36 +1580,57 @@ export function InfoView() {
       return;
     }
 
-    // Match URL host for the fetch; prefer catalog row module when all-sites filter.
+    // Host of the pasted URL wins over the catalog listing (KuManga + manga-oni.com
+    // must run MangaOni.lua). Catalog clicks pass preferredModuleId on the same host.
     let moduleId = preferredModuleId || selectedModuleId || undefined;
+    const abortWrongModule = (msg: string) => {
+      log(msg, "err");
+      setManga(null);
+      setChaptersLoading(false);
+      setMangaLoadingUrl("");
+      setLoadBtnDisabled(false);
+    };
     try {
       const matches = await api.modulesMatchUrl(url);
       if (seq !== mangaLoadSeqRef.current) return;
       const enabled = matches.filter((m) => enabledModuleIds.has(m.id));
-      if (enabled.length > 0) {
+      const pool = enabled.length > 0 ? enabled : matches;
+      if (pool.length > 0) {
         const preferred =
-          enabled.find((m) => m.id === preferredModuleId) ??
-          enabled.find((m) => m.id === selectedModuleId) ??
-          enabled[0];
+          pool.find((m) => m.id === preferredModuleId) ??
+          pool.find((m) => m.id === selectedModuleId) ??
+          pool[0];
+        if (moduleId && preferred.id !== moduleId) {
+          log(`Sitio detectado por la URL: ${preferred.name}`, "");
+        }
         moduleId = preferred.id;
-      } else if (!moduleId) {
-        log(
-          "Ningún módulo coincide con esta URL. Activa el sitio en Ajustes → Sitios Web o elige uno en el selector.",
-          "err",
-        );
-        setManga(null);
-        setChaptersLoading(false);
-        setMangaLoadingUrl("");
-        setLoadBtnDisabled(false);
-        return;
-      } else if (matches.length > 0) {
-        log(
-          "El módulo de esta URL no está activado en Ajustes → Sitios Web; se usa el seleccionado.",
-          "",
-        );
+      } else {
+        const listed =
+          (moduleId ? modules.find((m) => m.id === moduleId) : undefined) ||
+          currentModule;
+        const keepListed =
+          !!moduleId &&
+          !!listed?.root_url &&
+          urlMatchesModuleHost(url, listed.root_url);
+        if (!keepListed) {
+          abortWrongModule(
+            "Ningún módulo coincide con esta URL. Activa el sitio en Ajustes → Sitios Web o elige uno en el selector.",
+          );
+          return;
+        }
       }
     } catch {
-      /* keep selected module */
+      const listed =
+        (moduleId ? modules.find((m) => m.id === moduleId) : undefined) ||
+        currentModule;
+      if (
+        moduleId &&
+        listed?.root_url &&
+        !urlMatchesModuleHost(url, listed.root_url)
+      ) {
+        // Backend rematch by host; don't pin the listing's Lua.
+        moduleId = undefined;
+      }
     }
 
     if (moduleId) {

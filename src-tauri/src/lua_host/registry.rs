@@ -235,20 +235,24 @@ pub fn match_url(url: &str) -> Vec<ModuleMeta> {
     }))
 }
 
-/// Resolve module: explicit id, else unique auto-match, else error/ambiguous.
-pub fn resolve_for_url(url: &str, module_id: Option<&str>) -> Result<ModuleMeta, String> {
-    if let Some(id) = module_id.filter(|s| !s.is_empty()) {
-        return find_by_id(id).ok_or_else(|| format!("Módulo desconocido: {id}"));
+/// True when `url` is absolute and its host is not the module's RootURL host.
+/// Relative links (`/manga/foo`) never conflict — those belong to the listing.
+fn url_host_conflicts(url: &str, root_url: &str) -> bool {
+    match (host_from_url(url), host_from_url(root_url)) {
+        (Some(url_host), Some(root_host)) => url_host != root_host,
+        _ => false,
     }
-    let hits = match_url(url);
-    match hits.len() {
-        1 => Ok(hits.into_iter().next().unwrap()),
-        0 => Err(
+}
+
+fn pick_unique_host_hit(hits: &[ModuleMeta]) -> Result<ModuleMeta, String> {
+    match hits {
+        [one] => Ok(one.clone()),
+        [] => Err(
             "Ningún módulo coincide con esta URL. Elige un módulo en el selector.".into(),
         ),
-        _ => Err(format!(
+        many => Err(format!(
             "Varios módulos coinciden ({}). Elige uno en el selector.",
-            hits.iter()
+            many.iter()
                 .map(|m| m.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -256,6 +260,141 @@ pub fn resolve_for_url(url: &str, module_id: Option<&str>) -> Result<ModuleMeta,
     }
 }
 
+/// Pick a module for `url`.
+///
+/// An explicit `requested` wins only when the URL is relative or shares that
+/// module's host (catalog click / favorite). A pasted URL from another site
+/// ignores the listing module and uses host matches instead.
+pub(crate) fn choose_module_for_url(
+    url: &str,
+    requested: Option<&ModuleMeta>,
+    hits: &[ModuleMeta],
+) -> Result<ModuleMeta, String> {
+    if let Some(meta) = requested {
+        if !url_host_conflicts(url, &meta.root_url) {
+            return Ok(meta.clone());
+        }
+        // Wrong listing (e.g. KuManga selected, manga-oni.com pasted).
+        return match hits {
+            [one] => Ok(one.clone()),
+            [] => Err(
+                "Ningún módulo coincide con esta URL. Elige un módulo en el selector.".into(),
+            ),
+            many => Ok(many[0].clone()),
+        };
+    }
+    pick_unique_host_hit(hits)
+}
+
+/// True when `module_id` should stay pinned for this URL (relative or same host).
+pub fn requested_module_owns_url(module_id: &str, url: &str) -> bool {
+    find_by_id(module_id)
+        .is_some_and(|m| !url_host_conflicts(url, &m.root_url))
+}
+
+/// Resolve module: explicit id if it owns the URL, else host auto-match.
+pub fn resolve_for_url(url: &str, module_id: Option<&str>) -> Result<ModuleMeta, String> {
+    let hits = match_url(url);
+    if let Some(id) = module_id.filter(|s| !s.is_empty()) {
+        let meta = find_by_id(id).ok_or_else(|| format!("Módulo desconocido: {id}"))?;
+        return choose_module_for_url(url, Some(&meta), &hits);
+    }
+    choose_module_for_url(url, None, &hits)
+}
+
 pub fn ensure_loaded() {
     let _ = list();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(id: &str, name: &str, root: &str) -> ModuleMeta {
+        ModuleMeta {
+            id: id.into(),
+            name: name.into(),
+            root_url: root.into(),
+            category: "Spanish".into(),
+            file_path: format!("{id}.lua"),
+            mtime: None,
+            on_get_info: String::new(),
+            on_get_page_number: String::new(),
+            on_get_image_url: String::new(),
+            on_before_download_image: String::new(),
+            on_task_start: String::new(),
+            on_download_image: String::new(),
+            on_save_image: String::new(),
+            on_after_image_saved: String::new(),
+            dynamic_page_link: false,
+        }
+    }
+
+    #[test]
+    fn paste_other_host_uses_matched_lua_not_listing() {
+        let ku = meta("ku", "KuManga", "https://www.kumanga.com");
+        let oni = meta("oni", "MangaOni", "https://manga-oni.com");
+        let picked = choose_module_for_url(
+            "https://manga-oni.com/manhua/foo/",
+            Some(&ku),
+            std::slice::from_ref(&oni),
+        )
+        .expect("rematch");
+        assert_eq!(picked.id, "oni");
+    }
+
+    #[test]
+    fn catalog_relative_link_keeps_listing_module() {
+        let ku = meta("ku", "KuManga", "https://www.kumanga.com");
+        let picked = choose_module_for_url("/manga/foo/", Some(&ku), &[])
+            .expect("relative");
+        assert_eq!(picked.id, "ku");
+    }
+
+    #[test]
+    fn same_host_keeps_requested_even_if_other_hits() {
+        let a = meta("a", "A", "https://manga-oni.com");
+        let b = meta("b", "B", "https://manga-oni.com/es");
+        let picked = choose_module_for_url(
+            "https://manga-oni.com/manhua/foo/",
+            Some(&a),
+            &[b.clone(), a.clone()],
+        )
+        .expect("same host");
+        assert_eq!(picked.id, "a");
+    }
+
+    #[test]
+    fn www_is_ignored_when_comparing_hosts() {
+        let oni = meta("oni", "MangaOni", "https://www.manga-oni.com");
+        assert!(!url_host_conflicts(
+            "https://manga-oni.com/manhua/foo/",
+            &oni.root_url
+        ));
+        let ku = meta("ku", "KuManga", "https://www.kumanga.com");
+        assert!(url_host_conflicts(
+            "https://manga-oni.com/manhua/foo/",
+            &ku.root_url
+        ));
+    }
+
+    #[test]
+    fn unknown_host_does_not_keep_wrong_listing() {
+        let ku = meta("ku", "KuManga", "https://www.kumanga.com");
+        let err = choose_module_for_url("https://example.com/manga/foo/", Some(&ku), &[])
+            .unwrap_err();
+        assert!(err.contains("Ningún módulo coincide"));
+    }
+
+    #[test]
+    fn no_requested_single_hit() {
+        let oni = meta("oni", "MangaOni", "https://manga-oni.com");
+        let picked = choose_module_for_url(
+            "https://manga-oni.com/manhua/foo/",
+            None,
+            std::slice::from_ref(&oni),
+        )
+        .expect("unique");
+        assert_eq!(picked.id, "oni");
+    }
 }

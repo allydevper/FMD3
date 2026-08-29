@@ -33,7 +33,7 @@ pub use modules_updater::{
 pub use paths::needs_first_sync as modules_needs_first_sync;
 pub use registry::{
     ensure_loaded, find_by_id, list as modules_list, match_url as modules_match_url,
-    refresh as modules_refresh, ModuleMeta,
+    refresh as modules_refresh, requested_module_owns_url, resolve_for_url, ModuleMeta,
 };
 pub use runtime::{
     chapter_output_dir, download_chapter, get_info, get_page_links, get_page_links_warmed,

@@ -102,6 +102,40 @@ fn remove_if_exists(path: &Path) {
     }
 }
 
+/// Packed archive sitting next to a chapter folder.
+///
+/// `Path::with_extension` treats the last `.N` of a decimal chapter
+/// (`049.2`) as a file extension and would write `049.pdf`. Append instead
+/// so `…/049.2` packs to `…/049.2.pdf`.
+pub fn chapter_archive_path(dir: &Path, ext: &str) -> PathBuf {
+    let ext = ext.trim_start_matches('.');
+    match dir.file_name() {
+        Some(name) => dir.with_file_name(format!("{}.{ext}", name.to_string_lossy())),
+        None => PathBuf::from(format!("chapter.{ext}")),
+    }
+}
+
+/// New name first, then the pre-fix `with_extension` name so a chapter
+/// already packed as `049.pdf` (from folder `049.2`) is still found.
+pub fn chapter_archive_candidates(dir: &Path, ext: &str) -> Vec<PathBuf> {
+    let next = chapter_archive_path(dir, ext);
+    let legacy = dir.with_extension(ext);
+    if next == legacy {
+        vec![next]
+    } else {
+        vec![next, legacy]
+    }
+}
+
+/// Existing archive next to `dir`. Prefers the correct name, then the old
+/// `with_extension` name so a chapter already packed as `049.pdf` (from
+/// folder `049.2`) still opens and deletes.
+pub fn find_chapter_archive(dir: &Path, ext: &str) -> Option<PathBuf> {
+    chapter_archive_candidates(dir, ext)
+        .into_iter()
+        .find(|p| crate::paths::fs_path(p).is_file())
+}
+
 /// Write bytes to `final_path` via a sibling `*.partial`, then rename.
 fn finalize_partial(partial: &Path, final_path: &Path) -> Result<PathBuf, String> {
     let partial_fs = crate::paths::fs_path(partial);
@@ -127,7 +161,7 @@ fn pack_zip_like(
 ) -> Result<PackOutcome, String> {
     abort_if_cancelled(cancel)?;
     let dir = crate::paths::fs_path(dir);
-    let out = dir.with_extension(ext);
+    let out = chapter_archive_path(&dir, ext);
     let partial = PathBuf::from(format!("{}.partial", out.display()));
     remove_if_exists(&partial);
 
@@ -657,7 +691,7 @@ fn pack_pdf(
         return Err("no hay imágenes para PDF".into());
     }
 
-    let out = dir.with_extension("pdf");
+    let out = chapter_archive_path(&dir, "pdf");
     let partial = PathBuf::from(format!("{}.partial", out.display()));
     remove_if_exists(&partial);
 
@@ -861,7 +895,7 @@ fn pack_epub(
         return Err("no hay imágenes para EPUB".into());
     }
 
-    let out = dir.with_extension("epub");
+    let out = chapter_archive_path(&dir, "epub");
     let partial = PathBuf::from(format!("{}.partial", out.display()));
     remove_if_exists(&partial);
 
@@ -1113,6 +1147,64 @@ mod tests {
     }
 
     #[test]
+    fn chapter_archive_path_keeps_decimal_chapter() {
+        let dir = PathBuf::from(r"D:\Manga\Serie\049 - Capítulo 049.2");
+        assert_eq!(
+            chapter_archive_path(&dir, "pdf"),
+            PathBuf::from(r"D:\Manga\Serie\049 - Capítulo 049.2.pdf")
+        );
+        // The old helper would swallow the decimal: that's the bug this guards.
+        assert_eq!(
+            dir.with_extension("pdf"),
+            PathBuf::from(r"D:\Manga\Serie\049 - Capítulo 049.pdf")
+        );
+        assert_eq!(
+            chapter_archive_candidates(&dir, "pdf"),
+            vec![
+                PathBuf::from(r"D:\Manga\Serie\049 - Capítulo 049.2.pdf"),
+                PathBuf::from(r"D:\Manga\Serie\049 - Capítulo 049.pdf"),
+            ]
+        );
+    }
+
+    #[test]
+    fn pack_keeps_decimal_in_archive_name() {
+        let dir = temp_dir("049.2");
+        write_jpeg(&dir.join("001.jpg"), 80);
+        let out = pack_chapter_dir(&dir, "cbz", None, None).unwrap().archive;
+        let expected = format!("{}.cbz", dir.file_name().unwrap().to_string_lossy());
+        assert_eq!(out.file_name().unwrap(), std::ffi::OsStr::new(&expected));
+        assert!(!dir.with_extension("cbz").exists());
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_chapter_archive_falls_back_to_with_extension() {
+        let parent = std::env::temp_dir().join(format!(
+            "fmd_pack_legacy_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = parent.join("049.2");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.with_extension("pdf");
+        std::fs::write(&legacy, b"%PDF").unwrap();
+        assert_eq!(find_chapter_archive(&dir, "pdf").as_deref(), Some(legacy.as_path()));
+        let next = chapter_archive_path(&dir, "pdf");
+        std::fs::write(&next, b"%PDF-new").unwrap();
+        assert_eq!(
+            find_chapter_archive(&dir, "pdf").as_deref(),
+            Some(next.as_path()),
+            "the correct name wins over the pre-fix file"
+        );
+        let _ = std::fs::remove_file(&next);
+        let _ = std::fs::remove_file(&legacy);
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
     fn packs_cbz() {
         let dir = std::env::temp_dir().join(format!("fmd_pack_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1141,7 +1233,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(true));
         let err = pack_chapter_dir(&dir, "zip", Some(flag.as_ref()), None).unwrap_err();
         assert_eq!(err, PACK_CANCELLED);
-        let out = dir.with_extension("zip");
+        let out = chapter_archive_path(&dir, "zip");
         assert!(!out.exists());
         assert!(!PathBuf::from(format!("{}.partial", out.display())).exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1462,7 +1554,7 @@ mod tests {
 
         let err = pack_chapter_dir(&dir, "pdf", None, None).unwrap_err();
         assert_eq!(err, "no hay imágenes válidas para PDF");
-        assert!(!dir.with_extension("pdf").exists());
+        assert!(!chapter_archive_path(&dir, "pdf").exists());
         assert!(!PathBuf::from(format!("{}.pdf.partial", dir.display())).exists());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1540,7 +1632,7 @@ mod tests {
 
         let err = pack_chapter_dir(&dir, "pdf", Some(flag.as_ref()), Some(&cb)).unwrap_err();
         assert_eq!(err, PACK_CANCELLED);
-        assert!(!dir.with_extension("pdf").exists(), "no half-written pdf");
+        assert!(!chapter_archive_path(&dir, "pdf").exists(), "no half-written pdf");
         assert!(
             !PathBuf::from(format!("{}.pdf.partial", dir.display())).exists(),
             "the .partial must not be left behind"
@@ -1560,7 +1652,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(true));
         let err = pack_chapter_dir(&dir, "pdf", Some(flag.as_ref()), None).unwrap_err();
         assert_eq!(err, PACK_CANCELLED);
-        assert!(!dir.with_extension("pdf").exists());
+        assert!(!chapter_archive_path(&dir, "pdf").exists());
         assert!(!PathBuf::from(format!("{}.pdf.partial", dir.display())).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

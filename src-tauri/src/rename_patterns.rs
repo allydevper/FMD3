@@ -348,8 +348,8 @@ pub fn build_preview(opts: &RenameOpts, output_dir: &str, pack_ext: &str) -> Str
     }
 
     if !pack_ext.is_empty() {
-        // Al empaquetar, el archivo se nombra con la carpeta que se empaqueta
-        // (`pack_chapter_dir` hace `dir.with_extension`); las páginas quedan dentro.
+        // Al empaquetar, el archivo se nombra con la carpeta + extensión
+        // (`chapter_archive_path` concatena; no usa `with_extension`).
         return format!("{}{pack_ext}", path.display());
     }
 
@@ -478,6 +478,14 @@ mod tests {
     }
 
     #[test]
+    fn pad_keeps_decimal_chapter() {
+        assert_eq!(
+            volume_chapter_pad_zero("Capítulo 49.2", 0, 3),
+            "Capítulo 049.2"
+        );
+    }
+
+    #[test]
     fn pad_digits_to_end_of_string() {
         assert_eq!(volume_chapter_pad_zero("Ch 12", 0, 4), "Ch 0012");
         assert_eq!(volume_chapter_pad_zero("Vol.2", 3, 0), "Vol.002");
@@ -572,8 +580,8 @@ mod tests {
         assert!(out.starts_with("D:\\Descargas Manga\\Añejo\\"));
     }
 
-    /// Al empaquetar, el resultado es la carpeta del capítulo con extensión —
-    /// no una página con extensión: `pack_chapter_dir` hace `dir.with_extension`.
+    /// Al empaquetar, el resultado es la carpeta del capítulo + extensión —
+    /// no una página con extensión: `chapter_archive_path` concatena.
     #[test]
     fn preview_pack_names_the_chapter_folder() {
         let mut o = opts();
@@ -581,6 +589,31 @@ mod tests {
         o.pat_chapter = "%NUMBERING%_%CHAPTER%".into();
         let out = preview(&o, "D:\\Manga", ".cbz");
         assert_eq!(out, "D:\\Manga\\One Piece\\003_Chapter 003.cbz");
+    }
+
+    #[test]
+    fn preview_pack_keeps_decimal_chapter() {
+        let mut o = opts();
+        o.remove_manga_from_chapter = true;
+        o.pat_chapter = "%CHAPTER%".into();
+        let display = o.prepare_chapter_display("Capítulo 49.2", "One Piece");
+        assert_eq!(display, "Capítulo 049.2");
+        let idx = o.format_chapter_index(SAMPLE_CHAPTER_INDEX);
+        let tokens = chapter_tokens(
+            SAMPLE_MANGA,
+            SAMPLE_WEBSITE,
+            &display,
+            &idx,
+            SAMPLE_AUTHOR,
+            SAMPLE_AUTHOR,
+        );
+        let mut path = std::path::PathBuf::from("D:\\Manga");
+        path = path.join(o.apply_pattern(o.manga_pattern(), &tokens));
+        path = path.join(o.apply_pattern(o.chapter_pattern(), &tokens));
+        assert_eq!(
+            format!("{}.pdf", path.display()),
+            "D:\\Manga\\One Piece\\Capítulo 049.2.pdf"
+        );
     }
 
     #[test]
