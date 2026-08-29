@@ -5,25 +5,6 @@
 local Template = require 'templates.NovelsHub'
 
 ----------------------------------------------------------------------------------------------------
--- Helper Functions
-----------------------------------------------------------------------------------------------------
-
-local function FindSeriesData()
-	local roots = NextJs.GetRootObjects(HTTP.Document.ToString())
-	for _, root in ipairs(roots) do
-		local data = NextJs.FindObject(root, function(v)
-			return type(v) == 'table'
-				and v.series
-				and v.chapters
-		end)
-		if data then
-			return data
-		end
-	end
-	return nil
-end
-
-----------------------------------------------------------------------------------------------------
 -- Event Functions
 ----------------------------------------------------------------------------------------------------
 
@@ -61,9 +42,9 @@ end
 
 function Init()
 	local m = NewWebsiteModule()
-	m.ID                       = '8a1c8f08664b4f0d91bc847fe81a4221'
-	m.Name                     = 'ValirScans'
-	m.RootURL                  = 'https://valirscans.org'
+	m.ID                       = '491ab77dd809411184bfd6dcab482ec5'
+	m.Name                     = 'WitchToons'
+	m.RootURL                  = 'https://witchtoons.net'
 	m.Category                 = 'English-Scanlation'
 	m.OnGetDirectoryPageNumber = 'GetDirectoryPageNumber'
 	m.OnGetNameAndLink         = 'GetNameAndLink'

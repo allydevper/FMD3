@@ -2,34 +2,15 @@
 -- Template Configuration
 ----------------------------------------------------------------------------------------------------
 
-local Template = require 'templates.NovelsHub'
-
-----------------------------------------------------------------------------------------------------
--- Helper Functions
-----------------------------------------------------------------------------------------------------
-
-local function FindSeriesData()
-	local roots = NextJs.GetRootObjects(HTTP.Document.ToString())
-	for _, root in ipairs(roots) do
-		local data = NextJs.FindObject(root, function(v)
-			return type(v) == 'table'
-				and v.series
-				and v.chapters
-		end)
-		if data then
-			return data
-		end
-	end
-	return nil
-end
+local Template = require 'templates.VTheme'
 
 ----------------------------------------------------------------------------------------------------
 -- Event Functions
 ----------------------------------------------------------------------------------------------------
 
--- Get the page count of the manga list of the current website.
-function GetDirectoryPageNumber()
-	Template.GetDirectoryPageNumber()
+-- Sign in to the current website.
+function Login()
+	Template.Login()
 
 	return no_error
 end
@@ -61,14 +42,15 @@ end
 
 function Init()
 	local m = NewWebsiteModule()
-	m.ID                       = '8a1c8f08664b4f0d91bc847fe81a4221'
-	m.Name                     = 'ValirScans'
-	m.RootURL                  = 'https://valirscans.org'
+	m.ID                       = '33d8fc818a504a7f965345f2e7277e1f'
+	m.Name                     = 'Renascans'
+	m.RootURL                  = 'https://renascans.net'
 	m.Category                 = 'English-Scanlation'
-	m.OnGetDirectoryPageNumber = 'GetDirectoryPageNumber'
 	m.OnGetNameAndLink         = 'GetNameAndLink'
 	m.OnGetInfo                = 'GetInfo'
 	m.OnGetPageNumber          = 'GetPageNumber'
+	m.OnLogin                  = 'Login'
+	m.AccountSupport           = true
 
 	local slang = require 'fmd.env'.SelectedLanguage
 	local translations = {

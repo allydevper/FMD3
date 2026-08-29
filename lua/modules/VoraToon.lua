@@ -1,0 +1,107 @@
+----------------------------------------------------------------------------------------------------
+-- Local Constants
+----------------------------------------------------------------------------------------------------
+
+local API_URL = 'https://api.voratoon.com'
+local DirectoryPagination = '/series?take=100000'
+
+----------------------------------------------------------------------------------------------------
+-- Helper Functions
+----------------------------------------------------------------------------------------------------
+
+-- Set the required http header for making a request.
+local function SetRequestHeaders()
+	HTTP.Headers.Values['Origin']  = MODULE.RootURL
+	HTTP.Headers.Values['Referer'] = MODULE.RootURL .. '/'
+end
+
+----------------------------------------------------------------------------------------------------
+-- Event Functions
+----------------------------------------------------------------------------------------------------
+
+-- Get links and names from the manga list of the current website.
+function GetNameAndLink()
+	local u = API_URL .. DirectoryPagination
+	SetRequestHeaders()
+
+	if not HTTP.GET(u) then return net_problem end
+
+	for v in CreateTXQuery(HTTP.Document).XPath('json(*).data().data').Get() do
+		LINKS.Add('series/' .. v.GetProperty('slug').ToString())
+		NAMES.Add(v.GetProperty('title').ToString())
+	end
+
+	return no_error
+end
+
+-- Get info and chapter list for the current manga.
+function GetInfo()
+	local slug = URL:match('/([^/]+)$')
+	local u = API_URL .. '/series/' .. slug
+	SetRequestHeaders()
+
+	if not HTTP.GET(u) then return net_problem end
+
+	local x = CreateTXQuery(require 'fmd.crypto'.HTMLEncode(HTTP.Document.ToString()))
+	local info = x.XPath('parse-json(.)?data?data')
+	MANGAINFO.Title     = x.XPathString('?title', info)
+	MANGAINFO.AltTitles = x.XPathString('?nativeTitle', info)
+	MANGAINFO.CoverLink = x.XPathString('?coverImage', info)
+	MANGAINFO.Authors   = x.XPathString('?author', info)
+	MANGAINFO.Genres    = x.XPathString('string-join((?genres?*?data?name, concat(upper-case(substring(?format, 1, 1)), lower-case(substring(?format, 2)))), ", ")', info)
+	MANGAINFO.Status    = MangaInfoStatusIfPos(x.XPathString('?status', info))
+	MANGAINFO.Summary   = x.XPathString('?synopsis', info)
+
+	HTTP.Reset()
+	SetRequestHeaders()
+
+	if not HTTP.GET(u .. '/chapters') then return net_problem end
+
+	for v in CreateTXQuery(HTTP.Document).XPath('parse-json(.)?data?*?data').Get() do
+		local idx = v.GetProperty('index').ToString()
+		local title = v.GetProperty('title').ToString()
+		title = (title ~= '') and (' - ' .. title) or ''
+
+		MANGAINFO.ChapterLinks.Add('series/' .. slug .. '/chapters/' .. idx)
+		MANGAINFO.ChapterNames.Add('Chapter ' .. idx .. title)
+	end
+	MANGAINFO.ChapterLinks.Reverse(); MANGAINFO.ChapterNames.Reverse()
+
+	return no_error
+end
+
+-- Get the page count and/or page links for the current chapter.
+function GetPageNumber()
+	local u = API_URL .. URL
+	HTTP.Reset()
+	SetRequestHeaders()
+
+	if not HTTP.GET(u) then return false end
+
+	CreateTXQuery(HTTP.Document).XPathStringAll('json(*).data.data.images()', TASK.PageLinks)
+
+	return true
+end
+
+-- Prepare the URL, http header and/or http cookies before downloading an image.
+function BeforeDownloadImage()
+	SetRequestHeaders()
+
+	return true
+end
+
+----------------------------------------------------------------------------------------------------
+-- Module Initialization
+----------------------------------------------------------------------------------------------------
+
+function Init()
+	local m = NewWebsiteModule()
+	m.ID                       = 'b8206e754d4541689c1d367f7e19fd64'
+	m.Name                     = 'VoraToon'
+	m.RootURL                  = 'https://v1.voratoon.com'
+	m.Category                 = 'Indonesian'
+	m.OnGetNameAndLink         = 'GetNameAndLink'
+	m.OnGetInfo                = 'GetInfo'
+	m.OnGetPageNumber          = 'GetPageNumber'
+	m.OnBeforeDownloadImage    = 'BeforeDownloadImage'
+end
