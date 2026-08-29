@@ -800,6 +800,7 @@ export function OptionsView() {
   const [s, setS] = useState<OptionsFormState>(DEFAULT_SETTINGS);
   const [modsWarn, setModsWarn] = useState(true);
   const [modsFetchMeta, setModsFetchMeta] = useState(true);
+  const [modsPreferLocal, setModsPreferLocal] = useState(true);
   const [modsBackupGens, setModsBackupGens] = useState(3);
   const [modsBackupMb, setModsBackupMb] = useState(64);
   const [modsBackupBytes, setModsBackupBytes] = useState(0);
@@ -1005,6 +1006,7 @@ export function OptionsView() {
       return Number.isFinite(n) && n > 0 ? n : fallback;
     };
     setModsFetchMeta(parseB(await get(SK.MODULES_FETCH_METADATA), true));
+    setModsPreferLocal(parseB(await get(SK.MODULES_PREFER_LOCAL_NEWER), true));
     setModsBackupGens(parseN(await get(SK.MODULES_BACKUP_GENERATIONS), 3));
     setModsBackupMb(parseN(await get(SK.MODULES_BACKUP_MAX_MB), 64));
     const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
@@ -1154,6 +1156,7 @@ export function OptionsView() {
     await api.settingsSet(SK.CHECK_UPDATE_START, boolStr(s.checkUpdateStart));
     await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, boolStr(modsWarn));
     await api.settingsSet(SK.MODULES_FETCH_METADATA, boolStr(modsFetchMeta));
+    await api.settingsSet(SK.MODULES_PREFER_LOCAL_NEWER, boolStr(modsPreferLocal));
     await api.settingsSet(SK.MODULES_BACKUP_GENERATIONS, String(modsBackupGens));
     await api.settingsSet(SK.MODULES_BACKUP_MAX_MB, String(modsBackupMb));
     await api.settingsSet(SK.UPDATE_LIST_NO_INFO, boolStr(s.updateListNoInfo));
@@ -1203,6 +1206,7 @@ export function OptionsView() {
     saveFlash,
     modsWarn,
     modsFetchMeta,
+    modsPreferLocal,
     modsBackupGens,
     modsBackupMb,
   ]);
@@ -1750,6 +1754,7 @@ export function OptionsView() {
     try {
       // Persist the toggle first so the updater reads what is on screen.
       await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, modsWarn ? "1" : "0");
+      await api.settingsSet(SK.MODULES_PREFER_LOCAL_NEWER, modsPreferLocal ? "1" : "0");
       await runModulesGithubUpdate(log);
       setModulesPending(null);
       await refreshModules();
@@ -1762,6 +1767,7 @@ export function OptionsView() {
   }, [
     modsChecking,
     modsWarn,
+    modsPreferLocal,
     refreshModules,
     loadRepoEntries,
     setModulesPending,
@@ -1796,24 +1802,18 @@ export function OptionsView() {
     }
   }, [modsChecking, refreshModules, loadRepoEntries, log]);
 
-  /** Replace one module with the user's own .lua and take it out of the sync. */
+  /** Keep the .lua already on disk and take it out of the official sync. */
   const pinModuleFile = useCallback(
     async (path: string) => {
-      const picked = await open({
-        multiple: false,
-        filters: [{ name: "Módulo Lua", extensions: ["lua"] }],
-      });
-      if (typeof picked !== "string") return;
       const ok = await appConfirm({
         title: "Usar mi versión",
-        message: `${path} pasará a ser tu copia y dejará de actualizarse desde FMD2 hasta que vuelvas al oficial. La versión actual se guarda en las copias de seguridad.`,
+        message: `${path} dejará de actualizarse desde FMD2. Se conserva el archivo que ya tienes; la copia oficial queda en las copias de seguridad.`,
         okLabel: "Usar mi versión",
         cancelLabel: "Cancelar",
-        items: [picked],
       });
       if (!ok) return;
       try {
-        const r = await api.modulesPin(path, picked);
+        const r = await api.modulesPinKeep(path);
         log(`${path}: ahora usa tu versión (${r.refreshed_count} módulos cargados)`, "ok");
         await refreshModules();
         await loadRepoEntries();
@@ -3199,6 +3199,20 @@ export function OptionsView() {
                       </span>
                       Mostrar advertencia de actualización
                     </button>
+                    <button
+                      type="button"
+                      className="mods-chk"
+                      aria-pressed={modsPreferLocal}
+                      onClick={() => {
+                        setModsPreferLocal((v) => !v);
+                        setDirty(true);
+                      }}
+                    >
+                      <span className={`sites-cb${modsPreferLocal ? " on" : ""}`} style={{ ["--ico" as string]: ICO.check }}>
+                        <span className="sites-cb-mk" />
+                      </span>
+                      Preferir mi .lua si es más reciente
+                    </button>
                   </div>
                   <button
                     type="button"
@@ -3261,6 +3275,16 @@ export function OptionsView() {
                       >
                         <span className="st-static mono">GitHub · dazedcat19/FMD2</span>
                       </OptRow>
+                      <SwitchRow
+                        id="opt-mods-prefer-local"
+                        label="Si mi archivo es más reciente, conservarlo"
+                        desc="Si editas un módulo y su fecha es posterior al commit oficial, no se sobrescribe. Para que no se actualice nunca, usa «Usar mi versión» en la fila."
+                        checked={modsPreferLocal}
+                        onChange={(v) => {
+                          setModsPreferLocal(v);
+                          setDirty(true);
+                        }}
+                      />
                       <SwitchRow
                         id="opt-mods-meta"
                         label="Traer fecha y mensaje de cada cambio"
@@ -3402,7 +3426,7 @@ export function OptionsView() {
                                     <button
                                       type="button"
                                       className="sites-tbtn"
-                                      title="Reemplazarlo por tu propio .lua y excluirlo de las actualizaciones"
+                                      title="Conserva este .lua y deja de actualizarlo desde FMD2"
                                       onClick={() => void pinModuleFile(row.file)}
                                     >
                                       Usar mi versión

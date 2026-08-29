@@ -53,6 +53,8 @@ pub const MODULES_BULK_THRESHOLD: &str = "modules.updater.bulk_threshold";
 pub const MODULES_THREADS: &str = "modules.updater.threads";
 /// Enrich rows with commit date/message after a sync.
 pub const MODULES_FETCH_METADATA: &str = "modules.updater.fetch_metadata";
+/// Keep a local Lua file when its mtime is newer than the official last commit.
+pub const MODULES_PREFER_LOCAL_NEWER: &str = "modules.updater.prefer_local_newer";
 /// Hard cap on per-file metadata requests; GitHub has no bulk endpoint for them.
 pub const MODULES_METADATA_MAX_FILES: &str = "modules.updater.metadata_max_files";
 pub const MODULES_BACKUP_GENERATIONS: &str = "modules.updater.backup_generations";

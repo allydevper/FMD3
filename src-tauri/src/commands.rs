@@ -5,7 +5,8 @@ use crate::catalog::{
 use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
     get_info, modules_backup_clear, modules_backup_size, modules_generations, modules_history,
-    modules_list, modules_match_url, modules_needs_first_sync, modules_pin_file, modules_refresh,
+    modules_list, modules_match_url, modules_needs_first_sync, modules_pin_file,
+    modules_pin_keep_local, modules_refresh,
     modules_repo_list, modules_reset_cursor, modules_revert_file, modules_undo_generation,
     modules_unpin_file,
     modules_update_apply, modules_update_check, modules_update_dismiss,
@@ -1687,6 +1688,14 @@ pub async fn modules_backup_clear_cmd() -> Result<usize, String> {
 #[tauri::command]
 pub async fn modules_pin_cmd(path: String, origin: String) -> Result<UndoReport, String> {
     tauri::async_runtime::spawn_blocking(move || modules_pin_file(path, origin))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
+}
+
+/// Keep the .lua already on disk and exclude it from the official sync.
+#[tauri::command]
+pub async fn modules_pin_keep_cmd(path: String) -> Result<UndoReport, String> {
+    tauri::async_runtime::spawn_blocking(move || modules_pin_keep_local(path))
         .await
         .map_err(|e| format!("tarea cancelada: {e}"))?
 }

@@ -29,12 +29,17 @@ fn resync_from_disk(entry: &mut LuaRepoEntry, source: &dyn Source) {
     match fs::read(&path) {
         Ok(bytes) => {
             entry.local_id = Some(source.content_id(&bytes));
-            if entry.last_modified.is_none() {
-                entry.last_modified = file_mtime_unix(&path);
-            }
+            // Always the file on disk so the UI date matches what the user edited,
+            // not the last official commit we happened to store.
+            entry.last_modified = file_mtime_unix(&path);
         }
         Err(_) => entry.local_id = None,
     }
+}
+
+/// Local copy wins when it was written after the official file's last commit.
+pub fn local_is_newer(local_mtime: i64, remote_updated_at: Option<i64>) -> bool {
+    remote_updated_at.is_some_and(|remote| local_mtime > remote)
 }
 
 /// Build the actionable plan and bring `state` in line with the listing.
@@ -184,6 +189,82 @@ pub fn build(
     }
 }
 
+/// Drop official updates whose local file is newer than the source's last commit.
+///
+/// Hash mismatch alone is not "the remote is newer": a patched KuManga.lua is
+/// supposed to stay. Dates come from [`Source::metadata`]; files without a
+/// remote date keep the hash-based Update so a missing API never hides a real
+/// upstream change.
+pub fn prefer_local_newer(
+    plan: &mut SyncPlan,
+    state: &mut RepoState,
+    source: &dyn Source,
+    revision: &str,
+) {
+    if !crate::settings_keys::bool_setting(
+        crate::settings_keys::MODULES_PREFER_LOCAL_NEWER,
+        true,
+    ) {
+        return;
+    }
+    let update_paths: Vec<String> = plan
+        .items
+        .iter()
+        .filter(|i| i.kind == ChangeKind::Update)
+        .map(|i| i.path.clone())
+        .collect();
+    if update_paths.is_empty() {
+        return;
+    }
+    let meta = match source.metadata(revision, &update_paths) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("modules_updater: no se pudo comparar fechas ({e})");
+            return;
+        }
+    };
+    if meta.is_empty() {
+        return;
+    }
+
+    let mut keep: HashSet<String> = HashSet::new();
+    for path in &update_paths {
+        let Some(disk) = local_file_path(path) else {
+            continue;
+        };
+        let Some(local_mtime) = file_mtime_unix(&disk) else {
+            continue;
+        };
+        let remote_ts = meta.get(path).and_then(|m| m.updated_at);
+        if local_is_newer(local_mtime, remote_ts) {
+            keep.insert(path.clone());
+        }
+    }
+    if keep.is_empty() {
+        return;
+    }
+
+    plan.items.retain(|i| !keep.contains(&i.path));
+    plan.update_count = plan
+        .items
+        .iter()
+        .filter(|i| i.kind == ChangeKind::Update)
+        .count();
+    plan.status_lines
+        .retain(|line| keep.iter().all(|p| !line.ends_with(p.as_str())));
+    for path in &keep {
+        plan.status_lines
+            .push(format!("[LOCAL] {path} es más reciente; se conserva"));
+        if let Some(entry) = state.get_mut(path) {
+            entry.flag = FLAG_NONE.into();
+            entry.last_message = "Tu versión es más reciente que la oficial".into();
+            if let Some(disk) = local_file_path(path) {
+                entry.last_modified = file_mtime_unix(&disk);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +328,12 @@ mod tests {
         let e = entry("modules/A.lua", "bbb", Some("aaa"));
         assert!(!e.is_current());
         assert!(e.retry_due(0), "sin fallos previos siempre es accionable");
+    }
+
+    #[test]
+    fn local_file_newer_than_official_commit_wins() {
+        assert!(local_is_newer(1_700_000_100, Some(1_700_000_000)));
+        assert!(!local_is_newer(1_700_000_000, Some(1_700_000_100)));
+        assert!(!local_is_newer(1_700_000_100, None));
     }
 }

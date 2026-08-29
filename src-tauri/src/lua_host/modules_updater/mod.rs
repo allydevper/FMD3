@@ -70,7 +70,8 @@ fn build_plan(source: &dyn Source, force: bool) -> Result<(SyncPlan, RepoState),
         }
     };
 
-    let plan = plan::build(&remote, &mut st, source, &revision, force);
+    let mut plan = plan::build(&remote, &mut st, source, &revision, force);
+    plan::prefer_local_newer(&mut plan, &mut st, source, &revision);
     let _ = save_cursor(&source_id, &cursor);
     Ok((plan, st))
 }
@@ -370,6 +371,55 @@ fn read_pin_origin(origin: &str) -> Result<Vec<u8>, String> {
         return resp.bytes().map(|b| b.to_vec()).map_err(|e| e.to_string());
     }
     fs::read(origin).map_err(|e| format!("{origin}: {e}"))
+}
+
+/// Keep the file already on disk and take it out of the sync.
+///
+/// Unlike [`pin_file`], nothing is copied or overwritten: the bytes the user
+/// edited stay put. The previous tracked version is still snapshotted so
+/// «Volver al oficial» remains a check, not a silent restore.
+pub fn pin_keep_local(path: String) -> Result<UndoReport, String> {
+    let _guard = lock()?;
+    let disk = state::safe_rel_path(&path)?;
+    let bytes = fs::read(&disk).map_err(|e| format!("{}: {e}", disk.display()))?;
+    if bytes.is_empty() {
+        return Err("El archivo está vacío".into());
+    }
+    let content_id = state::git_blob_sha(&bytes);
+    let origin = disk.to_string_lossy().to_string();
+
+    let gen = snapshot::begin("", "", &format!("conservar {path}"));
+    let before = gen.backup(&path)?;
+    gen.record(&path, before, Some(content_id.clone()));
+    gen.commit();
+
+    let mut st = load_state();
+    if st.get_mut(&path).is_none() {
+        st.entries
+            .push(LuaRepoEntry::seeded(path.clone(), String::new(), None));
+        st.sort();
+    }
+    if let Some(entry) = st.get_mut(&path) {
+        entry.local_id = Some(content_id.clone());
+        entry.flag = model::FLAG_PINNED.into();
+        entry.last_modified = file_mtime_unix(&disk);
+        entry.last_message = "Tu versión (fijada)".into();
+        entry.clear_failure();
+        entry.pin = Some(model::ModulePin {
+            origin,
+            pinned_at: state::now_unix(),
+            content_id,
+        });
+    }
+    save_state(&st)?;
+    let refreshed = registry::refresh();
+
+    Ok(UndoReport {
+        restored: 0,
+        removed: 0,
+        failed: Vec::new(),
+        refreshed_count: refreshed,
+    })
 }
 
 /// Replace one module with the user's own copy and take it out of the sync.

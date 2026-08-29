@@ -469,6 +469,11 @@ export function modulesPin(path: string, origin: string) {
   return invoke<ModulesUndoReport>("modules_pin_cmd", { path, origin });
 }
 
+/** Keep the .lua already on disk and exclude it from the official sync. */
+export function modulesPinKeep(path: string) {
+  return invoke<ModulesUndoReport>("modules_pin_keep_cmd", { path });
+}
+
 /** Hand a module back to the official sync (the file itself is left alone). */
 export function modulesUnpin(path: string) {
   return invoke("modules_unpin_cmd", { path });

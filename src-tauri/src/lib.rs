@@ -404,6 +404,7 @@ pub fn run() {
             commands::modules_generations_cmd,
             commands::modules_reset_cursor_cmd,
             commands::modules_pin_cmd,
+            commands::modules_pin_keep_cmd,
             commands::modules_unpin_cmd,
             commands::modules_backup_size_cmd,
             commands::modules_backup_clear_cmd,

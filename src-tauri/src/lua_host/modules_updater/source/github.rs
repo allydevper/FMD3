@@ -369,11 +369,11 @@ impl Source for GithubSource {
         paths: &[String],
     ) -> Result<HashMap<String, RemoteMeta>, String> {
         let cap = settings_keys::usize_setting(settings_keys::MODULES_METADATA_MAX_FILES, 10);
-        if cap == 0 || paths.len() > cap {
+        if cap == 0 {
             return Ok(HashMap::new());
         }
         let mut out = HashMap::new();
-        for rel in paths {
+        for rel in paths.iter().take(cap) {
             let mut url = format!(
                 "{}repos/{}/{}/commits?per_page=1",
                 self.cfg.api_url, self.cfg.owner, self.cfg.name
