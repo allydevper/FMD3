@@ -100,19 +100,21 @@ function GetNameAndLink()
 	return no_error
 end
 
+-- Delegates to the host's marker list (HTTP:IsCloudflareChallenge) instead of
+-- keeping a local copy that can drift from Rust's own Cloudflare detection.
 local function isCloudflareBody(body)
 	if body == nil or body == '' then return false end
-	local b = body:lower()
-	return b:find('just a moment', 1, true)
-		or b:find('challenge-platform', 1, true)
-		or b:find('cf-browser-verification', 1, true)
+	return HTTP.IsCloudflareChallenge(body)
 end
 
 -- img.php?src=HEX hides the real CDN URL; downloading the proxy saves HTML as .jpg.
 local readerUrl = ''
 
 local function unwrapImgUrl(i)
-	i = (i or ''):gsub('\\', '')
+	-- Only unescape JSON's "\/"; a blanket gsub('\\','') also mangles other
+	-- valid JSON escapes (e.g. "&" -> "u0026" instead of "&"), corrupting
+	-- URLs that use them in their query string.
+	i = (i or ''):gsub('\\/', '/')
 	if i == '' then return i end
 	local hex = i:match('img%.php%?src=([0-9A-Fa-f]+)')
 	if hex then

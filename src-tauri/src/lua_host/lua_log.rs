@@ -15,13 +15,33 @@ pub fn emit_lua_log(msg: &str) {
     if line.is_empty() {
         return;
     }
-    eprintln!("[lua] {line}");
+    // Full detail always goes to the file log (itself gated by log.enabled).
     crate::log_file::append(line);
+    // stderr + the UI log panel are always on, for every user of the app —
+    // strip the local Windows profile path first: io::Error messages from
+    // file operations can otherwise leak the username/folder layout there.
+    let redacted = redact_local_paths(line);
+    eprintln!("[lua] {redacted}");
     if let Some(app) = APP.get() {
-        let _ = app.emit("lua-log", line);
+        let _ = app.emit("lua-log", redacted.as_ref());
         // External CF helper webview has no Tauri JS; still deliver to the UI.
-        let _ = app.emit_to("main", "lua-log", line);
+        let _ = app.emit_to("main", "lua-log", redacted.as_ref());
     }
+}
+
+/// Replaces the current user's home directory with a placeholder. Only
+/// applied to the always-on stderr/UI broadcast above — `log_file::append`
+/// callers that want full detail on disk (gated by `log.enabled`) are
+/// unaffected.
+fn redact_local_paths(line: &str) -> std::borrow::Cow<'_, str> {
+    let Some(home) = dirs::home_dir() else {
+        return std::borrow::Cow::Borrowed(line);
+    };
+    let home = home.to_string_lossy().into_owned();
+    if home.is_empty() || !line.contains(home.as_str()) {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    std::borrow::Cow::Owned(line.replace(home.as_str(), "%USERPROFILE%"))
 }
 
 fn value_to_string(v: &Value) -> String {

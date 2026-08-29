@@ -160,7 +160,8 @@ pub fn http_retries() -> usize {
 }
 
 /// When false (default), no embedded WebView: Cloudflare is left for retries / WARP,
-/// and `HTTP.CaptureInBrowser` (KuManga reader) is also skipped.
+/// and `HTTP.CaptureInBrowser` (used by any module's reader that needs it) is
+/// also skipped. Governs the same WebView for every site, not just one module.
 pub fn cf_internal_browser() -> bool {
     bool_setting(HTTP_CF_INTERNAL_BROWSER, false)
 }

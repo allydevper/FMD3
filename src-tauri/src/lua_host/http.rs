@@ -25,6 +25,17 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
         .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
 }
 
+/// `url` truncated before its query string/fragment. `emit_lua_log` always
+/// prints to stderr and broadcasts to the UI log panel (`log.enabled` only
+/// gates the file log), and some sites embed session/API tokens in query
+/// params — use this for any Cloudflare log line that includes a caller URL.
+fn log_safe_url(url: &str) -> &str {
+    let end = url
+        .find(['?', '#'])
+        .unwrap_or(url.len());
+    &url[..end]
+}
+
 /// The inner state is built lazily: constructing it opens several SQLite
 /// connections and a `reqwest` client (own tokio thread + TLS init). The
 /// registry scan creates one `HttpClient` per module file and never issues a
@@ -196,22 +207,36 @@ fn merge_set_cookie(cookies: &mut HashMap<String, String>, headers: &reqwest::he
     }
 }
 
+/// `cf_clearance` is a real, relatively long-lived Cloudflare auth token, so
+/// the session is stored DPAPI-encrypted (tied to the current Windows user
+/// account) rather than as plain JSON. Any failure to decrypt/parse (missing
+/// value, DB from a different user/machine, DPAPI error) is treated as "no
+/// cached session" — same graceful fallback as a missing key.
 fn load_cf_session(host: &str) -> CfSession {
+    use base64::{engine::general_purpose::STANDARD, Engine};
     crate::db::settings_get_direct(&cf_session_key(host))
         .ok()
         .flatten()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|b64| STANDARD.decode(b64).ok())
+        .and_then(|enc| crate::dpapi::unprotect(&enc).ok())
+        .and_then(|json| serde_json::from_slice(&json).ok())
         .unwrap_or_default()
 }
 
 fn save_cf_session(host: &str, ua: &str, cookies: &HashMap<String, String>) {
+    use base64::{engine::general_purpose::STANDARD, Engine};
     let session = CfSession {
         user_agent: ua.to_string(),
         cookies: cookies.clone(),
     };
-    if let Ok(json) = serde_json::to_string(&session) {
-        let _ = crate::db::settings_set_direct(&cf_session_key(host), &json);
-    }
+    let Ok(json) = serde_json::to_vec(&session) else {
+        return;
+    };
+    let Ok(encrypted) = crate::dpapi::protect(&json) else {
+        eprintln!("http: no se pudo cifrar la sesión de Cloudflare (DPAPI); no se persiste.");
+        return;
+    };
+    let _ = crate::db::settings_set_direct(&cf_session_key(host), &STANDARD.encode(encrypted));
 }
 
 fn default_browser_headers() -> HashMap<String, String> {
@@ -229,17 +254,42 @@ fn default_browser_headers() -> HashMap<String, String> {
     h
 }
 
+/// Body-only Cloudflare/challenge markers. Shared with Lua (see
+/// `HTTP:IsCloudflareChallenge` below) so modules like KuManga.lua don't keep
+/// their own, independently-maintained marker list that can drift from this
+/// one — the concrete failure mode being a challenge Rust recognizes that a
+/// module's local check misses, or vice versa.
+pub(crate) fn body_looks_like_cloudflare(body: &str) -> bool {
+    body.contains("challenge-platform")
+        || body.contains("Just a moment")
+        || body.contains("cf-browser-verification")
+        || body.contains("__cf_chl")
+        || body.contains("cdn-cgi/challenge")
+}
+
 fn looks_like_cloudflare(status: u16, server: &str, body: &str) -> bool {
     let server = server.to_lowercase();
     let cf_server = server.contains("cloudflare") || server.contains("ddos-guard");
     if matches!(status, 403 | 429 | 503) && (cf_server || body.is_empty()) {
         return true;
     }
-    body.contains("challenge-platform")
-        || body.contains("Just a moment")
-        || body.contains("cf-browser-verification")
-        || body.contains("__cf_chl")
-        || body.contains("cdn-cgi/challenge")
+    body_looks_like_cloudflare(body)
+}
+
+/// Drops the `cf_clearance` pair from a `"k=v; k=v"` Cookie header string.
+/// Used wherever Lua can read back the assembled header, so it can't recover
+/// the token that `CookieValuesHandle` already hides pair-by-pair.
+fn redact_cf_clearance(cookie_header: &str) -> String {
+    cookie_header
+        .split(';')
+        .map(|pair| pair.trim())
+        .filter(|pair| {
+            pair.split_once('=')
+                .map(|(k, _)| !k.trim().eq_ignore_ascii_case("cf_clearance"))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn header_get_ci(map: &HashMap<String, String>, key: &str) -> Option<String> {
@@ -392,7 +442,10 @@ impl HttpClient {
             super::lua_log::emit_lua_log("Cloudflare: URL inválida, no se puede aislar la sesión por dominio.");
             return false;
         };
-        super::lua_log::emit_lua_log(&format!("Cloudflare: abriendo navegador para {url}"));
+        super::lua_log::emit_lua_log(&format!(
+            "Cloudflare: abriendo navegador para {}",
+            log_safe_url(url)
+        ));
         let http = self.clone();
         let Some(session) = super::cf_webview::solve_for_html(url, move || http.is_terminated()) else {
             return false;
@@ -718,7 +771,7 @@ impl HttpClient {
             return;
         }
 
-        super::lua_log::emit_lua_log(&format!("Cloudflare: bloqueo en {url}"));
+        super::lua_log::emit_lua_log(&format!("Cloudflare: bloqueo en {}", log_safe_url(url)));
 
         let host = host_of(url);
         if host.is_none() {
@@ -859,9 +912,14 @@ impl UserData for HeaderValuesHandle {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
             let inner = this.client.inner().lock();
             // Response first (Server/Content-Type), then request headers
-            let v = header_get_ci(&inner.response_headers, &key)
+            let mut v = header_get_ci(&inner.response_headers, &key)
                 .or_else(|| header_get_ci(&inner.headers, &key))
                 .unwrap_or_default();
+            if key.eq_ignore_ascii_case("Cookie") {
+                // The assembled header would otherwise leak cf_clearance in
+                // the clear, defeating the redaction in `CookieValuesHandle`.
+                v = redact_cf_clearance(&v);
+            }
             Ok(Value::String(lua.create_string(&v)?))
         });
         methods.add_meta_method_mut(
@@ -898,6 +956,14 @@ impl UserData for HeadersHandle {
 impl UserData for CookieValuesHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            // `cf_clearance` is a real Cloudflare auth token; it's applied to
+            // outgoing requests automatically (see `sync_cookie_header`), but
+            // Lua modules — including third-party ones synced from a
+            // configurable source — have no legitimate need to read its raw
+            // value back out, only to potentially exfiltrate it.
+            if key.eq_ignore_ascii_case("cf_clearance") {
+                return Ok(Value::String(lua.create_string("")?));
+            }
             let v = this
                 .client
                 .inner()
@@ -1024,6 +1090,19 @@ impl UserData for HttpClient {
                     let f = lua.create_function(move |_, ()| {
                         this.clear_cookies();
                         Ok(())
+                    })?;
+                    Ok(Value::Function(f))
+                }
+                // Single source of truth for "does this body look like a
+                // Cloudflare/anti-bot challenge", shared with Rust's own
+                // `after_request` gate. Optional `body`: defaults to the
+                // client's current Document so callers don't have to fetch
+                // it themselves first.
+                "IsCloudflareChallenge" => {
+                    let this = this.clone();
+                    let f = lua.create_function(move |_, body: Option<String>| {
+                        let body = body.unwrap_or_else(|| this.document());
+                        Ok(body_looks_like_cloudflare(&body))
                     })?;
                     Ok(Value::Function(f))
                 }

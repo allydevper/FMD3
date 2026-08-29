@@ -98,7 +98,9 @@ reales — ver [`dev/README.md`](dev/README.md).
    el Lua hace `MaybeFillHost(RootURL, URL)`.
 3. Ante antibot: WebsiteBypass + Duktape (`use_webdriver: false` por defecto).
 
-El HTTP lo hace `reqwest` desde Rust, no el WebView.
+El HTTP lo hace `reqwest` desde Rust, no el WebView — salvo cuando se abre el
+navegador interno para Cloudflare (ver abajo), donde sí es un WebView2 real el
+que navega, ejecuta JS y resuelve el reto.
 
 ### Cloudflare (paridad con FMD2)
 
@@ -110,7 +112,8 @@ con Duktape. Los sitios con Cloudflare moderno (Turnstile, `challenge-platform`)
 fallan igual en FMD2 y aquí si no hay cookies válidas.
 
 En Ajustes → Red, **Navegador interno (Cloudflare)** abre una ventana de la app
-cuando WARP no alcanza (incluye el lector de KuManga). No lo combines con proxy.
+cuando WARP no alcanza, para cualquier sitio detrás de Cloudflare. No lo
+combines con proxy.
 
 Opcional, como FMD2 con webdriver: pon `"use_webdriver": true` en
 `lua/websitebypass/websitebypass_config.json` y ten Python + FlareSolverr
