@@ -11,6 +11,7 @@ function Init()
 	m.OnGetNameAndLink         = 'GetNameAndLink'
 	m.OnGetInfo                = 'GetInfo'
 	m.OnGetPageNumber          = 'GetPageNumber'
+	m.OnBeforeDownloadImage    = 'BeforeDownloadImage'
 	m.TotalDirectory           = AlphaList:len()
 end
 
@@ -20,6 +21,7 @@ end
 
 AlphaList = '0123456789abcdefghijklmnopqrstuvwxyz'
 local DirectoryPagination = '/initial/'
+local chapterUrl = ''
 
 ----------------------------------------------------------------------------------------------------
 -- Helper Functions
@@ -165,6 +167,7 @@ end
 -- Get the page count and/or page links for the current chapter.
 function GetPageNumber()
 	local u = MaybeFillHost(MODULE.RootURL, URL)
+	chapterUrl = u
 
 	if not HTTP.GET(u) then return false end
 
@@ -182,5 +185,19 @@ function GetPageNumber()
 		TASK.PageLinks.Add(fixed)
 	end
 
+	return true
+end
+
+-- CDN hosts (lc*-cdn.t34798ndc.com) often need the chapter page as Referer.
+function BeforeDownloadImage()
+	local ref = chapterUrl
+	if ref == nil or ref == '' then
+		if TASK.CurrentDownloadChapterPtr < TASK.ChapterLinks.Count then
+			ref = MaybeFillHost(MODULE.RootURL, TASK.ChapterLinks[TASK.CurrentDownloadChapterPtr])
+		else
+			ref = MODULE.RootURL
+		end
+	end
+	HTTP.Headers.Values['Referer'] = ' ' .. ref
 	return true
 end

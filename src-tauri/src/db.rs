@@ -1318,7 +1318,7 @@ pub fn queue_retry(db: &Db, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Re-queue a completed item after files were wiped (force re-download).
+/// Re-queue a completed item. Existing complete files are reused on resume.
 pub fn queue_redownload(db: &Db, id: i64) -> Result<(), String> {
     let conn = db.lock();
     let n = conn

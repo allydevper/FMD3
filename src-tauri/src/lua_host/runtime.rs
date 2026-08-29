@@ -1526,22 +1526,63 @@ fn is_html_payload(bytes: &[u8]) -> bool {
         || t.contains("just a moment")
 }
 
-fn ext_from_bytes(bytes: &[u8]) -> &'static str {
+fn ext_from_bytes(bytes: &[u8]) -> Option<&'static str> {
     if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
-        return "jpg";
+        return Some("jpg");
     }
     if bytes.len() >= 8 && bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        return "png";
+        return Some("png");
     }
     if bytes.len() >= 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
-        return "gif";
+        return Some("gif");
     }
     if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        return "webp";
+        return Some("webp");
     }
-    "jpg"
+    None
 }
 
+fn page_file_path(chapter_dir: &Path, base_name: &str, ext: &str) -> PathBuf {
+    let stem = Path::new(base_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(base_name);
+    chapter_dir.join(format!("{stem}.{ext}"))
+}
+
+/// Persist downloaded bytes only if they sniff as a complete image. Garbage
+/// (HTML leftovers, truncated JPEG/WebP) must not be marked downloaded.
+fn commit_image_bytes(
+    chapter_dir: &Path,
+    base_name: &str,
+    bytes: &[u8],
+    conv_ext: Option<&str>,
+) -> Result<PathBuf, String> {
+    let Some(ext) = conv_ext.or_else(|| ext_from_bytes(bytes)) else {
+        return Err("no parece una imagen".into());
+    };
+    if !crate::image_integrity::bytes_look_complete(bytes, ext) {
+        return Err("imagen incompleta o corrupta".into());
+    }
+    let file_path = page_file_path(chapter_dir, base_name, ext);
+    std::fs::write(crate::paths::fs_path(&file_path), bytes)
+        .map_err(|e| format!("write error: {e}"))?;
+    if !crate::image_integrity::looks_complete(&file_path) {
+        let _ = std::fs::remove_file(crate::paths::fs_path(&file_path));
+        return Err("imagen incompleta o corrupta".into());
+    }
+    Ok(file_path)
+}
+
+fn reject_incomplete_saved(path: &Path) -> Result<(), String> {
+    if crate::image_integrity::looks_complete(path) {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(crate::paths::fs_path(path));
+    Err("imagen incompleta o corrupta".into())
+}
+
+#[allow(dead_code)]
 fn ext_from_url(url: &str) -> Option<&'static str> {
     let path = url.split('?').next().unwrap_or(url).split('#').next().unwrap_or(url);
     match Path::new(path)
@@ -1803,7 +1844,9 @@ fn maybe_convert_image_bytes(bytes: &[u8]) -> (Vec<u8>, Option<&'static str>) {
 /// - JPEG/GIF stay as-is (legacy global `convert_to=png` is ignored so it cannot
 ///   re-encode every page — that was a UI bug when WebP→PNG was the default)
 fn convert_image_bytes(bytes: &[u8], opts: &ConvertOpts) -> (Vec<u8>, Option<&'static str>) {
-    let src = ext_from_bytes(bytes);
+    let Some(src) = ext_from_bytes(bytes) else {
+        return (bytes.to_vec(), None);
+    };
     let target: Option<&'static str> = match src {
         "png" if opts.png_as_jpeg => Some("jpg"),
         "webp" => match opts.webp_as {
@@ -1903,11 +1946,17 @@ pub fn download_chapter(
         }
     };
 
+    let chapter_referer = if chapter_url.starts_with("http://") || chapter_url.starts_with("https://")
+    {
+        chapter_url.to_string()
+    } else {
+        absolute_url(&root, chapter_url)
+    };
     if let Some(m) = manga_url.filter(|s| !s.trim().is_empty()) {
         let referer = absolute_url(&root, m);
         http.set_header("Referer", &referer);
     } else {
-        http.set_header("Referer", &root);
+        http.set_header("Referer", &chapter_referer);
     }
 
     let state = module.inner.lock().clone();
@@ -2119,6 +2168,7 @@ pub fn download_chapter(
                 let progress = &progress;
                 let bytes_counter = &bytes_counter;
                 let page_count = page_count;
+                let chapter_referer = &chapter_referer;
                 scope.spawn(move || {
                     let Ok(client) = http0.fork() else {
                         return;
@@ -2141,6 +2191,7 @@ pub fn download_chapter(
                         }
                         client.reset_http();
                         client.accept_image();
+                        client.set_header("Referer", &chapter_referer);
                         if !client.get_public(&abs) {
                             errors_m
                                 .lock()
@@ -2162,26 +2213,8 @@ pub fn download_chapter(
                             continue;
                         }
                         let (bytes, conv_ext) = maybe_convert_image_bytes(&raw);
-                        let ext = conv_ext
-                            .map(|s| s.to_string())
-                            .or_else(|| ext_from_url(&abs).map(|s| s.to_string()))
-                            .unwrap_or_else(|| ext_from_bytes(&bytes).to_string());
-                        let file_path = if Path::new(&base_name).extension().is_some()
-                            && conv_ext.is_none()
-                        {
-                            chapter_dir.join(&base_name)
-                        } else {
-                            chapter_dir.join(format!(
-                                "{}.{}",
-                                Path::new(&base_name)
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or(&base_name),
-                                ext
-                            ))
-                        };
-                        match std::fs::write(crate::paths::fs_path(&file_path), &bytes) {
-                            Ok(()) => {
+                        match commit_image_bytes(chapter_dir, &base_name, &bytes, conv_ext) {
+                            Ok(file_path) => {
                                 bytes_counter.fetch_add(bytes.len() as u64, Ordering::SeqCst);
                                 files_m.lock().push(file_path.display().to_string());
                                 task.page_links.set(i, "D".into());
@@ -2190,7 +2223,7 @@ pub fn download_chapter(
                             Err(e) => {
                                 errors_m
                                     .lock()
-                                    .push(format!("Página {}: write error: {e}", i + 1));
+                                    .push(format!("Página {}: {e}", i + 1));
                             }
                         }
                     }
@@ -2265,6 +2298,7 @@ pub fn download_chapter(
 
         http.reset_http();
         http.accept_image();
+        http.set_header("Referer", &chapter_referer);
 
         globals
             .set("URL", work_url.clone())
@@ -2308,7 +2342,14 @@ pub fn download_chapter(
                     Ok(Value::String(s)) => {
                         let p = s.to_string_lossy();
                         if !p.is_empty() && Path::new(&p).is_file() {
-                            Some(PathBuf::from(p))
+                            let path = PathBuf::from(p);
+                            match reject_incomplete_saved(&path) {
+                                Ok(()) => Some(path),
+                                Err(e) => {
+                                    errors.push(format!("Página {}: {e}", i + 1));
+                                    None
+                                }
+                            }
                         } else {
                             None
                         }
@@ -2329,22 +2370,10 @@ pub fn download_chapter(
                 None
             } else {
                 let (bytes, conv_ext) = maybe_convert_image_bytes(&raw);
-                let ext = conv_ext
-                    .map(|s| s.to_string())
-                    .or_else(|| ext_from_url(&work_url).map(|s| s.to_string()))
-                    .unwrap_or_else(|| ext_from_bytes(&bytes).to_string());
-                let file_path = if Path::new(&base_name).extension().is_some() && conv_ext.is_none()
-                {
-                    chapter_dir.join(&base_name)
-                } else if Path::new(&base_name).extension().is_some() && conv_ext.is_some() {
-                    chapter_dir.join(base_name).with_extension(ext)
-                } else {
-                    chapter_dir.join(format!("{base_name}.{ext}"))
-                };
-                match std::fs::write(crate::paths::fs_path(&file_path), &bytes) {
-                    Ok(()) => Some(file_path),
+                match commit_image_bytes(&chapter_dir, &base_name, &bytes, conv_ext) {
+                    Ok(file_path) => Some(file_path),
                     Err(e) => {
-                        errors.push(format!("Página {}: write error: {e}", i + 1));
+                        errors.push(format!("Página {}: {e}", i + 1));
                         None
                     }
                 }
@@ -3078,6 +3107,27 @@ mod tests {
     }
 
     #[test]
+    fn commit_rejects_garbage_and_truncated_jpeg() {
+        let dir = std::env::temp_dir().join(format!("fmd_commit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(ext_from_bytes(b"not an image"), None);
+        assert!(commit_image_bytes(&dir, "001", b"<html>nope</html>", None).is_err());
+        assert!(!dir.join("001.jpg").exists());
+
+        let full = jpeg(80);
+        assert!(commit_image_bytes(&dir, "002", &full, None).is_ok());
+        assert!(dir.join("002.jpg").is_file());
+
+        let cut = &full[..full.len() * 2 / 3];
+        assert!(commit_image_bytes(&dir, "003", cut, None).is_err());
+        assert!(!dir.join("003.jpg").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn png_level_maps_like_fmd2() {
         use image::codecs::png::CompressionType;
         assert_eq!(png_compression_type(0), CompressionType::Uncompressed);
@@ -3138,7 +3188,7 @@ mod tests {
     #[test]
     fn convert_routes_each_format_like_fmd2() {
         let webp = webp_bytes(Some(200));
-        assert_eq!(ext_from_bytes(&webp), "webp");
+        assert_eq!(ext_from_bytes(&webp), Some("webp"));
 
         // webp_as: 0 keep / 1 png / 2 jpg
         let (out, conv) = convert_image_bytes(&webp, &opts(false, 0, 1));
@@ -3151,7 +3201,7 @@ mod tests {
 
         let (out, conv) = convert_image_bytes(&webp, &opts(false, 2, 1));
         assert_eq!(conv, Some("jpg"));
-        assert_eq!(ext_from_bytes(&out), "jpg");
+        assert_eq!(ext_from_bytes(&out), Some("jpg"));
 
         // PNG source: only converted when png_as_jpeg is on.
         let png = encode_png_with_level(&sample_rgba(), 1).unwrap();
@@ -3160,7 +3210,7 @@ mod tests {
         assert_eq!(out, png);
         let (out, conv) = convert_image_bytes(&png, &opts(true, 1, 1));
         assert_eq!(conv, Some("jpg"));
-        assert_eq!(ext_from_bytes(&out), "jpg");
+        assert_eq!(ext_from_bytes(&out), Some("jpg"));
 
         // JPEG is never re-encoded.
         let (out, conv) = convert_image_bytes(&jpeg(80), &opts(true, 2, 1));

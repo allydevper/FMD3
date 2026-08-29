@@ -962,7 +962,8 @@ pub fn queue_retry(app: AppHandle, state: State<QueueState>, id: i64) -> Result<
     Ok(())
 }
 
-/// Wipe chapter files and re-queue a completed item so it downloads from scratch.
+/// Re-queue a completed item so it can repair missing/corrupt pages.
+/// Existing complete files stay on disk; the downloader skips them.
 /// Keeps the frozen pack format; for legacy rows without one, freezes it from disk first.
 #[tauri::command]
 pub fn queue_redownload(app: AppHandle, state: State<QueueState>, id: i64) -> Result<(), String> {
@@ -978,8 +979,6 @@ pub fn queue_redownload(app: AppHandle, state: State<QueueState>, id: i64) -> Re
             }
         }
     }
-    let item = db::queue_get(&state.db, id)?;
-    let _ = delete_chapter_files_for_item(&item, None)?;
     db::queue_redownload(&state.db, id)?;
     queue::start_worker(app);
     Ok(())
