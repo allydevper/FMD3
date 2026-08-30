@@ -209,6 +209,9 @@ pub fn start_worker(app: AppHandle) {
                 }
 
                 active.fetch_add(1, Ordering::SeqCst);
+                // Un ítem real se está despachando: el idle que venga después
+                // ya no es consecuencia directa de un cancel previo.
+                crate::lua_host::cf_webview::clear_keep_on_idle();
                 let app_item = app2.clone();
                 let cancel_item = cancel_flag.clone();
                 let db_item = db.clone();

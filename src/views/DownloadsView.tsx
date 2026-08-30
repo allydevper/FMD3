@@ -7,6 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { Icon } from "../components/Icon";
+import { appConfirm } from "../components/AppConfirm";
 import { appToast, appToastUndo } from "../components/AppToast";
 import { ICO } from "../icons";
 import { DL_HIST, DL_ST, SK } from "../constants";
@@ -924,6 +925,18 @@ export function DownloadsView() {
 
   async function handleStopAll() {
     await pauseIds(items.map((i) => i.id));
+  }
+
+  async function handleCfWebviewClose() {
+    const ok = await appConfirm({
+      title: "Cerrar navegador interno",
+      message:
+        "Esto cancelará las descargas en curso que dependen de Cloudflare. ¿Cerrar de todas formas?",
+      okLabel: "Cerrar y cancelar",
+      cancelLabel: "Cancelar",
+    });
+    if (!ok) return;
+    await api.cfWebviewUserClose();
   }
 
   async function handleClearDone() {
@@ -1975,9 +1988,17 @@ export function DownloadsView() {
                   <span className="ell">Navegador interno</span>
                   <button
                     type="button"
+                    className="dl-cf-min"
+                    title="Minimizar"
+                    onClick={() => setCfCollapsed(true)}
+                  >
+                    <Icon ico={ICO.minus} className="ico ico-sm" />
+                  </button>
+                  <button
+                    type="button"
                     className="dl-cf-close"
                     title="Cerrar y detener descargas en curso"
-                    onClick={() => void api.cfWebviewUserClose()}
+                    onClick={() => void handleCfWebviewClose()}
                   >
                     <Icon ico={ICO.x} className="ico ico-sm" />
                   </button>

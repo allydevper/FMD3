@@ -167,6 +167,12 @@ pub fn keep_on_next_idle() {
     KEEP_ON_IDLE.store(true, Ordering::SeqCst);
 }
 
+/// Se despachó un ítem real tras un cancel: el próximo idle ya no es
+/// consecuencia directa de ese cancel, así que no debe seguir protegido.
+pub fn clear_keep_on_idle() {
+    KEEP_ON_IDLE.store(false, Ordering::SeqCst);
+}
+
 pub fn set_dock_bounds(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
     if w < 40.0 || h < 40.0 {
         return;

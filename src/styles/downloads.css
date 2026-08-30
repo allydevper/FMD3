@@ -973,6 +973,7 @@
   min-width: 0;
 }
 
+.dl-cf-min,
 .dl-cf-close {
   flex: 0 0 auto;
   width: 26px;
@@ -988,6 +989,7 @@
   justify-content: center;
 }
 
+.dl-cf-min:hover,
 .dl-cf-close:hover {
   color: var(--text);
   background: var(--hover-tint);
