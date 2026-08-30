@@ -2,15 +2,23 @@
 //!
 //! Create/read the window from a worker thread: on Windows, `WebviewWindowBuilder`
 //! and `cookies()` deadlock if called from a synchronous command on the main thread.
+//!
+//! The window stays open across pages/chapters and is docked over a slot in
+//! Downloads. It is not hidden after each solve — only released when the queue
+//! goes idle for real, or when the user closes the panel.
 
 use parking_lot::Mutex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 use url::Url;
 
 use super::lua_log;
@@ -46,9 +54,10 @@ const PAGE_HOOK: &str = r#"
       }
     };
     const take = (t) => {
-      if (typeof t !== 'string' || t.length < 10) return;
-      if (/imgURL|pUrl/.test(t) && t.length > (window.__fmdJson || '').length) window.__fmdJson = t;
-      try { walk(JSON.parse(t), 0); } catch (e) {}
+      if (typeof t === 'string' && t.length >= 10) {
+        if (/imgURL|pUrl/.test(t) && t.length > (window.__fmdJson || '').length) window.__fmdJson = t;
+        try { walk(JSON.parse(t), 0); } catch (e) {}
+      }
     };
     const ofetch = window.fetch;
     if (typeof ofetch === 'function') {
@@ -74,6 +83,14 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 static GATE: Mutex<()> = Mutex::new(());
 static LAST_OK: Mutex<Option<LastSolve>> = Mutex::new(None);
 static LAST_HTML: Mutex<Option<HtmlCache>> = Mutex::new(None);
+static DOCK_BOUNDS: Mutex<Option<DockBounds>> = Mutex::new(None);
+
+static USER_CLOSED: AtomicBool = AtomicBool::new(false);
+static RELEASING: AtomicBool = AtomicBool::new(false);
+static KEEP_ON_IDLE: AtomicBool = AtomicBool::new(false);
+static COLLAPSED: AtomicBool = AtomicBool::new(false);
+static SESSION_INTRO: AtomicBool = AtomicBool::new(false);
+static FOCUSED_ONCE: AtomicBool = AtomicBool::new(false);
 
 struct LastSolve {
     at: Instant,
@@ -84,6 +101,14 @@ struct HtmlCache {
     url: String,
     at: Instant,
     session: WebviewCfSession,
+}
+
+#[derive(Clone, Copy)]
+struct DockBounds {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
 }
 
 #[derive(Clone)]
@@ -103,6 +128,13 @@ struct ReaderProbe {
     script: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+struct CfWebviewState {
+    active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+}
+
 pub fn set_app_handle(app: AppHandle) {
     let _ = APP.set(app);
 }
@@ -118,6 +150,69 @@ pub fn remember(mut session: WebviewCfSession) {
 pub fn forget() {
     *LAST_OK.lock() = None;
     *LAST_HTML.lock() = None;
+}
+
+pub fn is_window_open() -> bool {
+    APP.get()
+        .and_then(|app| app.get_webview_window(WINDOW_LABEL))
+        .is_some()
+}
+
+pub fn take_user_closed() -> bool {
+    USER_CLOSED.swap(false, Ordering::SeqCst)
+}
+
+/// Detener / cancelar un ítem en curso: el worker idle no debe destruir la ventana.
+pub fn keep_on_next_idle() {
+    KEEP_ON_IDLE.store(true, Ordering::SeqCst);
+}
+
+pub fn set_dock_bounds(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
+    if w < 40.0 || h < 40.0 {
+        return;
+    }
+    *DOCK_BOUNDS.lock() = Some(DockBounds { x, y, w, h });
+    if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
+        apply_dock(app, &w);
+    }
+}
+
+pub fn set_collapsed(app: &AppHandle, collapsed: bool) {
+    COLLAPSED.store(collapsed, Ordering::SeqCst);
+    if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
+        apply_dock(app, &w);
+    }
+}
+
+pub fn reapply_dock(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
+        apply_dock(app, &w);
+    }
+}
+
+/// Cola vacía de verdad: cerrar el panel. Si el usuario detuvo, se conserva.
+pub fn release_if_idle() {
+    if KEEP_ON_IDLE.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    destroy_window();
+}
+
+/// Cierre explícito del panel / ventana: cancela ítems running y destruye.
+pub fn user_closed(app: &AppHandle) {
+    USER_CLOSED.store(true, Ordering::SeqCst);
+    crate::queue::cancel_all_running(app);
+    destroy_window();
+}
+
+pub fn on_window_destroyed(app: &AppHandle) {
+    reset_session_ui();
+    emit_state(app, false, None);
+    if RELEASING.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    USER_CLOSED.store(true, Ordering::SeqCst);
+    crate::queue::cancel_all_running(app);
 }
 
 /// Cookie-only reuse (HTTP retries). Does not return page HTML.
@@ -186,7 +281,10 @@ fn solve_locked(url: &str, abort: &impl Fn() -> bool) -> Option<WebviewCfSession
         return None;
     }
 
-    lua_log::emit_lua_log("Cloudflare: abriendo el navegador interno…");
+    let first = !SESSION_INTRO.load(Ordering::SeqCst);
+    if first {
+        lua_log::emit_lua_log("Cloudflare: abriendo el navegador interno…");
+    }
 
     let window = match ensure_window(&app, parsed.clone()) {
         Some(w) => w,
@@ -196,36 +294,37 @@ fn solve_locked(url: &str, abort: &impl Fn() -> bool) -> Option<WebviewCfSession
         }
     };
 
-    let _ = window.set_skip_taskbar(false);
-    let _ = window.set_always_on_top(true);
-    let _ = window.show();
-    let _ = window.set_focus();
-    lua_log::emit_lua_log("Cloudflare: si aparece un captcha, complétalo en la ventana.");
-    lua_log::emit_lua_log("Cloudflare: esperando que el lector cargue las páginas…");
+    if first {
+        lua_log::emit_lua_log("Cloudflare: si aparece un captcha, complétalo en el panel.");
+        lua_log::emit_lua_log("Cloudflare: esperando que el lector cargue las páginas…");
+        SESSION_INTRO.store(true, Ordering::SeqCst);
+    }
 
     let hard_until = Instant::now() + VISIBLE_WAIT;
 
     loop {
         if abort() {
             lua_log::emit_lua_log("Cloudflare: cancelado.");
-            hide_window(&window);
             return None;
         }
         if app.get_webview_window(WINDOW_LABEL).is_none() {
-            lua_log::emit_lua_log("Cloudflare: ventana cerrada.");
+            if !RELEASING.load(Ordering::SeqCst) {
+                USER_CLOSED.store(true, Ordering::SeqCst);
+                lua_log::emit_lua_log("Cloudflare: ventana cerrada.");
+            }
             return None;
         }
 
-        if let Some(session) = try_collect(&window, &parsed) {
-            lua_log::emit_lua_log("Cloudflare: lector listo.");
-            hide_window(&window);
+        if let Some(session) = try_collect(&window, &parsed, first) {
+            if first {
+                lua_log::emit_lua_log("Cloudflare: lector listo.");
+            }
             return Some(session);
         }
 
         if Instant::now() >= hard_until {
             dump_timeout_html(&window);
             lua_log::emit_lua_log("Cloudflare: tiempo agotado esperando el lector.");
-            hide_window(&window);
             return None;
         }
         thread::sleep(POLL);
@@ -235,32 +334,99 @@ fn solve_locked(url: &str, abort: &impl Fn() -> bool) -> Option<WebviewCfSession
 fn ensure_window(app: &AppHandle, url: Url) -> Option<WebviewWindow> {
     if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
         let _ = w.eval(PAGE_HOOK);
-        let _ = w.navigate(url);
-        Some(w)
-    } else {
-        WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::External(url))
-            .title("Completa Cloudflare")
-            .inner_size(520.0, 720.0)
-            .center()
-            .visible(true)
-            .skip_taskbar(false)
-            .always_on_top(true)
-            .initialization_script(PAGE_HOOK)
-            .build()
-            .map_err(|e| {
-                lua_log::emit_lua_log(&format!(
-                    "Cloudflare: no se pudo abrir el navegador interno ({e})"
-                ));
-                e
-            })
-            .ok()
+        let _ = w.navigate(url.clone());
+        emit_state(app, true, Some(url.as_str()));
+        apply_dock(app, &w);
+        return Some(w);
+    }
+
+    USER_CLOSED.store(false, Ordering::SeqCst);
+    FOCUSED_ONCE.store(false, Ordering::SeqCst);
+
+    let builder = window_builder(app, url.clone());
+    let builder = match app.get_webview_window("main") {
+        Some(main) => builder.parent(&main).unwrap_or_else(|_| window_builder(app, url.clone())),
+        None => builder,
+    };
+
+    let window = builder
+        .build()
+        .map_err(|e| {
+            lua_log::emit_lua_log(&format!(
+                "Cloudflare: no se pudo abrir el navegador interno ({e})"
+            ));
+            e
+        })
+        .ok()?;
+
+    emit_state(app, true, Some(url.as_str()));
+    apply_dock(app, &window);
+    Some(window)
+}
+
+fn window_builder(app: &AppHandle, url: Url) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::External(url))
+        .title("Navegador interno")
+        .inner_size(360.0, 520.0)
+        .decorations(false)
+        .resizable(false)
+        .visible(false)
+        .skip_taskbar(true)
+        .always_on_top(false)
+        .initialization_script(PAGE_HOOK)
+}
+
+fn apply_dock(app: &AppHandle, window: &WebviewWindow) {
+    if COLLAPSED.load(Ordering::SeqCst) {
+        let _ = window.hide();
+        return;
+    }
+    let Some(bounds) = *DOCK_BOUNDS.lock() else {
+        let _ = window.hide();
+        return;
+    };
+    if let Some(main) = app.get_webview_window("main") {
+        if let (Ok(pos), Ok(scale)) = (main.inner_position(), main.scale_factor()) {
+            let x = pos.x + (bounds.x * scale).round() as i32;
+            let y = pos.y + (bounds.y * scale).round() as i32;
+            let w = (bounds.w * scale).round().max(1.0) as u32;
+            let h = (bounds.h * scale).round().max(1.0) as u32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+            let _ = window.set_size(PhysicalSize::new(w, h));
+        }
+    }
+    let _ = window.show();
+    if !FOCUSED_ONCE.swap(true, Ordering::SeqCst) {
+        let _ = window.set_focus();
     }
 }
 
-fn hide_window(window: &WebviewWindow) {
-    let _ = window.set_always_on_top(false);
-    let _ = window.set_skip_taskbar(true);
-    let _ = window.hide();
+fn emit_state(app: &AppHandle, active: bool, url: Option<&str>) {
+    let payload = CfWebviewState {
+        active,
+        url: url.map(|u| u.to_string()),
+    };
+    let _ = app.emit("cf-webview-state", &payload);
+    let _ = app.emit_to("main", "cf-webview-state", &payload);
+}
+
+fn destroy_window() {
+    if let Some(app) = APP.get() {
+        if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
+            RELEASING.store(true, Ordering::SeqCst);
+            let _ = w.close();
+        }
+        emit_state(app, false, None);
+    }
+    reset_session_ui();
+    forget();
+}
+
+fn reset_session_ui() {
+    SESSION_INTRO.store(false, Ordering::SeqCst);
+    FOCUSED_ONCE.store(false, Ordering::SeqCst);
+    COLLAPSED.store(false, Ordering::SeqCst);
+    *DOCK_BOUNDS.lock() = None;
 }
 
 /// Writes `html` to the app's debug folder, only when logging is enabled.
@@ -285,12 +451,11 @@ fn dump_html(html: &str, reason: &str) {
 
 fn dump_timeout_html(window: &WebviewWindow) {
     if let Some(html) = webview_html(window) {
-        // `dump_html` already logs when it actually writes (log.enabled).
         dump_html(&html, "timeout");
     }
 }
 
-fn try_collect(window: &WebviewWindow, url: &Url) -> Option<WebviewCfSession> {
+fn try_collect(window: &WebviewWindow, url: &Url, first: bool) -> Option<WebviewCfSession> {
     let probe = reader_probe(window, url.path())?;
     match probe.state.as_str() {
         "ok" => {}
@@ -300,15 +465,21 @@ fn try_collect(window: &WebviewWindow, url: &Url) -> Option<WebviewCfSession> {
     if script.is_empty() {
         return None;
     }
-    if let Some(n) = probe.count {
-        lua_log::emit_lua_log(&format!("Cloudflare: {n} páginas en el lector."));
+    if first {
+        if let Some(n) = probe.count {
+            lua_log::emit_lua_log(&format!("Cloudflare: {n} páginas en el lector."));
+        }
+    } else if let Some(n) = probe.count {
+        lua_log::emit_lua_log(&format!("Cloudflare: página lista ({n})."));
+    } else {
+        lua_log::emit_lua_log("Cloudflare: página lista.");
     }
     let host = url.host_str()?.to_ascii_lowercase();
     let (raw_cookies, via_fallback) = match window.cookies_for_url(url.clone()).ok() {
         Some(c) => (c, false),
         None => (window.cookies().unwrap_or_default(), true),
     };
-    if via_fallback {
+    if via_fallback && first {
         lua_log::emit_lua_log(
             "Cloudflare: cookies_for_url falló; filtrando por dominio antes de usarlas.",
         );

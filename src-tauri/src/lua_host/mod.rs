@@ -1,4 +1,4 @@
-mod cf_webview;
+pub mod cf_webview;
 mod crypto;
 mod duktape_js;
 mod fmd_env;

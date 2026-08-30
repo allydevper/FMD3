@@ -880,3 +880,121 @@
   flex: 0 0 auto;
   color: currentColor;
 }
+
+.dl-cf-panel {
+  position: relative;
+  flex: 0 0 360px;
+  width: 360px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel);
+  transition:
+    flex-basis 0.18s ease,
+    width 0.18s ease,
+    max-width 0.18s ease;
+}
+
+.dl-cf-panel.is-collapsed {
+  flex-basis: 16px;
+  width: 16px;
+  max-width: 16px;
+}
+
+.dl-cf-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  opacity: 1;
+  transition: opacity 0.18s ease;
+}
+
+.dl-cf-panel.is-collapsed .dl-cf-body {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dl-cf-notch {
+  position: absolute;
+  left: 0;
+  bottom: 10px;
+  z-index: 6;
+  width: 16px;
+  height: 48px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-left: 0;
+  border-radius: 0 6px 6px 0;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.92;
+}
+
+.dl-cf-notch:hover {
+  opacity: 1;
+  color: var(--text);
+  background: var(--hover-tint);
+}
+
+.dl-cf-notch-ico {
+  transform: rotate(-90deg);
+  transition: transform 0.22s ease;
+}
+
+.dl-cf-notch-ico.is-collapsed {
+  transform: rotate(90deg);
+}
+
+.dl-cf-head {
+  flex: 0 0 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dl-cf-head .ell {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dl-cf-close {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dl-cf-close:hover {
+  color: var(--text);
+  background: var(--hover-tint);
+}
+
+.dl-cf-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--deep, #111);
+}

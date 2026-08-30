@@ -121,6 +121,8 @@ type AppContextValue = {
   /** Navigate to Options and land on a specific tab. */
   openOptionsTab: (target: PendingOptionsTab) => void;
   clearPendingOptionsTab: () => void;
+  /** Internal Cloudflare browser is docked over Downloads. */
+  cfWebviewActive: boolean;
 };
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -156,6 +158,8 @@ function parseBool(raw: string | null, def = false): boolean {
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [activeNav, setActiveNav] = useState<NavId>("info");
+  const [cfWebviewActive, setCfWebviewActive] = useState(false);
+  const cfNavSwitchedRef = useRef(false);
   const [theme, setThemeState] = useState<AppTheme>("system");
   const [darkTheme, setDarkTheme] = useState(() => localStorage.getItem(THEME_KEY) === "1");
   const [logOpen, setLogOpen] = useState(false);
@@ -320,6 +324,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void api
       .onLuaLog((msg) => {
         setLogLines((prev) => [...prev.slice(-400), { text: msg, kind: "" }]);
+      })
+      .then((u) => {
+        un = u;
+      });
+    return () => un?.();
+  }, []);
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    void api
+      .onCfWebviewState((s) => {
+        setCfWebviewActive(s.active);
+        if (s.active && !cfNavSwitchedRef.current) {
+          cfNavSwitchedRef.current = true;
+          setActiveNav("downloads");
+        }
+        if (!s.active) cfNavSwitchedRef.current = false;
       })
       .then((u) => {
         un = u;
@@ -817,6 +838,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pendingOptionsTab,
     openOptionsTab,
     clearPendingOptionsTab,
+    cfWebviewActive,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

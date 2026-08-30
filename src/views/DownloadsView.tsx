@@ -404,7 +404,10 @@ function snapshotItemsForUndo(removed: QueueItem[]): {
 }
 
 export function DownloadsView() {
-  const { activeNav, modules, log, setActiveNav, setPendingMangaOpen } = useApp();
+  const { activeNav, modules, log, setActiveNav, setPendingMangaOpen, cfWebviewActive } =
+    useApp();
+  const [cfCollapsed, setCfCollapsed] = useState(false);
+  const cfSlotRef = useRef<HTMLDivElement>(null);
   const [items, setItems] = useState<QueueItem[]>([]);
   const [liveProgress, setLiveProgress] = useState<Map<number, LiveProgress>>(
     () => new Map(),
@@ -493,6 +496,36 @@ export function DownloadsView() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNav]);
+
+  useEffect(() => {
+    if (!cfWebviewActive) {
+      setCfCollapsed(false);
+      return;
+    }
+    const hide = cfCollapsed || activeNav !== "downloads";
+    void api.cfWebviewSetCollapsed(hide);
+  }, [cfWebviewActive, cfCollapsed, activeNav]);
+
+  useEffect(() => {
+    if (!cfWebviewActive || cfCollapsed || activeNav !== "downloads") return;
+    const slot = cfSlotRef.current;
+    if (!slot) return;
+
+    const send = () => {
+      const r = slot.getBoundingClientRect();
+      if (r.width < 40 || r.height < 40) return;
+      void api.cfWebviewSetBounds({ x: r.left, y: r.top, w: r.width, h: r.height });
+    };
+
+    send();
+    const ro = new ResizeObserver(() => send());
+    ro.observe(slot);
+    window.addEventListener("resize", send);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", send);
+    };
+  }, [cfWebviewActive, cfCollapsed, activeNav]);
 
   useEffect(() => {
     let unChanged: (() => void) | undefined;
@@ -1920,6 +1953,39 @@ export function DownloadsView() {
               </button>
             </footer>
           </div>
+          {cfWebviewActive ? (
+            <aside
+              className={`dl-cf-panel${cfCollapsed ? " is-collapsed" : ""}`}
+              aria-label="Navegador interno"
+            >
+              <button
+                type="button"
+                className="dl-cf-notch"
+                title={cfCollapsed ? "Mostrar navegador interno" : "Ocultar navegador interno"}
+                aria-expanded={!cfCollapsed}
+                onClick={() => setCfCollapsed((c) => !c)}
+              >
+                <Icon
+                  ico={ICO.chevron}
+                  className={`ico ico-sm dl-cf-notch-ico${cfCollapsed ? " is-collapsed" : ""}`}
+                />
+              </button>
+              <div className="dl-cf-body">
+                <div className="dl-cf-head">
+                  <span className="ell">Navegador interno</span>
+                  <button
+                    type="button"
+                    className="dl-cf-close"
+                    title="Cerrar y detener descargas en curso"
+                    onClick={() => void api.cfWebviewUserClose()}
+                  >
+                    <Icon ico={ICO.x} className="ico ico-sm" />
+                  </button>
+                </div>
+                <div id="dl-cf-slot" ref={cfSlotRef} className="dl-cf-slot" />
+              </div>
+            </aside>
+          ) : null}
         </div>
       </div>
 

@@ -442,12 +442,17 @@ impl HttpClient {
             super::lua_log::emit_lua_log("Cloudflare: URL inválida, no se puede aislar la sesión por dominio.");
             return false;
         };
-        super::lua_log::emit_lua_log(&format!(
-            "Cloudflare: abriendo navegador para {}",
-            log_safe_url(url)
-        ));
+        if !super::cf_webview::is_window_open() {
+            super::lua_log::emit_lua_log(&format!(
+                "Cloudflare: abriendo navegador para {}",
+                log_safe_url(url)
+            ));
+        }
         let http = self.clone();
         let Some(session) = super::cf_webview::solve_for_html(url, move || http.is_terminated()) else {
+            if super::cf_webview::take_user_closed() {
+                self.set_terminated(true);
+            }
             return false;
         };
         self.apply_webview_session(&host, &session.user_agent, &session.cookies);
@@ -771,7 +776,10 @@ impl HttpClient {
             return;
         }
 
-        super::lua_log::emit_lua_log(&format!("Cloudflare: bloqueo en {}", log_safe_url(url)));
+        let window_open = super::cf_webview::is_window_open();
+        if !window_open {
+            super::lua_log::emit_lua_log(&format!("Cloudflare: bloqueo en {}", log_safe_url(url)));
+        }
 
         let host = host_of(url);
         if host.is_none() {
@@ -780,10 +788,9 @@ impl HttpClient {
             );
         }
 
-        // `cloudflare.lua` itself decides whether to skip IUAM (it can't solve
-        // Turnstile) while still trying FlareSolverr when configured — see
-        // `_m.bypass`. Always call in so that path stays reachable.
-        if super::website_bypass_host::try_bypass(self, method, url) {
+        // First hit still tries FlareSolverr / IUAM. Once the internal browser
+        // is already up, skip the failed-webdriver log spam and go straight in.
+        if !window_open && super::website_bypass_host::try_bypass(self, method, url) {
             if let Some(h) = host.as_deref() {
                 self.persist_session(h);
             }
@@ -804,6 +811,9 @@ impl HttpClient {
             let http = http.clone();
             move || http.is_terminated()
         }) else {
+            if super::cf_webview::take_user_closed() {
+                self.set_terminated(true);
+            }
             return;
         };
         if let Some(h) = host.as_deref() {
@@ -820,6 +830,9 @@ impl HttpClient {
                     let http = http.clone();
                     move || http.is_terminated()
                 }) else {
+                    if super::cf_webview::take_user_closed() {
+                        self.set_terminated(true);
+                    }
                     return;
                 };
                 session = again;

@@ -540,6 +540,27 @@ export function onAskExitConfirm(handler: () => void): Promise<UnlistenFn> {
   return listen("ask-exit-confirm", () => handler());
 }
 
+export type CfWebviewState = {
+  active: boolean;
+  url?: string | null;
+};
+
+export function cfWebviewSetBounds(bounds: { x: number; y: number; w: number; h: number }) {
+  return invoke("cf_webview_set_bounds", { bounds });
+}
+
+export function cfWebviewSetCollapsed(collapsed: boolean) {
+  return invoke("cf_webview_set_collapsed", { collapsed });
+}
+
+export function cfWebviewUserClose() {
+  return invoke("cf_webview_user_close");
+}
+
+export function onCfWebviewState(handler: (s: CfWebviewState) => void): Promise<UnlistenFn> {
+  return listen<CfWebviewState>("cf-webview-state", (e) => handler(e.payload));
+}
+
 export function appConfirmExit() {
   return invoke("app_confirm_exit");
 }

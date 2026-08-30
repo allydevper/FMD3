@@ -283,6 +283,8 @@ pub fn start_worker(app: AppHandle) {
         let state = app2.state::<QueueState>();
         if db::queue_has_pending(&state.db).unwrap_or(false) {
             start_worker(app2);
+        } else {
+            crate::lua_host::cf_webview::release_if_idle();
         }
         // FMD2 LetFMDDo — UI ocultada; no salir/apagar/hibernar hasta reactivar la opción.
         // else if crate::settings_keys::after_finish_exit() {
@@ -658,6 +660,26 @@ pub fn request_cancel(state: &QueueState, id: i64) {
         if let Some(flag) = map.get(&id) {
             flag.store(true, Ordering::SeqCst);
         }
+    }
+}
+
+/// Cancel every item currently `running` (CF panel closed). Pending stays queued.
+pub fn cancel_all_running(app: &AppHandle) {
+    let state: State<QueueState> = app.state();
+    let Ok(items) = db::queue_list(&state.db) else {
+        return;
+    };
+    let mut any = false;
+    for item in items {
+        if item.status != "running" {
+            continue;
+        }
+        request_cancel(&state, item.id);
+        let _ = db::queue_cancel(&state.db, item.id);
+        any = true;
+    }
+    if any {
+        emit_changed(app);
     }
 }
 

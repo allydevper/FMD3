@@ -951,8 +951,32 @@ pub fn queue_cancel(state: State<QueueState>, id: i64) -> Result<(), String> {
     let item = db::queue_get(&state.db, id)?;
     if item.status == "running" {
         queue::request_cancel(&state, id);
+        crate::lua_host::cf_webview::keep_on_next_idle();
     }
     db::queue_cancel(&state.db, id)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CfDockBounds {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+#[tauri::command]
+pub fn cf_webview_set_bounds(app: AppHandle, bounds: CfDockBounds) {
+    crate::lua_host::cf_webview::set_dock_bounds(&app, bounds.x, bounds.y, bounds.w, bounds.h);
+}
+
+#[tauri::command]
+pub fn cf_webview_set_collapsed(app: AppHandle, collapsed: bool) {
+    crate::lua_host::cf_webview::set_collapsed(&app, collapsed);
+}
+
+#[tauri::command]
+pub fn cf_webview_user_close(app: AppHandle) {
+    crate::lua_host::cf_webview::user_closed(&app);
 }
 
 #[tauri::command]

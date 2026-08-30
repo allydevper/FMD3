@@ -288,10 +288,22 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == crate::lua_host::cf_webview::WINDOW_LABEL {
+                if matches!(event, tauri::WindowEvent::Destroyed) {
+                    crate::lua_host::cf_webview::on_window_destroyed(window.app_handle());
+                }
+                return;
+            }
             // Cloudflare's helper window is not the app: closing it must not
             // ask to quit, vacuum DBs, or hide the main UI to the tray.
             if window.label() != "main" {
                 return;
+            }
+            if matches!(
+                event,
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)
+            ) {
+                crate::lua_host::cf_webview::reapply_dock(window.app_handle());
             }
             // FMD2 parity: minimize → tray (not close → tray).
             if matches!(event, tauri::WindowEvent::Resized(_)) {
@@ -419,6 +431,9 @@ pub fn run() {
             commands::catalog_download_fmd2db,
             commands::app_confirm_exit,
             commands::app_cancel_exit,
+            commands::cf_webview_set_bounds,
+            commands::cf_webview_set_collapsed,
+            commands::cf_webview_user_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
