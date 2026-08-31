@@ -139,6 +139,46 @@ local function addPageLink(base, i)
 	return true
 end
 
+-- A single <img> is enough for 1-page chapters, but a logo/icon is not.
+local function looksLikePageUrl(i)
+	if i == nil or i == '' or #i < 20 then return false end
+	local low = i:lower()
+	if low:find('logo', 1, true) or low:find('/assets/', 1, true)
+		or low:find('favicon', 1, true) or low:sub(1, 5) == 'data:' then
+		return false
+	end
+	return low:find('img.php?src=', 1, true)
+		or low:find('/umanga/', 1, true)
+		or low:find('.jpg', 1, true) or low:find('.jpeg', 1, true)
+		or low:find('.png', 1, true) or low:find('.webp', 1, true)
+		or low:find('.gif', 1, true)
+end
+
+local function addImgsFromHtml(body, base)
+	local n = 0
+	for tag in body:gmatch('<[Ii][Mm][Gg][^>]+>') do
+		local i = tag:match('[Dd][Aa][Tt][Aa]%-src%s*=%s*["\']([^"\']+)["\']')
+			or tag:match('[Dd][Aa][Tt][Aa]%-original%s*=%s*["\']([^"\']+)["\']')
+			or tag:match('[Ss][Rr][Cc]%s*=%s*["\']([^"\']+)["\']')
+			or tag:match('[Ss][Rr][Cc][Ss][Ee][Tt]%s*=%s*["\']([^"\']+)["\']')
+		if i then
+			i = i:match('^(%S+)') or i
+			if looksLikePageUrl(i) and addPageLink(base, i) then n = n + 1 end
+		end
+	end
+	if n == 0 then
+		for tag in body:gmatch('<[Ss][Oo][Uu][Rr][Cc][Ee][^>]+>') do
+			local i = tag:match('[Ss][Rr][Cc][Ss][Ee][Tt]%s*=%s*["\']([^"\']+)["\']')
+				or tag:match('[Ss][Rr][Cc]%s*=%s*["\']([^"\']+)["\']')
+			if i then
+				i = i:match('^(%S+)') or i
+				if looksLikePageUrl(i) and addPageLink(base, i) then n = n + 1 end
+			end
+		end
+	end
+	return n
+end
+
 local function addPagesFrom(body)
 	if isCloudflareBody(body) then return false end
 	local base = body:match('<base href="(.-)"')
@@ -155,6 +195,9 @@ local function addPagesFrom(body)
 		for i in src:gmatch('imgURL":"(.-)"') do
 			if addPageLink(base, i) then n = n + 1 end
 		end
+	end
+	if n == 0 then
+		n = addImgsFromHtml(body, base)
 	end
 	return n > 0
 end
@@ -204,7 +247,7 @@ function GetPageNumber()
 			return no_error
 		end
 	else
-		print('KuManga: navegador interno no disponible (actívalo en Red)')
+		print('KuManga: el navegador interno no devolvió páginas')
 	end
 	if isCloudflareBody(body) then
 		print('KuManga: el lector sigue en Cloudflare, sin pUrl')

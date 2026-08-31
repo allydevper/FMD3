@@ -329,6 +329,10 @@ fn solve_locked(url: &str, abort: &impl Fn() -> bool) -> Option<WebviewCfSession
         }
 
         if Instant::now() >= hard_until {
+            if let Some(session) = try_collect(&window, &parsed, first) {
+                lua_log::emit_lua_log("Cloudflare: usando las páginas encontradas al agotar el tiempo.");
+                return Some(session);
+            }
             dump_timeout_html(&window);
             lua_log::emit_lua_log("Cloudflare: tiempo agotado esperando el lector.");
             return None;
@@ -557,12 +561,22 @@ fn reader_probe(window: &WebviewWindow, path: &str) -> Option<ReaderProbe> {
           }
         }
 
-        const imgs = Array.from(document.querySelectorAll('img, source')).map((i) =>
-          i.getAttribute('data-src') || i.getAttribute('data-original') || i.getAttribute('src') || i.getAttribute('srcset') || ''
-        ).map((s) => s.split(' ')[0]).filter((s) =>
-          s && s.length > 20 && !s.includes('logo') && !s.includes('/assets/') && !s.includes('favicon') && !s.startsWith('data:')
-        );
-        if (imgs.length > 1) return ok(imgs.map((u) => ({imgURL: u})));
+        const looksLikePage = (el, s) => {
+          if (/img\.php\?src=|\/umanga\/|\.(jpe?g|png|webp|gif)(\?|$)/i.test(s)) return true;
+          const w = (el && (el.naturalWidth || el.width)) || 0;
+          const h = (el && (el.naturalHeight || el.height)) || 0;
+          return w >= 400 || h >= 400;
+        };
+        const rawImgs = [];
+        for (const el of document.querySelectorAll('img, source')) {
+          const raw = el.getAttribute('data-src') || el.getAttribute('data-original') || el.getAttribute('src') || el.getAttribute('srcset') || '';
+          const s = raw.split(' ')[0];
+          if (!s || s.length <= 20 || s.includes('logo') || s.includes('/assets/') || s.includes('favicon') || s.startsWith('data:')) continue;
+          rawImgs.push({el, s});
+        }
+        const pageImgs = rawImgs.filter(({el, s}) => looksLikePage(el, s));
+        if (pageImgs.length >= 1) return ok(pageImgs.map(({s}) => ({imgURL: s})));
+        if (rawImgs.length > 1) return ok(rawImgs.map(({s}) => ({imgURL: s})));
 
         return {state:'wait'};
       } catch (e) {
