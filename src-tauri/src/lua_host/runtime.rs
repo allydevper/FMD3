@@ -1733,7 +1733,19 @@ pub fn resolve_queue_item_paths(
         &authors,
         &artists,
     );
-    (manga, chapter, chapter_display)
+    (manga_dir_from_chapter(manga, &chapter), chapter, chapter_display)
+}
+
+/// After fitting title+chapter, the on-disk manga folder is the chapter parent.
+/// When chapter folders are off, `chapter` equals `manga` and we keep `manga`.
+fn manga_dir_from_chapter(manga: PathBuf, chapter: &Path) -> PathBuf {
+    if chapter == manga.as_path() {
+        return manga;
+    }
+    match chapter.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => manga,
+    }
 }
 
 /// Todo lo que `work_basename` necesita además del índice de página, resuelto
@@ -3251,5 +3263,31 @@ mod tests {
                 "alpha source {alpha:?}"
             );
         }
+    }
+
+    #[test]
+    fn manga_path_follows_fitted_chapter_parent() {
+        let base = PathBuf::from(
+            r"C:\Users\WILMER\Desktop\Proyects\FMD3\src-tauri\target\debug\downloads",
+        );
+        let title = "Reencarn_ como un villano menor en mi mundo de juego favorito usando mis conocimientos del juego para vivir libremente, de alguna manera termin_ siendo famoso en todas partes";
+        let manga = crate::paths::fit_download_path_with(&base.join(title), false);
+        let chapter = crate::paths::fit_download_path_with(
+            &manga.join("006 - Capitulo 006"),
+            false,
+        );
+        let aligned = manga_dir_from_chapter(manga, &chapter);
+        assert_eq!(
+            aligned,
+            chapter.parent().unwrap(),
+            "manga folder must be the on-disk parent after a second fit"
+        );
+
+        let same = PathBuf::from(r"C:\Manga\Short");
+        assert_eq!(
+            manga_dir_from_chapter(same.clone(), &same),
+            same,
+            "without a chapter folder, manga path is unchanged"
+        );
     }
 }

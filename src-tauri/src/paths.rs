@@ -94,6 +94,11 @@ pub fn fit_download_path_with(path: &Path, long_paths: bool) -> PathBuf {
     }
 }
 
+/// Floor for a shortened folder name. Keeps chapter numbering (`006 - Capit`)
+/// distinct instead of collapsing every `0xx` leaf to `0`.
+const MIN_COMPONENT: usize = 12;
+const SHORTEN_STEP: usize = 8;
+
 fn trim_component(name: &str) -> String {
     let mut s = name.trim_end_matches([' ', '.']).to_string();
     if s.is_empty() {
@@ -102,7 +107,54 @@ fn trim_component(name: &str) -> String {
     s
 }
 
-/// Truncate leaf folder names until the full path string is ≤ `max_chars`.
+fn try_shorten_component(cur: &str) -> Option<String> {
+    let n = cur.chars().count();
+    if n <= MIN_COMPONENT {
+        return None;
+    }
+    let keep = n.saturating_sub(SHORTEN_STEP).max(MIN_COMPONENT);
+    let next = trim_component(&cur.chars().take(keep).collect::<String>());
+    (next != cur).then_some(next)
+}
+
+/// Prefer the longest parent (manga title). Only then shorten the leaf (chapter).
+fn index_to_shorten(parts: &[String], first_mutable: usize) -> Option<usize> {
+    if first_mutable >= parts.len() {
+        return None;
+    }
+    let last = parts.len() - 1;
+    let mut best: Option<(usize, usize)> = None;
+    for i in first_mutable..parts.len() {
+        // Skip the leaf while a parent can still shrink.
+        if i == last && first_mutable < last {
+            continue;
+        }
+        if parts[i].is_empty() {
+            continue;
+        }
+        let n = parts[i].chars().count();
+        if n <= MIN_COMPONENT {
+            continue;
+        }
+        if best.map(|(len, _)| n > len).unwrap_or(true) {
+            best = Some((n, i));
+        }
+    }
+    if let Some((_, i)) = best {
+        return Some(i);
+    }
+    if !parts[last].is_empty() && parts[last].chars().count() > MIN_COMPONENT {
+        Some(last)
+    } else {
+        None
+    }
+}
+
+/// Shorten folder names until the full path string is ≤ `max_chars`.
+///
+/// Parents (title) go first so two chapters that differ at the start stay
+/// distinct. No component is cut below [`MIN_COMPONENT`] unless a hard clip
+/// of the whole string is the only way to fit.
 fn truncate_path_components(path: &Path, max_chars: usize) -> PathBuf {
     let s = path.to_string_lossy().replace('/', "\\");
     if s.chars().count() <= max_chars {
@@ -130,30 +182,22 @@ fn truncate_path_components(path: &Path, max_chars: usize) -> PathBuf {
         if joined.chars().count() <= max_chars {
             return PathBuf::from(joined);
         }
-        let mut shortened = false;
-        for i in (first_mutable..parts.len()).rev() {
-            if parts[i].is_empty() {
-                continue;
-            }
-            let cur = &parts[i];
-            if cur.chars().count() <= 1 {
-                continue;
-            }
-            let keep = cur.chars().count().saturating_sub(8).max(1);
-            let mut next: String = cur.chars().take(keep).collect();
-            next = trim_component(&next);
-            if next != *cur {
-                parts[i] = next;
-                shortened = true;
-                break;
-            }
-        }
-        if !shortened {
-            let mut hard: String = join_split_parts(&parts).chars().take(max_chars).collect();
+        let Some(i) = index_to_shorten(&parts, first_mutable) else {
+            let mut hard: String = joined.chars().take(max_chars).collect();
             while hard.ends_with(['\\', ' ', '.']) {
                 hard.pop();
             }
             return PathBuf::from(trim_component(&hard));
+        };
+        match try_shorten_component(&parts[i]) {
+            Some(next) => parts[i] = next,
+            None => {
+                let mut hard: String = joined.chars().take(max_chars).collect();
+                while hard.ends_with(['\\', ' ', '.']) {
+                    hard.pop();
+                }
+                return PathBuf::from(trim_component(&hard));
+            }
         }
     }
 }
@@ -243,5 +287,65 @@ mod tests {
             fitted.display()
         );
         assert!(fitted.to_string_lossy().starts_with(r"C:\Manga\"));
+    }
+
+    fn downloads_prefix() -> PathBuf {
+        PathBuf::from(
+            r"C:\Users\WILMER\Desktop\Proyects\FMD3\src-tauri\target\debug\downloads",
+        )
+    }
+
+    #[test]
+    fn truncate_keeps_chapter_numbering_distinct() {
+        let title = "Reencarn_ como un villano menor en mi mundo de juego favorito usando mis conocimientos del juego para vivir libremente, de alguna manera termin_ siendo famoso en todas partes";
+        let a = truncate_path_components(
+            &downloads_prefix().join(title).join("006 - Capitulo 006"),
+            MAX_PATHDIR,
+        );
+        let b = truncate_path_components(
+            &downloads_prefix().join(title).join("011 - Capitulo 011"),
+            MAX_PATHDIR,
+        );
+        assert!(a.to_string_lossy().chars().count() <= MAX_PATHDIR);
+        assert!(b.to_string_lossy().chars().count() <= MAX_PATHDIR);
+        assert_ne!(a, b, "chapters must not collapse into the same folder");
+        assert_ne!(a.file_name().and_then(|n| n.to_str()), Some("0"));
+        assert_ne!(b.file_name().and_then(|n| n.to_str()), Some("0"));
+        let a_name = a.file_name().unwrap().to_string_lossy();
+        let b_name = b.file_name().unwrap().to_string_lossy();
+        assert!(a_name.starts_with("006"), "got {a_name}");
+        assert!(b_name.starts_with("011"), "got {b_name}");
+    }
+
+    #[test]
+    fn truncate_long_chapters_stay_distinct() {
+        let title = "T".repeat(180);
+        let tail = " El regreso del villano con un nombre absurdo que no cabe";
+        let a = truncate_path_components(
+            &downloads_prefix()
+                .join(&title)
+                .join(format!("006 - Capitulo 006{tail}")),
+            MAX_PATHDIR,
+        );
+        let b = truncate_path_components(
+            &downloads_prefix()
+                .join(&title)
+                .join(format!("011 - Capitulo 011{tail}")),
+            MAX_PATHDIR,
+        );
+        assert!(a.to_string_lossy().chars().count() <= MAX_PATHDIR);
+        assert!(b.to_string_lossy().chars().count() <= MAX_PATHDIR);
+        assert_ne!(a, b);
+        let a_name = a.file_name().unwrap().to_string_lossy();
+        let b_name = b.file_name().unwrap().to_string_lossy();
+        assert!(a_name.starts_with("006"), "got {a_name}");
+        assert!(b_name.starts_with("011"), "got {b_name}");
+    }
+
+    #[test]
+    fn truncate_single_huge_component_stays_under_max() {
+        let p = PathBuf::from(format!(r"C:\Manga\{}", "X".repeat(400)));
+        let fitted = truncate_path_components(&p, MAX_PATHDIR);
+        assert!(fitted.to_string_lossy().chars().count() <= MAX_PATHDIR);
     }
 }

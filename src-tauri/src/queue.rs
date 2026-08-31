@@ -529,7 +529,23 @@ fn process_item(
         // única copia y borrarlos volvería la pérdida irrecuperable.
         if outcome.skipped.is_empty() {
             if crate::settings_keys::pack_delete_folder() {
-                let _ = std::fs::remove_dir_all(crate::paths::fs_path(dir));
+                let key = if !item.chapter_path.trim().is_empty() {
+                    item.chapter_path.trim().to_string()
+                } else {
+                    dir.to_string_lossy().into_owned()
+                };
+                if db::pack_may_delete_chapter_dir(
+                    &app.state::<QueueState>().db,
+                    item.id,
+                    &key,
+                ) {
+                    let _ = std::fs::remove_dir_all(crate::paths::fs_path(dir));
+                } else {
+                    eprintln!(
+                        "pack: se conserva {} — otro ítem de la cola usa la misma carpeta",
+                        dir.display()
+                    );
+                }
             }
         } else if crate::settings_keys::pack_delete_folder() {
             eprintln!(

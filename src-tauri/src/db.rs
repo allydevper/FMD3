@@ -1599,6 +1599,35 @@ pub fn queue_reset_running_to_pending(db: &Db) -> Result<usize, String> {
     Ok(n)
 }
 
+/// Another queue row still occupies `path` (pending / running / paused /
+/// failed / cancelled). Used so pack does not `remove_dir_all` a folder that
+/// a sibling chapter is still writing.
+pub fn queue_chapter_path_shared(db: &Db, item_id: i64, path: &str) -> Result<bool, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Ok(false);
+    }
+    let conn = db.lock();
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM queue_items
+             WHERE id != ?1
+               AND status IN ('pending','running','paused','failed','cancelled')
+               AND lower(replace(trim(chapter_path), '/', '\\'))
+                 = lower(replace(trim(?2), '/', '\\'))",
+            params![item_id, path],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
+/// Pack may delete the source folder only if no sibling item shares it.
+/// Query errors fail closed (do not delete).
+pub fn pack_may_delete_chapter_dir(db: &Db, item_id: i64, path: &str) -> bool {
+    !queue_chapter_path_shared(db, item_id, path).unwrap_or(true)
+}
+
 pub fn queue_has_pending(db: &Db) -> Result<bool, String> {
     let conn = db.lock();
     let n: i64 = conn
@@ -2199,6 +2228,82 @@ mod tests {
         let keys = parse_seen_keys(&merged);
         assert_eq!(keys.len(), 3);
         assert!(keys.contains("/manga/foo/c-3"));
+    }
+
+    fn new_item(chapter_path: &str, link: &str) -> NewQueueItem {
+        NewQueueItem {
+            manga_title: "M".into(),
+            root_url: String::new(),
+            manga_url: String::new(),
+            module_id: String::new(),
+            chapter_index: 0,
+            chapter_name: "c".into(),
+            chapter_link: link.into(),
+            output_dir: String::new(),
+            manga_path: String::new(),
+            chapter_path: chapter_path.into(),
+            chapter_display: String::new(),
+            batch_id: String::new(),
+            pack_format: String::new(),
+        }
+    }
+
+    fn set_status(db: &Db, id: i64, status: &str) {
+        db.lock()
+            .execute(
+                "UPDATE queue_items SET status=?1 WHERE id=?2",
+                params![status, id],
+            )
+            .expect("set status");
+    }
+
+    #[test]
+    fn chapter_path_shared_blocks_delete() {
+        let db = test_main_db();
+        let shared = r"C:\dl\long title\0";
+        let ids = queue_add_many(
+            &db,
+            &[
+                new_item(shared, "/c/1"),
+                new_item(shared, "/c/2"),
+                new_item(r"C:\dl\other\006 - Capitulo 006", "/c/3"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(ids.len(), 3);
+
+        assert!(
+            queue_chapter_path_shared(&db, ids[0], shared).unwrap(),
+            "sibling pending row shares the folder"
+        );
+        assert!(
+            !pack_may_delete_chapter_dir(&db, ids[0], shared),
+            "pack must not delete a shared folder"
+        );
+        assert!(
+            pack_may_delete_chapter_dir(&db, ids[2], r"C:\dl\other\006 - Capitulo 006"),
+            "a unique folder may be deleted"
+        );
+
+        // Case and slash differences still count as the same path.
+        assert!(queue_chapter_path_shared(&db, ids[0], r"c:/dl/long title/0").unwrap());
+
+        set_status(&db, ids[1], "done");
+        assert!(
+            !queue_chapter_path_shared(&db, ids[0], shared).unwrap(),
+            "a finished sibling does not keep the folder"
+        );
+        assert!(pack_may_delete_chapter_dir(&db, ids[0], shared));
+
+        set_status(&db, ids[1], "failed");
+        assert!(
+            queue_chapter_path_shared(&db, ids[0], shared).unwrap(),
+            "failed sibling still owns the folder"
+        );
+        assert!(!pack_may_delete_chapter_dir(&db, ids[0], shared));
+
+        assert!(!queue_chapter_path_shared(&db, ids[0], "").unwrap());
+        assert!(!queue_chapter_path_shared(&db, ids[0], "   ").unwrap());
     }
 }
 
