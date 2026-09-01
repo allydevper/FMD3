@@ -1351,7 +1351,13 @@ export function InfoView() {
     return fallback.trim() || fallback;
   }
 
+  function resetCoverForLoad() {
+    coverEnsureSeqRef.current++;
+    setCover("", { localFallback: "" });
+  }
+
   async function applyCachedCover(moduleId: string, link: string) {
+    const seq = mangaLoadSeqRef.current;
     const keys = [link.trim()].filter(Boolean);
     const root = currentModule?.root_url || "";
     if (root) {
@@ -1361,8 +1367,8 @@ export function InfoView() {
     for (const key of keys) {
       try {
         const dataUrl = await api.coverLocalPath(moduleId, key);
+        if (seq !== mangaLoadSeqRef.current) return;
         if (!dataUrl) continue;
-        coverLocalFallbackRef.current = dataUrl;
         setCover(dataUrl, { localFallback: dataUrl, force: true });
         return;
       } catch {
@@ -1384,9 +1390,7 @@ export function InfoView() {
     try {
       const dataUrl = await api.coverEnsure(moduleId, link, coverUrl, referer || null);
       if (seq !== mangaLoadSeqRef.current || ensureId !== coverEnsureSeqRef.current) return;
-      coverLocalFallbackRef.current = dataUrl;
-      const needsPaint = coverIsDefaultRef.current || !coverDisplayKeyRef.current;
-      if (needsPaint) setCover(dataUrl, { localFallback: dataUrl, force: true });
+      setCover(dataUrl, { localFallback: dataUrl, force: true });
     } catch {
       /* keep remote / default */
     }
@@ -1564,6 +1568,7 @@ export function InfoView() {
 
     setMangaUrl(url);
     setMangaLoadingUrl(url);
+    resetCoverForLoad();
     log("Cargando info vía Lua GetInfo…");
     setLoadBtnDisabled(true);
     setChaptersLoading(true);
@@ -1819,8 +1824,7 @@ export function InfoView() {
       applyCatalogStub(e);
       return;
     }
-    coverEnsureSeqRef.current++;
-    setCover("", { localFallback: "" });
+    resetCoverForLoad();
     setInfoPanelOpen(true);
     applyCatalogStub(e);
     if (moduleId) void applyCachedCover(moduleId, e.link);
