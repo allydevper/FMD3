@@ -83,6 +83,8 @@ type AppContextValue = {
   /** Opt-in website IDs from Settings (modules.enabled). */
   enabledModuleIds: Set<string>;
   refreshEnabledModules: () => Promise<Set<string>>;
+  /** Persist + mark a site as active (e.g. after URL auto-detect). Returns true if newly enabled. */
+  ensureModuleEnabled: (id: string) => Promise<boolean>;
   /** Apply favorites interval check after Options save (or boot). */
   setFavAutoCheck: (on: boolean) => Promise<void>;
   /** True while startup/interval favorites check is running (no top bar). */
@@ -427,6 +429,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return next;
     });
     return next;
+  }, []);
+
+  const ensureModuleEnabled = useCallback(async (id: string) => {
+    const mid = id.trim();
+    if (!mid) return false;
+    const raw = (await api.settingsGet(SK.MODULES_ENABLED)) ?? "[]";
+    let ids: string[] = [];
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) ids = parsed.map(String);
+    } catch {
+      ids = [];
+    }
+    if (ids.includes(mid)) {
+      setEnabledModuleIds((prev) => (prev.has(mid) ? prev : new Set(ids)));
+      return false;
+    }
+    ids.push(mid);
+    await api.settingsSet(SK.MODULES_ENABLED, JSON.stringify(ids));
+    setEnabledModuleIds(new Set(ids));
+    return true;
   }, []);
 
   useEffect(() => {
@@ -815,6 +838,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshModules,
     enabledModuleIds,
     refreshEnabledModules,
+    ensureModuleEnabled,
     setFavAutoCheck,
     favAutoChecking,
     favAutoCheckSource,

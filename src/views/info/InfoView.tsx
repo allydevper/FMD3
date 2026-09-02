@@ -161,6 +161,7 @@ export function InfoView() {
     startCatalogJob,
     pendingMangaOpen,
     setPendingMangaOpen,
+    ensureModuleEnabled,
   } = useApp();
 
   /* ---------------------------------------------------------------------
@@ -1573,18 +1574,6 @@ export function InfoView() {
     setLoadBtnDisabled(true);
     setChaptersLoading(true);
 
-    if (!enabledModules.length) {
-      log(
-        "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
-        "err",
-      );
-      setManga(null);
-      setChaptersLoading(false);
-      setMangaLoadingUrl("");
-      setLoadBtnDisabled(false);
-      return;
-    }
-
     // Host of the pasted URL wins over the catalog listing (KuManga + manga-oni.com
     // must run MangaOni.lua). Catalog clicks pass preferredModuleId on the same host.
     let moduleId = preferredModuleId || selectedModuleId || undefined;
@@ -1609,6 +1598,19 @@ export function InfoView() {
           log(`Sitio detectado por la URL: ${preferred.name}`, "");
         }
         moduleId = preferred.id;
+        // Activar al pegar/abrir por URL: no hace falta ir a Ajustes solo para GetInfo/descarga.
+        if (!enabledModuleIds.has(preferred.id)) {
+          const newly = await ensureModuleEnabled(preferred.id);
+          if (seq !== mangaLoadSeqRef.current) return;
+          if (newly) {
+            log(`Sitio activado automáticamente: ${preferred.name}`, "ok");
+          }
+        }
+      } else if (!enabledModules.length) {
+        abortWrongModule(
+          "No hay sitios activos y ninguno coincide con esta URL. Ve a Ajustes → Sitios Web o pega una URL de un módulo instalado.",
+        );
+        return;
       } else {
         const listed =
           (moduleId ? modules.find((m) => m.id === moduleId) : undefined) ||
@@ -1762,7 +1764,10 @@ export function InfoView() {
       setManga(null);
       setMangaUrl(url);
       setChaptersLoading(false);
-      const modName = currentModule?.name || "";
+      const modName =
+        (moduleId ? modules.find((m) => m.id === moduleId)?.name : undefined) ||
+        currentModule?.name ||
+        "";
       setInfoInaccessible({ moduleName: modName });
       markCatalogInfoFailed(url, moduleId);
       paintRows({

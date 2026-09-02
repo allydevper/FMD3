@@ -6,7 +6,7 @@ use crate::db::{self, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
     get_info, modules_backup_clear, modules_backup_size, modules_generations, modules_history,
     modules_list, modules_match_url, modules_needs_first_sync, modules_pin_file,
-    modules_pin_keep_local, modules_refresh, requested_module_owns_url,
+    modules_pin_keep_local, modules_refresh,
     modules_repo_list, modules_reset_cursor, modules_revert_file, modules_undo_generation,
     modules_unpin_file,
     modules_update_apply, modules_update_check, modules_update_dismiss,
@@ -29,14 +29,8 @@ pub async fn get_manga_info(
         return Err("URL vacía".into());
     }
     let module_id = module_id.filter(|s| !s.is_empty());
-    if let Some(id) = module_id.as_deref() {
-        // Don't block a pasted URL from another host (listing was KuManga, URL is manga-oni).
-        if crate::settings_keys::module_disabled(id) && requested_module_owns_url(id, &url) {
-            return Err(
-                "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
-            );
-        }
-    }
+    // GetInfo by pasted/matched URL is always allowed: "enabled" is for catalog,
+    // favorites checks and queue opt-in — not for opening a work from its link.
     tauri::async_runtime::spawn_blocking(move || get_info(&url, module_id.as_deref()))
         .await
         .map_err(|e| format!("tarea cancelada: {e}"))?

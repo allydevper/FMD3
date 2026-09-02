@@ -780,6 +780,7 @@ export function OptionsView() {
     refreshModules,
     setTheme,
     refreshEnabledModules,
+    enabledModuleIds,
     setFavAutoCheck,
     notifyCatalogChanged,
     modulesPending,
@@ -1095,6 +1096,17 @@ export function OptionsView() {
   useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
+
+  // Keep checkbox list in sync when Info auto-enables a site from a pasted URL.
+  useEffect(() => {
+    if (dirty) return;
+    setSiteOn(() => {
+      const next: Record<string, true> = {};
+      for (const id of enabledModuleIds) next[id] = true;
+      return next;
+    });
+    enabledIdsRef.current = new Set(enabledModuleIds);
+  }, [enabledModuleIds, dirty]);
 
   const handleSave = useCallback(async () => {
     if (saveFlash === "saving") return;
