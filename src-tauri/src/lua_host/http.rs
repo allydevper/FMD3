@@ -259,21 +259,44 @@ fn default_browser_headers() -> HashMap<String, String> {
 /// their own, independently-maintained marker list that can drift from this
 /// one — the concrete failure mode being a challenge Rust recognizes that a
 /// module's local check misses, or vice versa.
+const CF_INTERSTITIAL_MAX: usize = 20_000;
+
+fn head_looks_like_cf_title(head: &str) -> bool {
+    let lc = head.to_ascii_lowercase();
+    lc.contains("just a moment")
+        || lc.contains("attention required")
+        || lc.contains("enable javascript and cookies to continue")
+        || lc.contains("un momento")
+        || lc.contains("un instante")
+        || lc.contains("bitte warten")
+        || lc.contains("veuillez patienter")
+}
+
 pub(crate) fn body_looks_like_cloudflare(body: &str) -> bool {
-    body.contains("challenge-platform")
-        || body.contains("Just a moment")
-        || body.contains("cf-browser-verification")
-        || body.contains("__cf_chl")
-        || body.contains("cdn-cgi/challenge")
+    let head: String = body.chars().take(8_000).collect();
+    // Spanish CF uses "Un momento…" and can exceed 20 KB. Title wins over size.
+    if head_looks_like_cf_title(&head) {
+        return true;
+    }
+    // Real manga pages are larger but often keep leftover CF scripts in <head>.
+    if body.len() >= CF_INTERSTITIAL_MAX {
+        return false;
+    }
+    head.contains("challenge-platform")
+        || head.contains("cf-browser-verification")
+        || head.contains("__cf_chl")
+        || head.contains("cdn-cgi/challenge")
 }
 
 fn looks_like_cloudflare(status: u16, server: &str, body: &str) -> bool {
-    let server = server.to_lowercase();
-    let cf_server = server.contains("cloudflare") || server.contains("ddos-guard");
-    if matches!(status, 403 | 429 | 503) && (cf_server || body.is_empty()) {
+    if body_looks_like_cloudflare(body) {
         return true;
     }
-    body_looks_like_cloudflare(body)
+    // 403/503 from Cloudflare with a tiny body is the challenge. A 200 manga
+    // page served through CF's CDN is not — even if Server: cloudflare.
+    let server = server.to_lowercase();
+    let cf_server = server.contains("cloudflare") || server.contains("ddos-guard");
+    matches!(status, 403 | 429 | 503) && cf_server && body.len() < CF_INTERSTITIAL_MAX
 }
 
 /// Drops the `cf_clearance` pair from a `"k=v; k=v"` Cookie header string.
@@ -542,8 +565,7 @@ impl HttpClient {
         let inner = self.inner().lock();
         let server = header_get_ci(&inner.response_headers, "Server").unwrap_or_default();
         let lossy = String::from_utf8_lossy(&inner.document);
-        let preview: String = lossy.chars().take(8000).collect();
-        looks_like_cloudflare(inner.result_code, &server, &preview)
+        looks_like_cloudflare(inner.result_code, &server, &lossy)
     }
 
     fn rebuild_client_locked(inner: &mut HttpInner) {

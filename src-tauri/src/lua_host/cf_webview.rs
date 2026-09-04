@@ -221,30 +221,15 @@ pub fn on_window_destroyed(app: &AppHandle) {
     crate::queue::cancel_all_running(app);
 }
 
-/// Cookie-only reuse (HTTP retries). Does not return page HTML.
+/// Always load `url` in the WebView. Do not reuse a prior cookie-only session:
+/// `remember()` clears HTML, and parallel GetPageNumber would skip the wait,
+/// stampede the same window, and fail with empty documents.
 pub fn solve(url: &str, abort: impl Fn() -> bool) -> Option<WebviewCfSession> {
     let _gate = GATE.lock();
     if abort() {
         return None;
     }
-    let host = Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()));
-    {
-        let last = LAST_OK.lock();
-        if let Some(prev) = last.as_ref() {
-            // Cookies (incl. cf_clearance) from one site must never be handed
-            // to a caller resolving Cloudflare for a different site.
-            if prev.at.elapsed() < REUSE_TTL
-                && prev.session.host == host
-                && has_clearance(&prev.session.cookies)
-            {
-                lua_log::emit_lua_log("Cloudflare: reutilizando cookies de la sesión anterior.");
-                return Some(prev.session.clone());
-            }
-        }
-    }
-    let session = solve_locked(url, &abort)?;
+    let session = solve_locked(url, &abort, false)?;
     remember(session.clone());
     Some(session)
 }
@@ -264,7 +249,7 @@ pub fn solve_for_html(url: &str, abort: impl Fn() -> bool) -> Option<WebviewCfSe
             }
         }
     }
-    let session = solve_locked(url, &abort)?;
+    let session = solve_locked(url, &abort, true)?;
     remember(session.clone());
     *LAST_HTML.lock() = Some(HtmlCache {
         url: url.to_string(),
@@ -274,13 +259,7 @@ pub fn solve_for_html(url: &str, abort: impl Fn() -> bool) -> Option<WebviewCfSe
     Some(session)
 }
 
-fn has_clearance(cookies: &HashMap<String, String>) -> bool {
-    cookies
-        .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("cf_clearance") && !v.trim().is_empty())
-}
-
-fn solve_locked(url: &str, abort: &impl Fn() -> bool) -> Option<WebviewCfSession> {
+fn solve_locked(url: &str, abort: &impl Fn() -> bool, need_pages: bool) -> Option<WebviewCfSession> {
     let app = APP.get().cloned()?;
     let parsed = Url::parse(url).ok()?;
     if abort() {
@@ -302,11 +281,16 @@ fn solve_locked(url: &str, abort: &impl Fn() -> bool) -> Option<WebviewCfSession
 
     if first {
         lua_log::emit_lua_log("Cloudflare: si aparece un captcha, complétalo en el panel.");
-        lua_log::emit_lua_log("Cloudflare: esperando que el lector cargue las páginas…");
+        if need_pages {
+            lua_log::emit_lua_log("Cloudflare: esperando que el lector cargue las páginas…");
+        } else {
+            lua_log::emit_lua_log("Cloudflare: esperando a pasar el desafío…");
+        }
         SESSION_INTRO.store(true, Ordering::SeqCst);
     }
 
     let hard_until = Instant::now() + VISIBLE_WAIT;
+    let mut ticks = 0u32;
 
     loop {
         if abort() {
@@ -321,20 +305,38 @@ fn solve_locked(url: &str, abort: &impl Fn() -> bool) -> Option<WebviewCfSession
             return None;
         }
 
-        if let Some(session) = try_collect(&window, &parsed, first) {
+        if ticks > 0 && ticks % 20 == 0 {
+            if let Some(p) = reader_probe(&window, parsed.path(), need_pages) {
+                lua_log::emit_lua_log(&format!(
+                    "Cloudflare: sonda={} (si ya ves la ficha, la detección aún no la da por lista)",
+                    p.state
+                ));
+            }
+        }
+        ticks += 1;
+
+        if let Some(session) = try_collect(&window, &parsed, first, need_pages) {
             if first {
-                lua_log::emit_lua_log("Cloudflare: lector listo.");
+                if need_pages {
+                    lua_log::emit_lua_log("Cloudflare: lector listo.");
+                } else {
+                    lua_log::emit_lua_log("Cloudflare: página lista.");
+                }
             }
             return Some(session);
         }
 
         if Instant::now() >= hard_until {
-            if let Some(session) = try_collect(&window, &parsed, first) {
+            if let Some(session) = try_collect(&window, &parsed, first, need_pages) {
                 lua_log::emit_lua_log("Cloudflare: usando las páginas encontradas al agotar el tiempo.");
                 return Some(session);
             }
             dump_timeout_html(&window);
-            lua_log::emit_lua_log("Cloudflare: tiempo agotado esperando el lector.");
+            if need_pages {
+                lua_log::emit_lua_log("Cloudflare: tiempo agotado esperando el lector.");
+            } else {
+                lua_log::emit_lua_log("Cloudflare: tiempo agotado esperando la página.");
+            }
             return None;
         }
         thread::sleep(POLL);
@@ -465,22 +467,37 @@ fn dump_timeout_html(window: &WebviewWindow) {
     }
 }
 
-fn try_collect(window: &WebviewWindow, url: &Url, first: bool) -> Option<WebviewCfSession> {
-    let probe = reader_probe(window, url.path())?;
-    match probe.state.as_str() {
-        "ok" => {}
-        _ => return None,
+fn try_collect(
+    window: &WebviewWindow,
+    url: &Url,
+    first: bool,
+    need_pages: bool,
+) -> Option<WebviewCfSession> {
+    let probe = reader_probe(window, url.path(), need_pages)?;
+    let ready = match probe.state.as_str() {
+        "ok" => true,
+        "ready" if !need_pages => true,
+        _ => false,
+    };
+    if !ready {
+        return None;
     }
     let script = probe.script.unwrap_or_default();
-    if script.is_empty() {
+    if need_pages && script.is_empty() {
         return None;
     }
     if first {
         if let Some(n) = probe.count {
-            lua_log::emit_lua_log(&format!("Cloudflare: {n} páginas en el lector."));
+            if n > 0 {
+                lua_log::emit_lua_log(&format!("Cloudflare: {n} páginas en el lector."));
+            }
         }
     } else if let Some(n) = probe.count {
-        lua_log::emit_lua_log(&format!("Cloudflare: página lista ({n})."));
+        if n > 0 {
+            lua_log::emit_lua_log(&format!("Cloudflare: página lista ({n})."));
+        } else {
+            lua_log::emit_lua_log("Cloudflare: página lista.");
+        }
     } else {
         lua_log::emit_lua_log("Cloudflare: página lista.");
     }
@@ -497,7 +514,11 @@ fn try_collect(window: &WebviewWindow, url: &Url, first: bool) -> Option<Webview
     let map = cookie_map(&raw_cookies, &host);
     let ua = webview_user_agent(window).unwrap_or_default();
     let page = webview_html(window).unwrap_or_default();
-    let html = format!("<script>{script}</script>\n{page}");
+    let html = if script.is_empty() {
+        page
+    } else {
+        format!("<script>{script}</script>\n{page}")
+    };
     dump_html(&html, "leer");
     Some(WebviewCfSession {
         user_agent: ua,
@@ -507,8 +528,9 @@ fn try_collect(window: &WebviewWindow, url: &Url, first: bool) -> Option<Webview
     })
 }
 
-fn reader_probe(window: &WebviewWindow, path: &str) -> Option<ReaderProbe> {
+fn reader_probe(window: &WebviewWindow, path: &str, need_pages: bool) -> Option<ReaderProbe> {
     let path_json = serde_json::to_string(path).unwrap_or_else(|_| "\"\"".into());
+    let need_pages_js = if need_pages { "true" } else { "false" };
     let js = r#"(() => {
       const want = __WANT__;
       const ok = (arr) => ({state:'ok', count: arr.length, script: 'var pUrl = ' + JSON.stringify(arr) + ';'});
@@ -526,11 +548,16 @@ fn reader_probe(window: &WebviewWindow, path: &str) -> Option<ReaderProbe> {
         return out;
       };
       try {
-        if (want && location.href.indexOf(want) === -1) return {state:'wait'};
+        // Chapter URLs must match; GetInfo often redirects /manhwa/ → /manga/.
+        if (__NEED_PAGES__ && want && location.href.indexOf(want) === -1) return {state:'wait'};
         const t = (document.title || '').toLowerCase();
         const html = document.documentElement ? document.documentElement.innerHTML : '';
-        if (t.includes('just a moment') || t.includes('attention required')) return {state:'cf'};
-        if (html.includes('challenge-platform') || html.includes('cf-browser-verification')) return {state:'cf'};
+        const cfTitle = /just a moment|attention required|enable javascript and cookies|un momento|un instante|bitte warten|veuillez patienter/.test(t);
+        const looksReal = html.length > 8000
+          || !!document.querySelector('h1, meta[property="og:title"]');
+        if (cfTitle || (!looksReal && (html.includes('challenge-platform') || html.includes('cf-browser-verification') || html.includes('__cf_chl')))) {
+          return {state:'cf'};
+        }
 
         if (window.__fmdPages && window.__fmdPages.length) return ok(toArr(window.__fmdPages));
         if (window.__fmdJson && /imgURL/.test(window.__fmdJson)) {
@@ -578,12 +605,20 @@ fn reader_probe(window: &WebviewWindow, path: &str) -> Option<ReaderProbe> {
         if (pageImgs.length >= 1) return ok(pageImgs.map(({s}) => ({imgURL: s})));
         if (rawImgs.length > 1) return ok(rawImgs.map(({s}) => ({imgURL: s})));
 
+        // GetInfo / series pages never expose chapter images. Waiting for pUrl
+        // here leaves the UI spinning until VISIBLE_WAIT (~100s).
+        if (!__NEED_PAGES__) {
+          const ready = html.length > 8000
+            || !!document.querySelector('h1, meta[property="og:title"]');
+          if (ready) return {state:'ready', count:0, script:''};
+        }
         return {state:'wait'};
       } catch (e) {
         return {state:'wait'};
       }
     })()"#
-    .replace("__WANT__", &path_json);
+    .replace("__WANT__", &path_json)
+    .replace("__NEED_PAGES__", need_pages_js);
     let raw = eval_json(window, &js, Duration::from_secs(2))?;
     serde_json::from_str(&raw).ok().or_else(|| {
         let unquoted = raw.trim().trim_matches('"').replace("\\\"", "\"");
