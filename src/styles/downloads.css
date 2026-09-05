@@ -1000,3 +1000,31 @@
   min-height: 0;
   background: var(--deep, #111);
 }
+
+/* ---------------------------------------------------------------------------
+ * Selección de listas (ver `useListSelection`)
+ * ------------------------------------------------------------------------ */
+
+.dl-scroll:focus,
+.dl-scroll:focus-visible,
+.dl-panel-list-scroll:focus,
+.dl-panel-list-scroll:focus-visible {
+  outline: none;
+}
+
+.dl-row,
+.dl-crow {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* La cabecera es sticky (34px): que `scrollIntoView` no meta la fila debajo. */
+.dl-row {
+  scroll-margin-top: 35px;
+}
+
+.dl-scroll:focus-within .dl-row.cursor,
+.dl-panel-list-scroll:focus-within .dl-crow.cursor {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}

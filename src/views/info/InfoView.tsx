@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type SyntheticEvent,
 } from "react";
@@ -13,14 +14,24 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { appConfirm } from "../../components/AppConfirm";
 import { appToast, appToastUndo } from "../../components/AppToast";
 import { Icon } from "../../components/Icon";
-import { VirtualList } from "../../components/VirtualList";
+import {
+  VirtualList,
+  type VirtualListHandle,
+} from "../../components/VirtualList";
+import {
+  resolveListKeyAction,
+  resolveRowClick,
+  useListSelection,
+} from "../../hooks/useListSelection";
 import type { IconName } from "../../icons";
 import {
   CATALOG_PAGE,
   CAT_OVERSCAN,
   CAT_ROW_H,
   CAT_ROW_H_ALL_SITES,
+  CAT_PAGE_STEP,
   CH_OVERSCAN,
+  CH_PAGE_STEP,
   CH_ROW_GAP,
   CH_ROW_H,
   DEFAULT_GENRES,
@@ -212,6 +223,10 @@ export function InfoView() {
   );
   const catalogSelectedEntriesRef = useRef<Map<string, CatalogEntry>>(new Map());
   const catalogSelectAnchorIdxRef = useRef(0);
+  /** Fila del cursor de teclado en el catálogo (-1 = ninguna). */
+  const [catalogCursorIdx, setCatalogCursorIdxState] = useState(-1);
+  const catalogCursorIdxRef = useRef(-1);
+  const catalogApiRef = useRef<VirtualListHandle | null>(null);
   const visibleCatalogRef = useRef<(CatalogEntry | undefined)[]>([]);
 
   const catalogQueryRef = useRef("");
@@ -237,9 +252,19 @@ export function InfoView() {
     setCatalogResetSeq((s) => s + 1);
   }
 
+  function setCatalogCursorIdx(idx: number) {
+    catalogCursorIdxRef.current = idx;
+    setCatalogCursorIdxState(idx);
+  }
+
+  function focusCatalogList() {
+    catalogApiRef.current?.getContainer()?.focus({ preventScroll: true });
+  }
+
   function clearCatalogSelection() {
     setCatalogSelectedKeys(new Set());
     catalogSelectedEntriesRef.current = new Map();
+    setCatalogCursorIdx(-1);
   }
 
   function catalogRowKey(entry: CatalogEntry): string {
@@ -287,6 +312,117 @@ export function InfoView() {
     catalogSelectedEntriesRef.current = map;
     setCatalogSelectedKeys(new Set([key]));
     catalogSelectAnchorIdxRef.current = idx;
+    setCatalogCursorIdx(idx);
+  }
+
+  /** Rango ancla->idx sobre las filas ya cargadas; los huecos se saltan. */
+  function selectCatalogRange(idx: number) {
+    const rows = visibleCatalogRef.current;
+    const anchor = catalogSelectAnchorIdxRef.current;
+    const from = Math.min(anchor, idx);
+    const to = Math.max(anchor, idx);
+    const next = new Set<string>();
+    const map = new Map<string, CatalogEntry>();
+    for (let i = from; i <= to; i++) {
+      const e = rows[i];
+      if (!e) continue;
+      const k = catalogRowKey(e);
+      next.add(k);
+      map.set(k, e);
+    }
+    catalogSelectedEntriesRef.current = map;
+    setCatalogSelectedKeys(next);
+    setCatalogCursorIdx(idx);
+    lastCatalogClickRef.current = { idx: -1, at: 0 };
+  }
+
+  /** Ctrl+clic / Espacio: alterna una fila sin tocar el resto. */
+  function toggleCatalogEntry(entry: CatalogEntry, idx: number) {
+    const key = catalogRowKey(entry);
+    const next = new Set(catalogSelectedKeys);
+    const map = new Map(catalogSelectedEntriesRef.current);
+    if (next.has(key)) {
+      next.delete(key);
+      map.delete(key);
+      /* No dejar esta fila como "active": el fondo de foco se confunde con selección. */
+      if (map.size === 0) {
+        setActiveCatalogTitle("");
+      } else {
+        const rest = [...map.values()];
+        const fallback = rest[rest.length - 1]!;
+        setActiveCatalogTitle(fallback.title || fallback.link);
+      }
+    } else {
+      next.add(key);
+      map.set(key, entry);
+      setActiveCatalogTitle(entry.title || entry.link);
+    }
+    catalogSelectedEntriesRef.current = map;
+    setCatalogSelectedKeys(next);
+    catalogSelectAnchorIdxRef.current = idx;
+    setCatalogCursorIdx(idx);
+    lastCatalogClickRef.current = { idx: -1, at: 0 };
+  }
+
+  function selectAllCatalog() {
+    const next = new Set<string>();
+    const map = new Map<string, CatalogEntry>();
+    for (const e of visibleCatalogRef.current) {
+      if (!e) continue;
+      const k = catalogRowKey(e);
+      next.add(k);
+      map.set(k, e);
+    }
+    catalogSelectedEntriesRef.current = map;
+    setCatalogSelectedKeys(next);
+  }
+
+  /** Mismas teclas que el resto de listas; ver `useListSelection`. */
+  function handleCatalogKeyDown(ev: ReactKeyboardEvent<HTMLDivElement>) {
+    const rows = visibleCatalogRef.current;
+    const action = resolveListKeyAction(ev, {
+      count: rows.length,
+      cursorIndex: catalogCursorIdxRef.current,
+      pageSize: CAT_PAGE_STEP,
+    });
+    if (!action) return;
+
+    switch (action.kind) {
+      case "move": {
+        ev.preventDefault();
+        const idx = action.index;
+        catalogApiRef.current?.scrollToIndex(idx);
+        const entry = rows[idx];
+        /* Fila aún sin cargar: mueve el cursor y espera a que llegue la página. */
+        if (!entry) {
+          setCatalogCursorIdx(idx);
+          return;
+        }
+        setInfoMode("search");
+        setActiveCatalogTitle(entry.title || entry.link);
+        if (action.extend) selectCatalogRange(idx);
+        else replaceCatalogSelection(entry, idx);
+        return;
+      }
+      case "toggle-cursor": {
+        const idx = catalogCursorIdxRef.current;
+        const entry = rows[idx];
+        if (!entry) return;
+        ev.preventDefault();
+        toggleCatalogEntry(entry, idx);
+        return;
+      }
+      case "select-all":
+        ev.preventDefault();
+        selectAllCatalog();
+        return;
+      case "clear":
+        if (!catalogSelectedKeys.size && catalogCursorIdxRef.current < 0) return;
+        ev.preventDefault();
+        clearCatalogSelection();
+        setActiveCatalogTitle("");
+        return;
+    }
   }
 
   function setCatalogTotalBoth(n: number) {
@@ -319,7 +455,6 @@ export function InfoView() {
   const [loadBtnDisabled, setLoadBtnDisabled] = useState(false);
   const [chaptersLoading, setChaptersLoading] = useState(false);
   const [chaptersResetSeq, setChaptersResetSeq] = useState(0);
-  const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [chDownloaded, setChDownloaded] = useState<Set<string>>(() => new Set());
   const [chQueued, setChQueued] = useState<Set<string>>(() => new Set());
   /** chapter.index -> canonical mark key, resolved by the backend on manga load. */
@@ -1680,7 +1815,7 @@ export function InfoView() {
         setManga(null);
         // Mantener URL para poder favoritar / ver en línea desde el stub.
         setMangaUrl(url);
-        setSelected(new Set());
+        chSel.clear();
         bumpChaptersReset();
         setChaptersLoading(false);
         const modName = result.module_name || currentModule?.name || "";
@@ -1707,7 +1842,7 @@ export function InfoView() {
       }
 
       setManga(result);
-      setSelected(new Set());
+      chSel.clear();
       bumpChaptersReset();
       setChaptersLoading(false);
       setInfoInaccessible(null);
@@ -1838,7 +1973,7 @@ export function InfoView() {
     if (e.info_failed) {
       setManga(null);
       setMangaUrl(url);
-      setSelected(new Set());
+      chSel.clear();
       bumpChaptersReset();
       setChaptersLoading(false);
       const modName = e.module_name || mod?.name || "";
@@ -1863,58 +1998,22 @@ export function InfoView() {
   ) {
     setCatalogCtxMenu(null);
     setInfoMode("search");
-    /* Evita el anillo de foco del WebView (sobre todo con Ctrl). */
+    /* El foco vive en la lista, no en la fila: evita el anillo del WebView
+       (sobre todo con Ctrl) y deja el teclado operativo. */
     (ev.currentTarget as HTMLElement).blur();
+    focusCatalogList();
 
     const title = entry.title || entry.link;
-    const multi = ev.ctrlKey || ev.metaKey;
-    const shift = ev.shiftKey;
+    const mode = resolveRowClick(ev);
 
-    if (shift) {
+    if (mode === "range") {
       setActiveCatalogTitle(title);
-      const anchor = catalogSelectAnchorIdxRef.current;
-      const from = Math.min(anchor, idx);
-      const to = Math.max(anchor, idx);
-      const next = new Set<string>();
-      const map = new Map<string, CatalogEntry>();
-      const rows = visibleCatalogRef.current;
-      for (let i = from; i <= to; i++) {
-        const e = rows[i];
-        if (!e) continue;
-        const k = catalogRowKey(e);
-        next.add(k);
-        map.set(k, e);
-      }
-      catalogSelectedEntriesRef.current = map;
-      setCatalogSelectedKeys(next);
-      lastCatalogClickRef.current = { idx: -1, at: 0 };
+      selectCatalogRange(idx);
       return;
     }
 
-    if (multi) {
-      const key = catalogRowKey(entry);
-      const next = new Set(catalogSelectedKeys);
-      const map = new Map(catalogSelectedEntriesRef.current);
-      if (next.has(key)) {
-        next.delete(key);
-        map.delete(key);
-        /* No dejar esta fila como "active": el fondo de foco se confunde con selección. */
-        if (map.size === 0) {
-          setActiveCatalogTitle("");
-        } else {
-          const selected = [...map.values()];
-          const fallback = selected[selected.length - 1]!;
-          setActiveCatalogTitle(fallback.title || fallback.link);
-        }
-      } else {
-        next.add(key);
-        map.set(key, entry);
-        setActiveCatalogTitle(title);
-      }
-      catalogSelectedEntriesRef.current = map;
-      setCatalogSelectedKeys(next);
-      catalogSelectAnchorIdxRef.current = idx;
-      lastCatalogClickRef.current = { idx: -1, at: 0 };
+    if (mode === "toggle") {
+      toggleCatalogEntry(entry, idx);
       return;
     }
 
@@ -1939,6 +2038,7 @@ export function InfoView() {
     ev.preventDefault();
     ev.stopPropagation();
     (ev.currentTarget as HTMLElement).blur();
+    focusCatalogList();
     setInfoMode("search");
     setActiveCatalogTitle(entry.title || entry.link);
     lastCatalogClickRef.current = { idx: -1, at: 0 };
@@ -2280,22 +2380,23 @@ export function InfoView() {
     () => (manga ? [...manga.chapters].reverse() : []),
     [manga],
   );
+  const chapterKeys = useMemo(
+    () => chaptersView.map((c) => c.index),
+    [chaptersView],
+  );
 
-  function toggleChapterSelected(idx: number) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
-      return next;
-    });
-  }
+  const chaptersApiRef = useRef<VirtualListHandle | null>(null);
+  const chSel = useListSelection<number>({
+    keys: chapterKeys,
+    prune: true,
+    pageSize: CH_PAGE_STEP,
+    onCursorChange: (_key, index) => chaptersApiRef.current?.scrollToIndex(index),
+  });
+  const selected = chSel.selected;
 
   function handleSelectAll() {
     if (!manga) return;
-    setSelected((prev) => {
-      if (manga.chapters.length > 0 && prev.size === manga.chapters.length) return new Set();
-      return new Set(manga.chapters.map((c) => c.index));
-    });
+    chSel.toggleAll();
   }
 
   /* ---------------------------------------------------------------------
@@ -2750,10 +2851,7 @@ export function InfoView() {
   const capsLabel = sidebarRows.numchapter ? `caps. ${sidebarRows.numchapter}` : "caps. —";
 
   const chaptersHasManga = !!manga;
-  const selectAllLabel =
-    manga && manga.chapters.length > 0 && selected.size === manga.chapters.length
-      ? "Deseleccionar"
-      : "Seleccionar todo";
+  const selectAllLabel = chSel.allSelected ? "Deseleccionar" : "Seleccionar todo";
 
   function renderChaptersBody() {
     if (chaptersLoading) {
@@ -2828,28 +2926,60 @@ export function InfoView() {
         overscan={CH_OVERSCAN}
         resetKey={chaptersResetSeq}
         getKey={(c) => c.index}
+        apiRef={chaptersApiRef}
+        containerProps={{
+          tabIndex: 0,
+          role: "listbox",
+          "aria-multiselectable": true,
+          "aria-label": "Capítulos",
+          onKeyDown: chSel.handleKeyDown,
+        }}
         renderItem={(c, _i, style: CSSProperties) => {
           const on = selected.has(c.index);
+          const cursor = chSel.isCursor(c.index);
           const mark = chMarkKeys.get(c.index) || "";
           const isDl = !!mark && chDownloaded.has(mark);
           const isQ = !!mark && chQueued.has(mark);
           const markCls = isDl ? " is-downloaded" : isQ ? " is-queued" : "";
           return (
-            <button
-              type="button"
-              className={`ch-card${on ? " is-on" : ""}${markCls}`}
+            <div
+              className={`ch-card${on ? " is-on" : ""}${
+                cursor ? " is-cursor" : ""
+              }${markCls}`}
               style={style}
-              onClick={() => toggleChapterSelected(c.index)}
+              role="option"
+              aria-selected={on}
+              data-selkey={c.index}
+              onMouseDown={(ev) => {
+                /* Shift+clic no debe pintar seleccion de texto; el foco tiene
+                   que quedarse en la lista para seguir con teclado. */
+                if (ev.shiftKey) {
+                  ev.preventDefault();
+                  chaptersApiRef.current
+                    ?.getContainer()
+                    ?.focus({ preventScroll: true });
+                }
+              }}
+              onClick={(ev) => chSel.handleRowClick(c.index, ev)}
               title={
                 isDl ? "Descargado" : isQ ? "En cola / descargando" : undefined
               }
             >
-              <div className="ch-box">
+              <button
+                type="button"
+                className="ch-box"
+                tabIndex={-1}
+                aria-label="Seleccionar capítulo"
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  chSel.handleCheckboxClick(c.index);
+                }}
+              >
                 {on && <Icon name="check" className="ico ico-sm" style={{ color: "var(--on-accent)" }} />}
-              </div>
+              </button>
               <span className="ch-num">{chapterNum(c.index)}</span>
               <span className="ch-title">{c.name || `Capítulo ${c.index + 1}`}</span>
-            </button>
+            </div>
           );
         }}
       />
@@ -2913,6 +3043,14 @@ export function InfoView() {
         itemHeight={showSite ? CAT_ROW_H_ALL_SITES : CAT_ROW_H}
         overscan={CAT_OVERSCAN}
         resetKey={catalogResetSeq}
+        apiRef={catalogApiRef}
+        containerProps={{
+          tabIndex: 0,
+          role: "listbox",
+          "aria-multiselectable": true,
+          "aria-label": "Catálogo",
+          onKeyDown: handleCatalogKeyDown,
+        }}
         onRange={(s, e) => {
           catalogRangeRef.current = { start: s, end: e };
           if (!advFilterApplied || appliedAdvFilter.allSites) requestRange(s, e);
@@ -2937,9 +3075,16 @@ export function InfoView() {
               type="button"
               className={`catalog-row${showSite ? " has-site" : ""}${
                 title === activeCatalogTitle ? " active" : ""
-              }${isSel ? " is-selected" : ""}${isNew ? " is-new" : ""}`}
+              }${isSel ? " is-selected" : ""}${
+                i === catalogCursorIdx ? " is-cursor" : ""
+              }${isNew ? " is-new" : ""}`}
               style={style}
               title={tip}
+              role="option"
+              aria-selected={isSel}
+              onMouseDown={(ev) => {
+                if (ev.shiftKey) ev.preventDefault();
+              }}
               onClick={(ev) => handleCatalogRowClick(i, e, ev)}
               onContextMenu={(ev) => handleCatalogRowContextMenu(ev, i, e)}
             >

@@ -598,3 +598,28 @@
 }
 
 /* Sobre â€” inspirado en FMD2 tsAbout + shell OmniManga */
+
+/* ---------------------------------------------------------------------------
+ * Selección de listas (ver `useListSelection`)
+ * ------------------------------------------------------------------------ */
+
+.fav-scroll:focus,
+.fav-scroll:focus-visible {
+  outline: none;
+}
+
+.fav-row {
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* La cabecera es sticky (34px): que `scrollIntoView` no meta la fila debajo. */
+.fav-row {
+  scroll-margin-top: 35px;
+}
+
+.fav-scroll:focus-within .fav-row.cursor {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}

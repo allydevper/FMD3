@@ -161,12 +161,19 @@ export const CH_ROW_H = 52;
 export const CH_ROW_GAP = 8;
 export const CH_ROW_STRIDE = CH_ROW_H + CH_ROW_GAP;
 export const CH_OVERSCAN = 8;
+/** Filas que saltan RePág/AvPág en la lista de capítulos. */
+export const CH_PAGE_STEP = 8;
 /** Coalesce `queue-changed` bursts before re-reading chapter marks. */
 export const MARK_REFRESH_DEBOUNCE_MS = 150;
 export const CAT_ROW_H = 44;
 /** Title (2 lines) + source line when all-sites filter is on. */
 export const CAT_ROW_H_ALL_SITES = 62;
 export const CAT_OVERSCAN = 12;
+/** Filas que saltan RePág/AvPág en el catálogo. */
+export const CAT_PAGE_STEP = 10;
+
+/** Filas que saltan RePág/AvPág en las listas de Descargas y Favoritos. */
+export const DL_PAGE_STEP = 8;
 
 export const DL_HIST = [
   { id: "hoy", label: "Hoy", maxH: 24 },

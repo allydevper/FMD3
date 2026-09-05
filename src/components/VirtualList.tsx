@@ -5,12 +5,22 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type HTMLAttributes,
   type Key,
+  type MutableRefObject,
   type ReactNode,
   type UIEvent,
 } from "react";
 
 const DEFAULT_VIEW_HEIGHT = 400;
+
+/** Control imperativo de la lista, para navegación por teclado. */
+export type VirtualListHandle = {
+  /** Deja la fila `index` dentro de la vista (scroll mínimo). */
+  scrollToIndex: (index: number) => void;
+  /** Contenedor con scroll, o null si aún no montó. */
+  getContainer: () => HTMLDivElement | null;
+};
 
 export type VirtualListProps<T> = {
   /** Full (already filtered/sorted) list of items to virtualize. */
@@ -39,6 +49,10 @@ export type VirtualListProps<T> = {
   resetKey?: unknown;
   /** Visible index range `[start, end)` including overscan. */
   onRange?: (start: number, end: number) => void;
+  /** Se rellena con el control imperativo de la lista (scroll por índice). */
+  apiRef?: MutableRefObject<VirtualListHandle | null>;
+  /** Props extra para el contenedor con scroll (tabIndex, onKeyDown, role...). */
+  containerProps?: Omit<HTMLAttributes<HTMLDivElement>, "onScroll" | "className" | "id">;
 };
 
 /**
@@ -59,6 +73,8 @@ export function VirtualList<T>({
   renderItem,
   resetKey,
   onRange,
+  apiRef,
+  containerProps,
 }: VirtualListProps<T>) {
   const stride = itemHeight + gap;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -68,6 +84,32 @@ export function VirtualList<T>({
   const [scrollTop, setScrollTop] = useState(0);
   const scrollTopRef = useRef(0);
   const [viewH, setViewH] = useState(DEFAULT_VIEW_HEIGHT);
+
+  const strideRef = useRef(stride);
+  strideRef.current = stride;
+  const itemHeightRef = useRef(itemHeight);
+  itemHeightRef.current = itemHeight;
+
+  useLayoutEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = {
+      getContainer: () => containerRef.current,
+      scrollToIndex: (index) => {
+        const el = containerRef.current;
+        if (!el || index < 0) return;
+        const top = index * strideRef.current;
+        const bottom = top + itemHeightRef.current;
+        const viewTop = el.scrollTop;
+        const viewBottom = viewTop + el.clientHeight;
+        // `onScroll` sincroniza el estado, así que basta con mover el DOM.
+        if (top < viewTop) el.scrollTop = top;
+        else if (bottom > viewBottom) el.scrollTop = bottom - el.clientHeight;
+      },
+    };
+    return () => {
+      apiRef.current = null;
+    };
+  }, [apiRef]);
 
   useLayoutEffect(() => {
     const el = containerRef.current;
@@ -145,7 +187,13 @@ export function VirtualList<T>({
   }
 
   return (
-    <div id={id} className={className} ref={containerRef} onScroll={handleScroll}>
+    <div
+      {...containerProps}
+      id={id}
+      className={className}
+      ref={containerRef}
+      onScroll={handleScroll}
+    >
       <div className={innerClassName} style={{ height: totalHeight }}>
         {rows}
       </div>

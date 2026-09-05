@@ -12,7 +12,11 @@ import {
   loadFavoritesCached,
 } from "../utils/favoritesCache";
 import { maybeFillHost } from "../utils/url";
-import { SK } from "../constants";
+import { DL_PAGE_STEP, SK } from "../constants";
+import {
+  scrollSelKeyIntoView,
+  useListSelection,
+} from "../hooks/useListSelection";
 import { settingBool } from "../utils/settings";
 
 function pendingLinkCount(text: string | undefined): number {
@@ -113,7 +117,6 @@ export function FavoritesView() {
   const [cat, setCat] = useState("all");
   const [filter, setFilter] = useState<FavFilter>("Todo");
   const [query, setQuery] = useState("");
-  const [sel, setSel] = useState<Record<number, true>>({});
   const [sortKey, setSortKey] = useState<SortKey>("new");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
@@ -177,14 +180,9 @@ export function FavoritesView() {
         }
         return next;
       });
-      setSel((prev) => {
-        const next: Record<number, true> = {};
-        for (const key of Object.keys(prev)) {
-          const id = Number(key);
-          if (prev[id] && ids.has(id)) next[id] = true;
-        }
-        return next;
-      });
+      favSel.replace(
+        [...favSel.selectedRef.current].filter((id) => ids.has(id)),
+      );
       setFavorites(favs);
     } catch (e) {
       log(String(e), "err");
@@ -234,11 +232,9 @@ export function FavoritesView() {
       const snapshot = favoriteSnapshot(fav);
       await api.favoritesRemove(id);
       favoritesCacheRemove(id);
-      setSel((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
+      favSel.replace(
+        [...favSel.selectedRef.current].filter((k) => k !== id),
+      );
       await refreshFavorites();
       appToastUndo({
         message: "Se quitó de favoritos",
@@ -510,13 +506,12 @@ export function FavoritesView() {
     ev.preventDefault();
     ev.stopPropagation();
     let ids: number[];
-    if (sel[id]) {
-      ids = Object.keys(sel)
-        .filter((k) => sel[Number(k)])
-        .map(Number);
+    const cur = favSel.selectedRef.current;
+    if (cur.has(id)) {
+      ids = [...cur];
     } else {
       ids = [id];
-      setSel({ [id]: true });
+      favSel.selectOnly(id);
     }
     const pad = 8;
     const menuW = 220;
@@ -524,7 +519,8 @@ export function FavoritesView() {
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     setFavCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), ids });
-  }, [sel]);
+    // `favSel.selectedRef` / `selectOnly` son estables entre renders.
+  }, []);
 
   useEffect(() => {
     if (!favCtxMenu) return;
@@ -667,40 +663,25 @@ export function FavoritesView() {
     return { newSum, enabledN, disabledN, latestChecked };
   }, [favorites, favNewOf, favIsEnabled, checkedAt]);
 
-  const selectedIds = useMemo(
-    () =>
-      Object.keys(sel)
-        .filter((k) => sel[Number(k)])
-        .map(Number),
-    [sel],
-  );
+  const favKeys = useMemo(() => list.map((it) => it.id), [list]);
+  const favScrollRef = useRef<HTMLDivElement | null>(null);
+  /* Sin `prune`: la selección sobrevive a filtros y búsqueda; solo
+     `refreshFavorites` la poda contra los favoritos que siguen existiendo. */
+  const favSel = useListSelection<number>({
+    keys: favKeys,
+    pageSize: DL_PAGE_STEP,
+    onCursorChange: (key) => scrollSelKeyIntoView(favScrollRef.current, key),
+  });
+
+  const selectedIds = favSel.selectedKeys;
   const hasSel = selectedIds.length > 0;
   const selDisabled = !hasSel || checkBusy;
 
-  const allOn = list.length > 0 && list.every((it) => sel[it.id]);
-  const someOn = list.some((it) => sel[it.id]);
+  const allOn = favSel.allSelected;
+  const someOn = favSel.someSelected;
   const selectAllIco = someOn && !allOn ? ICO.dash : ICO.check;
 
-  const toggleSel = (id: number) => {
-    setSel((prev) => {
-      const next = { ...prev };
-      if (next[id]) delete next[id];
-      else next[id] = true;
-      return next;
-    });
-  };
-
-  const handleSelectAll = () => {
-    setSel((prev) => {
-      const next = { ...prev };
-      if (allOn) {
-        for (const it of list) delete next[it.id];
-      } else {
-        for (const it of list) next[it.id] = true;
-      }
-      return next;
-    });
-  };
+  const handleSelectAll = () => favSel.toggleAll();
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -811,11 +792,10 @@ export function FavoritesView() {
       favoritesCacheRemove(id);
     }
     if (!snapshots.length) return;
-    setSel((prev) => {
-      const next = { ...prev };
-      for (const id of ids) delete next[id];
-      return next;
-    });
+    const gone = new Set(ids);
+    favSel.replace(
+      [...favSel.selectedRef.current].filter((k) => !gone.has(k)),
+    );
     await refreshFavorites();
     const n = snapshots.length;
     appToastUndo({
@@ -1054,8 +1034,16 @@ export function FavoritesView() {
               <span className="fav-sel-label">{selLabel}</span>
             </div>
 
-            <div className="fav-scroll">
-              <div className="fav-grid fav-head">
+            <div
+              className="fav-scroll"
+              ref={favScrollRef}
+              tabIndex={0}
+              role="listbox"
+              aria-multiselectable
+              aria-label="Favoritos"
+              onKeyDown={favSel.handleKeyDown}
+            >
+              <div className="fav-grid fav-head" role="presentation">
                 <button
                   type="button"
                   className={`sites-cb${allOn ? " on" : ""}${someOn && !allOn ? " some" : ""}`}
@@ -1103,10 +1091,10 @@ export function FavoritesView() {
                   </div>
                 </div>
               ) : (
-                <div id="fav-rows">
+                <div id="fav-rows" role="presentation">
                   {list.map((it, idx) => {
                     const n = favNewOf(it.id);
-                    const on = !!sel[it.id];
+                    const on = favSel.isSelected(it.id);
                     const enabled = favIsEnabled(it.id);
                     const st = !enabled
                       ? { label: "Deshabilitado", color: "var(--muted)", bg: "var(--nest)" }
@@ -1124,9 +1112,21 @@ export function FavoritesView() {
                     return (
                       <div
                         key={it.id}
-                        className={`fav-grid fav-row${on ? " sel" : ""}`}
+                        className={`fav-grid fav-row${on ? " sel" : ""}${
+                          favSel.isCursor(it.id) ? " cursor" : ""
+                        }`}
                         style={{ height: "46px" }}
-                        onClick={() => toggleSel(it.id)}
+                        role="option"
+                        aria-selected={on}
+                        data-selkey={it.id}
+                        onMouseDown={(ev) => {
+                          if (ev.shiftKey) {
+                            ev.preventDefault();
+                            favScrollRef.current?.focus({ preventScroll: true });
+                          }
+                        }}
+                        onClick={(ev) => favSel.handleRowClick(it.id, ev)}
+                        onDoubleClick={() => openFavoriteInInfo(it)}
                         onContextMenu={(ev) => openFavCtx(ev, it.id)}
                       >
                         <button
@@ -1134,9 +1134,10 @@ export function FavoritesView() {
                           className={`sites-cb${on ? " on" : ""}`}
                           style={{ ["--ico" as string]: ICO.check }}
                           aria-label="Seleccionar"
+                          tabIndex={-1}
                           onClick={(e) => {
                             e.stopPropagation();
-                            toggleSel(it.id);
+                            favSel.handleCheckboxClick(it.id);
                           }}
                         >
                           <span className="sites-cb-mk" />

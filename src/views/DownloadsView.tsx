@@ -10,9 +10,13 @@ import { Icon } from "../components/Icon";
 import { appConfirm } from "../components/AppConfirm";
 import { appToast, appToastUndo } from "../components/AppToast";
 import { ICO } from "../icons";
-import { DL_HIST, DL_ST, SK } from "../constants";
+import { DL_HIST, DL_PAGE_STEP, DL_ST, SK } from "../constants";
 import * as api from "../api/tauri";
 import { useApp } from "../context/AppContext";
+import {
+  scrollSelKeyIntoView,
+  useListSelection,
+} from "../hooks/useListSelection";
 import { confirmIfEnabled, settingBool, settingNumber } from "../utils/settings";
 import { catalogLinkKey, mangaPathKey } from "../utils/url";
 import type {
@@ -415,8 +419,7 @@ export function DownloadsView() {
   );
   const [cat, setCat] = useState("all");
   const [query, setQuery] = useState("");
-  const [selG, setSelG] = useState<Record<string, true>>({});
-  const [selC, setSelC] = useState<Record<number, true>>({});
+  /** Grupo cuyo panel de detalle está abierto (se abre con doble clic). */
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [panelMin, setPanelMin] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("queue");
@@ -472,16 +475,6 @@ export function DownloadsView() {
       const kept = prev.filter((id) => ids.has(id));
       const missing = items.filter((it) => !kept.includes(it.id)).map((it) => it.id);
       return kept.concat(missing);
-    });
-    setSelC((prev) => {
-      let changed = false;
-      const next: Record<number, true> = {};
-      for (const k of Object.keys(prev)) {
-        const id = Number(k);
-        if (ids.has(id)) next[id] = true;
-        else changed = true;
-      }
-      return changed ? next : prev;
     });
   }, [items]);
 
@@ -628,23 +621,44 @@ export function DownloadsView() {
     [items, order, query, cat, sortKey, sortDir, modules, liveProgress],
   );
 
+  const groupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
+  const dlScrollRef = useRef<HTMLDivElement | null>(null);
+  const selG = useListSelection<string>({
+    keys: groupKeys,
+    pageSize: DL_PAGE_STEP,
+    onCursorChange: (key) => scrollSelKeyIntoView(dlScrollRef.current, key),
+  });
+
+  /* La selección sobrevive a filtros y orden: solo se poda contra la cola real. */
   useEffect(() => {
-    const keys = new Set(allGroups.map((g) => g.key));
-    setSelG((prev) => {
-      let changed = false;
-      const next: Record<string, true> = {};
-      for (const k of Object.keys(prev)) {
-        if (keys.has(k)) next[k] = true;
-        else changed = true;
+    const valid = new Set(allGroups.map((g) => g.key));
+    const cur = selG.selectedRef.current;
+    let stale = false;
+    for (const k of cur) {
+      if (!valid.has(k)) {
+        stale = true;
+        break;
       }
-      return changed ? next : prev;
-    });
-    if (focusKey && !keys.has(focusKey)) setFocusKey(null);
-  }, [allGroups, focusKey]);
+    }
+    if (stale) selG.replace([...cur].filter((k) => valid.has(k)));
+    if (focusKey && !valid.has(focusKey)) setFocusKey(null);
+  }, [allGroups, focusKey, selG.replace, selG.selectedRef]);
 
   const focusGroup = focusKey
     ? allGroups.find((g) => g.key === focusKey) || null
     : null;
+
+  const focusItemKeys = useMemo(
+    () => (focusGroup ? focusGroup.items.map((i) => i.id) : []),
+    [focusGroup],
+  );
+  const dlPanelScrollRef = useRef<HTMLDivElement | null>(null);
+  const selC = useListSelection<number>({
+    keys: focusItemKeys,
+    prune: true,
+    pageSize: DL_PAGE_STEP,
+    onCursorChange: (key) => scrollSelKeyIntoView(dlPanelScrollRef.current, key),
+  });
 
   const focusFmtKey = focusGroup
     ? focusGroup.items.map((i) => `${i.id}:${i.status}`).join("|")
@@ -688,7 +702,7 @@ export function DownloadsView() {
   }
 
   function selectedGroupKeys(): string[] {
-    return Object.keys(selG).filter((k) => selG[k]);
+    return selG.selectedKeys;
   }
 
   function dlMoveSelected(dir: -1 | 1, edge: boolean) {
@@ -720,37 +734,6 @@ export function DownloadsView() {
       return next;
     });
     setSortKey("queue");
-  }
-
-  function toggleSelG(key: string) {
-    setSelG((prev) => {
-      const next = { ...prev };
-      if (next[key]) delete next[key];
-      else next[key] = true;
-      return next;
-    });
-  }
-
-  function toggleSelectAllGroups() {
-    const allSelected = groups.length > 0 && groups.every((g) => selG[g.key]);
-    setSelG((prev) => {
-      const next = { ...prev };
-      if (allSelected) {
-        for (const g of groups) delete next[g.key];
-      } else {
-        for (const g of groups) next[g.key] = true;
-      }
-      return next;
-    });
-  }
-
-  function toggleSelC(id: number) {
-    setSelC((prev) => {
-      const next = { ...prev };
-      if (next[id]) delete next[id];
-      else next[id] = true;
-      return next;
-    });
   }
 
   function handleSort(key: SortKey) {
@@ -990,8 +973,8 @@ export function DownloadsView() {
   const canDeleteSel = selItems.some((i) => i.status !== "running");
   const canRetrySel = selItems.some((i) => i.status === "failed");
   const canFolderSel = selItems.some((i) => !!(i.output_dir || "").trim());
-  const allOn = groups.length > 0 && groups.every((g) => selG[g.key]);
-  const someOn = groups.some((g) => selG[g.key]);
+  const allOn = selG.allSelected;
+  const someOn = selG.someSelected;
   const count = (f: (i: QueueItem) => boolean) => items.filter(f).length;
   const countGroupsMatching = (pred: (g: MangaGroup) => boolean) =>
     allGroups.filter(pred).length;
@@ -1025,14 +1008,9 @@ export function DownloadsView() {
   const focusAgg = focusGroup
     ? aggregateGroup(focusGroup, liveProgress)
     : null;
-  const fSelIds = focusGroup
-    ? focusGroup.items.filter((c) => selC[c.id]).map((c) => c.id)
-    : [];
-  const fAll =
-    !!focusGroup &&
-    focusGroup.items.length > 0 &&
-    focusGroup.items.every((c) => selC[c.id]);
-  const fSome = !!focusGroup && focusGroup.items.some((c) => selC[c.id]);
+  const fSelIds = focusGroup ? selC.selectedKeys : [];
+  const fAll = !!focusGroup && selC.allSelected;
+  const fSome = !!focusGroup && selC.someSelected;
   const fRunning = (focusAgg?.active ?? 0) > 0;
   const fCanResume =
     !!focusGroup &&
@@ -1325,11 +1303,17 @@ export function DownloadsView() {
 
             <div
               className="dl-scroll"
+              ref={dlScrollRef}
+              tabIndex={0}
+              role="listbox"
+              aria-multiselectable
+              aria-label="Grupos en cola"
+              onKeyDown={selG.handleKeyDown}
               onContextMenu={(ev) => {
                 openCtx(ev, []);
               }}
             >
-              <div className="dl-grid dl-head">
+              <div className="dl-grid dl-head" role="presentation">
                 <button
                   type="button"
                   className={`sites-cb${allOn ? " on" : ""}${someOn && !allOn ? " some" : ""}`}
@@ -1338,7 +1322,7 @@ export function DownloadsView() {
                       allOn || someOn ? (allOn ? ICO.check : ICO.dash) : ICO.check,
                   }}
                   aria-label="Seleccionar todo"
-                  onClick={() => toggleSelectAllGroups()}
+                  onClick={() => selG.toggleAll()}
                 >
                   <span className="sites-cb-mk" />
                 </button>
@@ -1370,20 +1354,39 @@ export function DownloadsView() {
               {groups.length ? (
                 groups.map((g) => {
                   const a = aggregateGroup(g, liveProgress);
-                  const on = !!selG[g.key];
+                  const on = selG.isSelected(g.key);
                   const focused = focusKey === g.key;
                   const running = a.active > 0;
                   return (
                     <div
                       key={g.key}
-                      className={`dl-grid dl-row${on ? " sel" : ""}${focused ? " focus" : ""}`}
-                      onClick={() => {
+                      className={`dl-grid dl-row${on ? " sel" : ""}${
+                        focused ? " focus" : ""
+                      }${selG.isCursor(g.key) ? " cursor" : ""}`}
+                      role="option"
+                      aria-selected={on}
+                      data-selkey={g.key}
+                      onMouseDown={(ev) => {
+                        /* Shift+clic no debe pintar seleccion de texto; el foco
+                           tiene que quedarse en la lista para seguir con teclado. */
+                        if (ev.shiftKey) {
+                          ev.preventDefault();
+                          dlScrollRef.current?.focus({ preventScroll: true });
+                        }
+                      }}
+                      onClick={(ev) => {
+                        selG.handleRowClick(g.key, ev);
+                        /* El panel solo sigue al clic simple, y solo si ya
+                           estaba abierto: Ctrl/Shift son para seleccionar. */
+                        const plain = !ev.ctrlKey && !ev.metaKey && !ev.shiftKey;
+                        if (plain && focusKey && !panelMin) setFocusKey(g.key);
+                      }}
+                      onDoubleClick={() => {
                         setFocusKey(g.key);
                         setPanelMin(false);
-                        toggleSelG(g.key);
                       }}
                       onContextMenu={(ev) => {
-                        if (!selG[g.key]) setSelG({ [g.key]: true });
+                        if (!selG.isSelected(g.key)) selG.selectOnly(g.key);
                         openCtx(ev, g.items.map((i) => i.id));
                       }}
                     >
@@ -1392,14 +1395,18 @@ export function DownloadsView() {
                         className={`sites-cb${on ? " on" : ""}`}
                         style={{ ["--ico" as string]: ICO.check }}
                         aria-label="Seleccionar grupo"
+                        tabIndex={-1}
                         onClick={(e) => {
                           e.stopPropagation();
-                          toggleSelG(g.key);
+                          selG.handleCheckboxClick(g.key);
                         }}
                       >
                         <span className="sites-cb-mk" />
                       </button>
-                      <div className="dl-cell-title">
+                      <div
+                        className="dl-cell-title"
+                        title="Doble clic para ver los capítulos"
+                      >
                         <div className="dl-cell-title-text">
                           <span className="ell dl-manga">{g.title}</span>
                           <span className="ell dl-chapter">{a.summary}</span>
@@ -1655,18 +1662,7 @@ export function DownloadsView() {
                           fAll || fSome ? (fAll ? ICO.check : ICO.dash) : ICO.check,
                       }}
                       aria-label="Seleccionar capítulos"
-                      onClick={() => {
-                        if (!focusGroup) return;
-                        setSelC((prev) => {
-                          const next = { ...prev };
-                          if (fAll) {
-                            for (const c of focusGroup.items) delete next[c.id];
-                          } else {
-                            for (const c of focusGroup.items) next[c.id] = true;
-                          }
-                          return next;
-                        });
-                      }}
+                      onClick={() => selC.toggleAll()}
                     >
                       <span className="sites-cb-mk" />
                     </button>
@@ -1703,7 +1699,9 @@ export function DownloadsView() {
                       title="Quitar seleccionados"
                       disabled={!fSelIds.length}
                       onClick={() => {
-                        const list = focusGroup.items.filter((c) => selC[c.id]);
+                        const list = focusGroup.items.filter((c) =>
+                          selC.isSelected(c.id),
+                        );
                         askRemoveItems(
                           list,
                           list.length === 1
@@ -1717,6 +1715,12 @@ export function DownloadsView() {
                   </div>
                   <div
                     className="dl-panel-list-scroll"
+                    ref={dlPanelScrollRef}
+                    tabIndex={0}
+                    role="listbox"
+                    aria-multiselectable
+                    aria-label="Capitulos del grupo"
+                    onKeyDown={selC.handleKeyDown}
                     onContextMenu={(ev) => {
                       openCtx(ev, []);
                     }}
@@ -1724,7 +1728,7 @@ export function DownloadsView() {
                     {focusGroup.items.map((c) => {
                       const st = dlStatusMeta(c.status);
                       const prog = dlItemPct(c, liveProgress);
-                      const on = !!selC[c.id];
+                      const on = selC.isSelected(c.id);
                       const canStop =
                         c.status === "running" || c.status === "pending";
                       const canResume =
@@ -1743,14 +1747,27 @@ export function DownloadsView() {
                       return (
                         <div
                           key={c.id}
-                          className={`dl-crow${on ? " sel" : ""}`}
-                          onClick={() => toggleSelC(c.id)}
+                          className={`dl-crow${on ? " sel" : ""}${
+                            selC.isCursor(c.id) ? " cursor" : ""
+                          }`}
+                          role="option"
+                          aria-selected={on}
+                          data-selkey={c.id}
+                          onMouseDown={(ev) => {
+                            if (ev.shiftKey) {
+                              ev.preventDefault();
+                              dlPanelScrollRef.current?.focus({
+                                preventScroll: true,
+                              });
+                            }
+                          }}
+                          onClick={(ev) => selC.handleRowClick(c.id, ev)}
                           onDoubleClick={(ev) => {
                             ev.stopPropagation();
                             void handleOpenContent(c.id);
                           }}
                           onContextMenu={(ev) => {
-                            if (!selC[c.id]) setSelC({ [c.id]: true });
+                            if (!selC.isSelected(c.id)) selC.selectOnly(c.id);
                             openCtx(ev, [c.id]);
                           }}
                         >
@@ -1762,9 +1779,10 @@ export function DownloadsView() {
                               marginTop: "2px",
                             }}
                             aria-label="Seleccionar capítulo"
+                            tabIndex={-1}
                             onClick={(e) => {
                               e.stopPropagation();
-                              toggleSelC(c.id);
+                              selC.handleCheckboxClick(c.id);
                             }}
                           >
                             <span className="sites-cb-mk" />

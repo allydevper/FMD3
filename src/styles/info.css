@@ -2619,3 +2619,46 @@
   cursor: not-allowed;
 }
 
+
+/* ---------------------------------------------------------------------------
+ * Selección de listas (ver `useListSelection`)
+ * ------------------------------------------------------------------------ */
+
+/* El foco vive en el contenedor con scroll; quien lo marca es la fila cursor. */
+.chapters-list:focus,
+.chapters-list:focus-visible,
+.catalog-results:focus,
+.catalog-results:focus-visible {
+  outline: none;
+}
+
+.ch-card {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Seleccionado != hover: la selección lleva tinta de acento. */
+.ch-card.is-on {
+  background: color-mix(in srgb, var(--accent) 14%, var(--card));
+}
+
+.ch-card.is-on:hover {
+  background: color-mix(in srgb, var(--accent) 19%, var(--card));
+}
+
+.chapters-list:focus-within .ch-card.is-cursor,
+.catalog-results:focus-within .catalog-row.is-cursor {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+
+/* `.ch-box` es un botón: quita el aspecto nativo sin tocar su caja. */
+.ch-box {
+  padding: 0;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  font: inherit;
+  color: inherit;
+}
