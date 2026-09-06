@@ -107,9 +107,27 @@ function GetInfo()
 		'Pausado|Hiatus'
 	)
 
-	x.XPathHREFAll('//div[contains(@class, "chapters-grid")]/a[contains(@class, "ch-row")]', MANGAINFO.ChapterLinks, MANGAINFO.ChapterNames)
+	-- ch-row also contains a sibling date ("hace 5 meses"); only keep .ch-num.
+	for v in x.XPath('//div[contains(@class, "chapters-grid")]/a[contains(@class, "ch-row")]').Get() do
+		local href = v.GetAttribute('href') or ''
+		if href:find('/capitulo-') then
+			local name = Trim(x.XPathString('.//span[contains(@class, "ch-num")]', v))
+			if name == '' then
+				name = Trim(x.XPathString('string(.)', v)):gsub('%s*hace%s+.*$', '')
+			end
+			MANGAINFO.ChapterLinks.Add(href)
+			MANGAINFO.ChapterNames.Add(name)
+		end
+	end
 	if MANGAINFO.ChapterLinks.Count == 0 then
-		x.XPathHREFAll('//a[contains(@href, "/capitulo-")]', MANGAINFO.ChapterLinks, MANGAINFO.ChapterNames)
+		for v in x.XPath('//a[contains(@href, "/capitulo-")]').Get() do
+			local name = Trim(x.XPathString('.//span[contains(@class, "ch-num")]', v))
+			if name == '' then
+				name = Trim(x.XPathString('string(.)', v)):gsub('%s*hace%s+.*$', '')
+			end
+			MANGAINFO.ChapterLinks.Add(v.GetAttribute('href'))
+			MANGAINFO.ChapterNames.Add(name)
+		end
 	end
 	-- Site lists newest first.
 	MANGAINFO.ChapterLinks.Reverse()
