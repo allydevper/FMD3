@@ -708,3 +708,12 @@ pub fn ensure_started(app: &AppHandle) {
         start_worker(app.clone());
     }
 }
+
+/// Wake the worker so a newly split batch can fill a free parallel slot.
+/// Does not start the queue if it was stopped.
+pub fn refill_if_running(app: &AppHandle) {
+    let state: State<QueueState> = app.state();
+    if state.running.load(Ordering::SeqCst) {
+        state.wake();
+    }
+}

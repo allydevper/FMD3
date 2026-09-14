@@ -302,6 +302,11 @@ export function queueReorder(ids: number[]) {
   return invoke("queue_reorder", { ids });
 }
 
+/** Split an existing queue group into `parts` batches. Skips the running item. */
+export function queueSplitGroup(ids: number[], parts: number) {
+  return invoke<number>("queue_split_group", { ids, parts });
+}
+
 export function favoritesList() {
   return invoke<Favorite[]>("favorites_list");
 }

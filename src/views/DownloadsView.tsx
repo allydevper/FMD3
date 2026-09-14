@@ -161,6 +161,14 @@ function batchTaskLabel(batchId: string): string | null {
   return `${m[1]}/${m[2]}`;
 }
 
+/** FMD2: first `rem` batches get `base+1`. */
+function splitChunkSizes(total: number, parts: number): number[] {
+  const n = Math.min(Math.max(2, Math.floor(parts)), total);
+  const base = Math.floor(total / n);
+  const rem = total % n;
+  return Array.from({ length: n }, (_, i) => base + (i < rem ? 1 : 0));
+}
+
 type MangaGroup = {
   key: string;
   title: string;
@@ -437,6 +445,11 @@ export function DownloadsView() {
     label: string;
   } | null>(null);
   const [removeDeleteFiles, setRemoveDeleteFiles] = useState(false);
+  const [splitPrompt, setSplitPrompt] = useState<{
+    group: MangaGroup;
+    count: number;
+  } | null>(null);
+  const [splitBusy, setSplitBusy] = useState(false);
   const [contentFmt, setContentFmt] = useState<Record<number, string>>({});
   const [packFmt, setPackFmt] = useState("none");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -895,7 +908,7 @@ export function DownloadsView() {
     ev.stopPropagation();
     const pad = 8;
     const menuW = 220;
-    const menuH = 300;
+    const menuH = 340;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     setDlCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), ids });
@@ -943,6 +956,50 @@ export function DownloadsView() {
     setActiveNav("info");
   }
 
+  function handleSplitGroup(g: MangaGroup) {
+    if (g.items.length < 2) {
+      log("Se necesita más de un capítulo para dividir.", "err");
+      return;
+    }
+    const max = g.items.length;
+    const count = Math.min(Math.max(2, parallelTasks), max);
+    setSplitPrompt({ group: g, count });
+  }
+
+  async function confirmSplitGroup() {
+    if (!splitPrompt || splitBusy) return;
+    const { group } = splitPrompt;
+    const total = group.items.length;
+    if (total < 2) {
+      log("Se necesita más de un capítulo para dividir.", "err");
+      setSplitPrompt(null);
+      return;
+    }
+    let n = Math.floor(splitPrompt.count);
+    if (!Number.isFinite(n) || n < 2) {
+      log("La cuenta de descarga debe ser al menos 2.", "err");
+      return;
+    }
+    n = Math.min(n, total);
+    setSplitBusy(true);
+    try {
+      const groups = await api.queueSplitGroup(
+        group.items.map((i) => i.id),
+        n,
+      );
+      log(
+        `«${group.title}» dividido en ${groups} tarea${groups === 1 ? "" : "s"}.`,
+        "ok",
+      );
+      setSplitPrompt(null);
+      await refreshQueue();
+    } catch (e) {
+      log(String(e), "err");
+    } finally {
+      setSplitBusy(false);
+    }
+  }
+
   const activeN = items.filter((i) => i.status === "running").length;
   const queuedN = items.filter((i) => i.status === "pending").length;
   const doneN = items.filter((i) => i.status === "done").length;
@@ -973,6 +1030,11 @@ export function DownloadsView() {
   const canDeleteSel = selItems.some((i) => i.status !== "running");
   const canRetrySel = selItems.some((i) => i.status === "failed");
   const canFolderSel = selItems.some((i) => !!(i.output_dir || "").trim());
+  const selSplitGroup =
+    selKeys.length === 1
+      ? allGroups.find((g) => g.key === selKeys[0]) || null
+      : null;
+  const canSplitSel = (selSplitGroup?.items.length ?? 0) >= 2;
   const allOn = selG.allSelected;
   const someOn = selG.someSelected;
   const count = (f: (i: QueueItem) => boolean) => items.filter(f).length;
@@ -1000,6 +1062,8 @@ export function DownloadsView() {
     ctxAddMoreGroup &&
     (ctxAddMoreGroup.mangaUrl || ctxAddMoreGroup.rootUrl || "").trim()
   );
+  const ctxGroupKeys = new Set(ctxItems.map((i) => mangaGroupKey(i)));
+  const ctxCanSplit = ctxGroupKeys.size === 1 && (ctxAddMoreGroup?.items.length ?? 0) >= 2;
 
   const selLabel = hasSel
     ? `${selKeys.length} ${selKeys.length === 1 ? "grupo" : "grupos"} · ${selChapterIds.length} cap.`
@@ -1295,6 +1359,18 @@ export function DownloadsView() {
                   }}
                 >
                   <Icon ico={ICO.folderOpen} className="ico ico-sm" />
+                </button>
+                <button
+                  type="button"
+                  className={`dl-ibtn${canSplitSel ? "" : " off"}`}
+                  style={{ borderColor: "transparent" }}
+                  title="Dividir grupo"
+                  disabled={!canSplitSel}
+                  onClick={() => {
+                    if (selSplitGroup) handleSplitGroup(selSplitGroup);
+                  }}
+                >
+                  <Icon ico={ICO.split} className="ico ico-sm" />
                 </button>
               </div>
               <div className="dl-toolbar-spacer" />
@@ -1648,6 +1724,15 @@ export function DownloadsView() {
                         onClick={() => handleAddMore(focusGroup)}
                       >
                         <Icon ico={ICO.plus} className="ico ico-sm" />
+                      </button>
+                      <button
+                        type="button"
+                        className="dl-gbtn is-icon"
+                        title="Dividir grupo"
+                        disabled={focusGroup.items.length < 2}
+                        onClick={() => handleSplitGroup(focusGroup)}
+                      >
+                        <Icon ico={ICO.split} className="ico ico-sm" />
                       </button>
                     </div>
                   </div>
@@ -2120,6 +2205,21 @@ export function DownloadsView() {
               type="button"
               role="menuitem"
               className="dl-ctx-item"
+              disabled={!ctxCanSplit}
+              onClick={() => {
+                const g = ctxAddMoreGroup;
+                setDlCtxMenu(null);
+                if (!g) return;
+                handleSplitGroup(g);
+              }}
+            >
+              <Icon ico={ICO.split} className="ico ico-sm" />
+              <span>Dividir grupo</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
               disabled={clearableN === 0}
               onClick={() => {
                 setDlCtxMenu(null);
@@ -2205,6 +2305,152 @@ export function DownloadsView() {
                 }}
               >
                 Quitar
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {splitPrompt ? (
+        <div
+          className="info-modal-backdrop info-modal-backdrop-confirm"
+          role="presentation"
+          onClick={() => {
+            if (!splitBusy) setSplitPrompt(null);
+          }}
+        >
+          <div
+            className="info-modal info-modal-confirm info-split-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="dl-split-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="info-split-head">
+              <h2 id="dl-split-title" className="info-modal-title">
+                Dividir grupo
+              </h2>
+              <p className="info-split-sub">
+                {splitPrompt.group.items.length} capítulos
+                {splitPrompt.group.title ? ` de ${splitPrompt.group.title}` : ""}
+              </p>
+            </header>
+            <div className="info-modal-body info-split-body">
+              <div className="info-split-row">
+                <label className="info-split-label" htmlFor="dl-split-count">
+                  Número de tareas
+                </label>
+                <div className="info-split-stepper st-num-wrap">
+                  <div className="st-stepper">
+                    <button
+                      type="button"
+                      className="st-stepper-btn"
+                      aria-label="Menos"
+                      disabled={splitBusy || splitPrompt.count <= 2}
+                      onClick={() =>
+                        setSplitPrompt((prev) =>
+                          prev
+                            ? { ...prev, count: Math.max(2, prev.count - 1) }
+                            : prev,
+                        )
+                      }
+                    >
+                      −
+                    </button>
+                    <input
+                      id="dl-split-count"
+                      className="st-stepper-input"
+                      type="number"
+                      min={2}
+                      max={splitPrompt.group.items.length}
+                      value={splitPrompt.count}
+                      autoFocus
+                      autoComplete="off"
+                      disabled={splitBusy}
+                      onChange={(e) => {
+                        const max = splitPrompt.group.items.length;
+                        const raw = Number(e.target.value);
+                        const v = Number.isFinite(raw)
+                          ? Math.min(max, Math.max(2, Math.floor(raw)))
+                          : 2;
+                        setSplitPrompt((prev) =>
+                          prev ? { ...prev, count: v } : prev,
+                        );
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void confirmSplitGroup();
+                        if (e.key === "Escape" && !splitBusy) setSplitPrompt(null);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="st-stepper-btn"
+                      aria-label="Más"
+                      disabled={
+                        splitBusy ||
+                        splitPrompt.count >= splitPrompt.group.items.length
+                      }
+                      onClick={() =>
+                        setSplitPrompt((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                count: Math.min(
+                                  prev.group.items.length,
+                                  prev.count + 1,
+                                ),
+                              }
+                            : prev,
+                        )
+                      }
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <p className="info-split-hint">
+                {(() => {
+                  const sizes = splitChunkSizes(
+                    splitPrompt.group.items.length,
+                    splitPrompt.count,
+                  );
+                  const running = splitPrompt.group.items.some(
+                    (i) => i.status === "running",
+                  );
+                  const list =
+                    sizes.length === 2
+                      ? `${sizes[0]} y ${sizes[1]}`
+                      : sizes.join(", ");
+                  return running
+                    ? `El capítulo en descarga no se mueve. Quedarán grupos de ${list} caps.`
+                    : `Quedarán grupos de ${list} caps.; cada uno puede ir en paralelo.`;
+                })()}
+              </p>
+            </div>
+            <footer className="info-modal-foot">
+              <button
+                type="button"
+                className="info-modal-btn"
+                disabled={splitBusy}
+                onClick={() => setSplitPrompt(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="info-modal-btn info-modal-btn-primary"
+                disabled={splitBusy}
+                aria-busy={splitBusy}
+                onClick={() => void confirmSplitGroup()}
+              >
+                {splitBusy ? (
+                  <>
+                    <span className="spinner spinner-sm" aria-hidden /> Dividiendo…
+                  </>
+                ) : (
+                  "Dividir"
+                )}
               </button>
             </footer>
           </div>

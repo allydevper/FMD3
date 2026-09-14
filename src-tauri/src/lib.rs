@@ -393,6 +393,7 @@ pub fn run() {
             commands::queue_list,
             commands::queue_add,
             commands::queue_reorder,
+            commands::queue_split_group,
             commands::queue_start,
             commands::queue_cancel,
             commands::queue_retry,

@@ -935,6 +935,19 @@ pub fn queue_reorder(state: State<QueueState>, ids: Vec<i64>) -> Result<(), Stri
 }
 
 #[tauri::command]
+pub fn queue_split_group(
+    app: AppHandle,
+    state: State<QueueState>,
+    ids: Vec<i64>,
+    parts: usize,
+) -> Result<usize, String> {
+    let n = db::queue_split_group(&state.db, &ids, parts)?;
+    let _ = app.emit("queue-changed", ());
+    queue::refill_if_running(&app);
+    Ok(n)
+}
+
+#[tauri::command]
 pub fn queue_start(app: AppHandle) -> Result<(), String> {
     queue::start_worker(app);
     Ok(())

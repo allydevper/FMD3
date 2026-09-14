@@ -1733,6 +1733,11 @@ export function InfoView() {
           log(`Sitio detectado por la URL: ${preferred.name}`, "");
         }
         moduleId = preferred.id;
+        // Pegar URL: alinear el selector de fuente (y el catálogo) con el host.
+        if (preferred.id !== selectedModuleId) {
+          setSelectedModuleId(preferred.id);
+          void api.settingsSet(SK.UI_SELECTED_MODULE, preferred.id);
+        }
         // Activar al pegar/abrir por URL: no hace falta ir a Ajustes solo para GetInfo/descarga.
         if (!enabledModuleIds.has(preferred.id)) {
           const newly = await ensureModuleEnabled(preferred.id);
@@ -2464,16 +2469,22 @@ export function InfoView() {
         : `Encolados ${n} de «${info.title || title}».`;
       log(msg, "ok");
       if (n > 0) {
+        const gotoDlRaw = await api.settingsGet("ui.goto_downloads_on_add");
+        const gotoDl = gotoDlRaw !== "0" && gotoDlRaw !== "false";
         appToast({
           message: msg,
           kind: "ok",
-          action: {
-            label: "Ver descargas",
-            onClick: () => setActiveNav("downloads"),
-          },
+          // Ya vamos a Descargas: no hace falta el enlace "Ver descargas".
+          ...(gotoDl
+            ? {}
+            : {
+                action: {
+                  label: "Ver descargas",
+                  onClick: () => setActiveNav("downloads"),
+                },
+              }),
         });
-        const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
-        if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
+        if (gotoDl) setActiveNav("downloads");
       }
       return n;
     } catch (e) {
@@ -2577,16 +2588,21 @@ export function InfoView() {
         ? `Encolados ${n} (detenidos).`
         : `Encolados ${n} capítulo(s).`;
       log(msg, "ok");
+      const gotoDlRaw = await api.settingsGet("ui.goto_downloads_on_add");
+      const gotoDl = gotoDlRaw !== "0" && gotoDlRaw !== "false";
       appToast({
         message: msg,
         kind: "ok",
-        action: {
-          label: "Ver descargas",
-          onClick: () => setActiveNav("downloads"),
-        },
+        ...(gotoDl
+          ? {}
+          : {
+              action: {
+                label: "Ver descargas",
+                onClick: () => setActiveNav("downloads"),
+              },
+            }),
       });
-      const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
-      if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
+      if (gotoDl) setActiveNav("downloads");
     } catch (e) {
       const msg = String(e);
       log(msg, "err");
@@ -2666,17 +2682,22 @@ export function InfoView() {
         ? `Dividido en ${batches.length} tareas (${total} caps, detenidos).`
         : `Dividido en ${batches.length} tareas (${total} caps).`;
       log(msg, "ok");
+      const gotoDlRaw = await api.settingsGet("ui.goto_downloads_on_add");
+      const gotoDl = gotoDlRaw !== "0" && gotoDlRaw !== "false";
       appToast({
         message: msg,
         kind: "ok",
-        action: {
-          label: "Ver descargas",
-          onClick: () => setActiveNav("downloads"),
-        },
+        ...(gotoDl
+          ? {}
+          : {
+              action: {
+                label: "Ver descargas",
+                onClick: () => setActiveNav("downloads"),
+              },
+            }),
       });
       setSplitPrompt(null);
-      const gotoDl = await api.settingsGet("ui.goto_downloads_on_add");
-      if (gotoDl !== "0" && gotoDl !== "false") setActiveNav("downloads");
+      if (gotoDl) setActiveNav("downloads");
     } catch (e) {
       const msg = String(e);
       log(msg, "err");

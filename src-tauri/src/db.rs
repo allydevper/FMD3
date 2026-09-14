@@ -1345,6 +1345,68 @@ pub fn queue_set_pack_format(db: &Db, id: i64, pack_format: &str) -> Result<(), 
     Ok(())
 }
 
+/// Split an existing download group into `parts` batches (FMD2: first `rem`
+/// batches get `base+1`). Running items keep their `batch_id` so an in-flight
+/// chapter is not reassigned; chunks that contain a running item are left as-is.
+///
+/// Returns the number of groups after the split.
+pub fn queue_split_group(db: &Db, ids: &[i64], parts: usize) -> Result<usize, String> {
+    if ids.len() < 2 {
+        return Err("Se necesita más de un capítulo para dividir.".into());
+    }
+    let conn = db.lock();
+    let mut items: Vec<QueueItem> = Vec::new();
+    for id in ids {
+        let row = conn
+            .query_row(
+                &format!("{QUEUE_SELECT} WHERE id = ?1"),
+                params![id],
+                map_queue_item,
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(it) = row {
+            items.push(it);
+        }
+    }
+    if items.len() < 2 {
+        return Err("Se necesita más de un capítulo para dividir.".into());
+    }
+    let n = parts.clamp(2, items.len());
+    let base = items.len() / n;
+    let rem = items.len() % n;
+    let stamp = Utc::now().timestamp_millis();
+    let ts = now();
+    let mut offset = 0usize;
+    let mut moved = 0usize;
+    for i in 0..n {
+        let size = base + usize::from(i < rem);
+        if size == 0 {
+            continue;
+        }
+        let chunk = &items[offset..offset + size];
+        offset += size;
+        if chunk.iter().any(|it| it.status == "running") {
+            continue;
+        }
+        let batch_id = format!("split-{stamp}-{}of{n}", i + 1);
+        for it in chunk {
+            let changed = conn
+                .execute(
+                    "UPDATE queue_items SET batch_id=?1, updated_at=?2
+                     WHERE id=?3 AND status != 'running'",
+                    params![batch_id, ts, it.id],
+                )
+                .map_err(|e| e.to_string())?;
+            moved += changed;
+        }
+    }
+    if moved == 0 {
+        return Err("No hay capítulos que se puedan separar del que está en curso.".into());
+    }
+    Ok(n)
+}
+
 pub fn queue_remove(db: &Db, id: i64) -> Result<(), String> {
     let conn = db.lock();
     conn.execute(
@@ -2304,6 +2366,75 @@ mod tests {
 
         assert!(!queue_chapter_path_shared(&db, ids[0], "").unwrap());
         assert!(!queue_chapter_path_shared(&db, ids[0], "   ").unwrap());
+    }
+
+    fn add_n(db: &Db, n: usize, batch: &str) -> Vec<i64> {
+        let items: Vec<NewQueueItem> = (0..n)
+            .map(|i| {
+                let mut it = new_item(&format!(r"C:\dl\m\{i}"), &format!("/c/{i}"));
+                it.batch_id = batch.into();
+                it.manga_url = "/manga/foo".into();
+                it.module_id = "mod".into();
+                it
+            })
+            .collect();
+        queue_add_many(db, &items).unwrap()
+    }
+
+    fn batch_of(db: &Db, id: i64) -> String {
+        queue_get(db, id).unwrap().batch_id
+    }
+
+    #[test]
+    fn split_group_rejects_single_item() {
+        let db = test_main_db();
+        let ids = add_n(&db, 1, "dl-a");
+        let err = queue_split_group(&db, &ids, 2).unwrap_err();
+        assert!(
+            err.contains("más de un") || err.contains("mas de un"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn split_group_even_pending() {
+        let db = test_main_db();
+        let ids = add_n(&db, 4, "dl-a");
+        assert_eq!(queue_split_group(&db, &ids, 2).unwrap(), 2);
+        let a = batch_of(&db, ids[0]);
+        let b = batch_of(&db, ids[2]);
+        assert_eq!(a, batch_of(&db, ids[1]));
+        assert_eq!(b, batch_of(&db, ids[3]));
+        assert_ne!(a, b);
+        assert!(a.ends_with("-1of2"), "{a}");
+        assert!(b.ends_with("-2of2"), "{b}");
+    }
+
+    #[test]
+    fn split_group_keeps_running_chunk() {
+        let db = test_main_db();
+        let ids = add_n(&db, 4, "dl-a");
+        set_status(&db, ids[0], "running");
+        assert_eq!(queue_split_group(&db, &ids, 2).unwrap(), 2);
+        assert_eq!(batch_of(&db, ids[0]), "dl-a");
+        assert_eq!(batch_of(&db, ids[1]), "dl-a");
+        let moved = batch_of(&db, ids[2]);
+        assert_eq!(moved, batch_of(&db, ids[3]));
+        assert_ne!(moved, "dl-a");
+        assert!(moved.ends_with("-2of2"), "{moved}");
+    }
+
+    #[test]
+    fn split_group_remainder_first() {
+        let db = test_main_db();
+        let ids = add_n(&db, 5, "dl-a");
+        assert_eq!(queue_split_group(&db, &ids, 2).unwrap(), 2);
+        let first = batch_of(&db, ids[0]);
+        assert_eq!(first, batch_of(&db, ids[1]));
+        assert_eq!(first, batch_of(&db, ids[2]));
+        let second = batch_of(&db, ids[3]);
+        assert_eq!(second, batch_of(&db, ids[4]));
+        assert_ne!(first, second);
     }
 }
 

@@ -613,6 +613,7 @@
 
 .dl-panel-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 5px;
   margin-top: auto;
   min-width: 0;
