@@ -8,7 +8,7 @@ const MODULE_ID: &str = "c67d163c51b24bc498e777e2b0d810d2";
 
 fn main() {
     let manga = std::env::args().nth(1).unwrap_or_else(|| {
-        "https://www.leercapitulo.co/manga/a1nj60cg/imo-ichirou-s-twitter-shorts/".to_string()
+        "https://www.leercapitulo.co/manga/0m9qvu61l0/genjitsu-sekai-demo-shiawase-ni-shite-kudasai-ne/".to_string()
     });
     let out = PathBuf::from(std::env::args().nth(2).unwrap_or_else(|| {
         std::env::temp_dir()

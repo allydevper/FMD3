@@ -12,24 +12,22 @@ function Init()
 	m.OnGetInfo                = 'GetInfo'
 	m.OnGetPageNumber          = 'GetPageNumber'
 	m.OnBeforeDownloadImage    = 'BeforeDownloadImage'
-	m.TotalDirectory           = AlphaList:len()
 end
 
 ----------------------------------------------------------------------------------------------------
 -- Local Constants
 ----------------------------------------------------------------------------------------------------
 
-AlphaList = '0123456789abcdefghijklmnopqrstuvwxyz'
-local DirectoryPagination = '/initial/'
+local DirectoryPagination = '/manga/?page='
 local chapterUrl = ''
 
 ----------------------------------------------------------------------------------------------------
 -- Helper Functions
 ----------------------------------------------------------------------------------------------------
 
-local function Trim(s) 
+local function Trim(s)
 	if not s then return '' end
-	return (s:gsub('^%s*(.-)%s*$', '%1')) 
+	return (s:gsub('^%s*(.-)%s*$', '%1'))
 end
 
 local function Split(str, sep)
@@ -49,7 +47,7 @@ local function Split(str, sep)
 	return t
 end
 
--- Main image-URL decryption
+-- Legacy image-URL decryption (pre-redesign chapters that still ship #array_data).
 local function ExtractImages(encoded, meta_content)
 	if encoded == '' then return {} end
 
@@ -120,21 +118,28 @@ local function ExtractImages(encoded, meta_content)
 	return url_list
 end
 
+local function AddPageLink(img)
+	if not img or img == '' then return end
+	if img:sub(1, 2) == '//' then
+		img = 'https:' .. img
+	end
+	local fixed = img:gsub('cdn.statically.io/img/', '')
+	TASK.PageLinks.Add(fixed)
+end
+
 ----------------------------------------------------------------------------------------------------
 -- Event Functions
 ----------------------------------------------------------------------------------------------------
 
 -- Get links and names from the manga list of the current website.
 function GetNameAndLink()
-	local i = MODULE.CurrentDirectoryIndex + 1
-	local s = AlphaList:sub(i, i)
-	local u = MODULE.RootURL .. DirectoryPagination .. s .. '/?page=' .. (URL + 1)
+	local u = MODULE.RootURL .. DirectoryPagination .. (URL + 1)
 
 	if not HTTP.GET(u) then return net_problem end
 
 	local x = CreateTXQuery(HTTP.Document)
-	x.XPathHREFTitleAll('//div[@class="cate-manga"]//div[@class="media-body"]/a', LINKS, NAMES)
-	UPDATELIST.CurrentDirectoryPageNumber = tonumber(x.XPathString('//ul[@class="pagination"]/li[last()]/a')) or 1
+	x.XPathHREFAll('//a[contains(@class, "lc-card-name")]', LINKS, NAMES)
+	UPDATELIST.CurrentDirectoryPageNumber = tonumber(x.XPathString('//ul[contains(@class, "pagination")]/li[last()-1]/a')) or 1
 
 	return no_error
 end
@@ -146,18 +151,18 @@ function GetInfo()
 	if not HTTP.GET(u) then return net_problem end
 
 	local x = CreateTXQuery(HTTP.Document)
-	MANGAINFO.Title     = x.XPathString('//h1[@class="title-manga"]')
-	MANGAINFO.AltTitles = x.XPathString('//p[contains(@class, "description-update")]/span[contains(., "Títulos Alternativos")]/following-sibling::text()[1]')
-	MANGAINFO.CoverLink = MaybeFillHost(MODULE.RootURL, x.XPathString('//div[contains(@class, "cover-detail")]/img/@src'))
-	MANGAINFO.Authors   = x.XPathString('//p[contains(@class, "description-update")]/span[contains(., "Author")]/following-sibling::text()[1]')
-	MANGAINFO.Artists   = x.XPathString('//p[contains(@class, "description-update")]/span[contains(., "Artist")]/following-sibling::text()[1]')
-	MANGAINFO.Genres    = x.XPathStringAll('//p[contains(@class, "description-update")]//a[contains(@href, "/genre/")]/text()')
-	MANGAINFO.Status    = MangaInfoStatusIfPos(x.XPathString('//p[contains(@class, "description-update")]/span[contains(., "Estado:")]/following-sibling::text()[1]'), 'Ongoing', 'Completed', 'Paused', 'Cancelled')
-	MANGAINFO.Summary   = x.XPathString('//div[@class="manga-content"]/p')
+	MANGAINFO.Title     = x.XPathString('//article[contains(@class, "lc-panel")]//h1')
+	MANGAINFO.AltTitles = x.XPathString('//article[contains(@class, "lc-panel")]//p[contains(@class, "lc-muted")]')
+	MANGAINFO.CoverLink = MaybeFillHost(MODULE.RootURL, x.XPathString('//div[contains(@class, "lc-cover-lg")]/img/@src'))
+	MANGAINFO.Authors   = x.XPathString('//ul[contains(@class, "lc-facts")]/li[span[@class="k"][contains(., "Autor")]]/span[not(@class="k")]')
+	MANGAINFO.Artists   = x.XPathString('//ul[contains(@class, "lc-facts")]/li[span[@class="k"][contains(., "Dibujo")]]/span[not(@class="k")]')
+	MANGAINFO.Genres    = x.XPathStringAll('//article[contains(@class, "lc-panel")]//a[contains(@href, "/manga/?genre=") or contains(@href, "/manga/?theme=")]')
+	MANGAINFO.Status    = MangaInfoStatusIfPos(x.XPathString('//ul[contains(@class, "lc-facts")]/li[span[@class="k"][contains(., "Estado")]]//a'), 'Ongoing', 'Completed', 'Paused', 'Cancelled')
+	MANGAINFO.Summary   = x.XPathString('//section[@id="sinopsis"]//p')
 
-	for v in x.XPath('//div[contains(@class, "chapter-list")]//a[contains(@class, "xanh")]').Get() do
+	for v in x.XPath('//div[@id="chapterList"]/a[contains(@class, "lc-chapter-row")]').Get() do
 		MANGAINFO.ChapterLinks.Add(v.GetAttribute('href'))
-		MANGAINFO.ChapterNames.Add(v.GetAttribute('title'))
+		MANGAINFO.ChapterNames.Add(x.XPathString('span[@class="n"]', v))
 	end
 	MANGAINFO.ChapterLinks.Reverse(); MANGAINFO.ChapterNames.Reverse()
 
@@ -173,16 +178,29 @@ function GetPageNumber()
 
 	local x = CreateTXQuery(HTTP.Document)
 
-	local encoded = x.XPathString('//p[@id="array_data"]')
-	local meta_content = x.XPathString('//meta[@property="ad:check"]/@content')
+	-- Redesign: pages are plain lazy-loaded <img data-src="..."> inside #lcPages.
+	-- Use XPathStringAll: XPath(.../@attr).Get() yields elements, and img:ToString() is empty.
+	x.XPathStringAll('//main[@id="lcPages"]//img/@data-src', TASK.PageLinks)
+	if TASK.PageLinks.Count == 0 then
+		x.XPathStringAll('//main[@id="lcPages"]//img/@src', TASK.PageLinks)
+	end
 
-	local images = ExtractImages(encoded, meta_content)
-	for _, img in ipairs(images) do
-		if img:sub(1, 2) == '//' then
-			img = 'https:' .. img
+	-- Fallback: older reader markup with encrypted #array_data.
+	if TASK.PageLinks.Count == 0 then
+		local encoded = x.XPathString('//p[@id="array_data"]')
+		local meta_content = x.XPathString('//meta[@property="ad:check"]/@content')
+		local images = ExtractImages(encoded, meta_content)
+		for _, img in ipairs(images) do
+			AddPageLink(img)
 		end
-		local fixed = img:gsub('cdn.statically.io/img/', '')
-		TASK.PageLinks.Add(fixed)
+	else
+		for i = 0, TASK.PageLinks.Count - 1 do
+			local img = TASK.PageLinks[i]
+			if img:sub(1, 2) == '//' then
+				img = 'https:' .. img
+			end
+			TASK.PageLinks[i] = img:gsub('cdn.statically.io/img/', '')
+		end
 	end
 
 	return true
