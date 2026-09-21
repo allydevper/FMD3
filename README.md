@@ -126,6 +126,9 @@ escuchando en `:8191`.
 
 **Release / portable:** perfil y descargas **junto al `.exe`**. Cada carpeta
 descomprimida es una versión aislada (no comparte AppData con debug ni con otro zip).
+Las rutas de *Guardar en* y de la cola que caen bajo esa carpeta se guardan
+**relativas al `.exe`**: puedes renombrar o mover toda la carpeta y siguen
+válidas. Si eliges otra unidad (p. ej. `D:\Manga`), se guarda absoluta.
 
 | Ruta (portable) | Contenido |
 |---|---|
@@ -163,13 +166,15 @@ El instalador NSIS (si lo generas) **no** empaqueta `lua/`. El modules-updater
 descarga el árbol a `userdata\lua` junto al exe (portable) o, en builds antiguos
 que aún usaban AppData, a `%AppData%\FMD3\userdata\lua`.
 
-El proceso completo de firma y publicación está en
+Portable (carpeta + exe, recomendado): [`docs/PORTABLE.md`](docs/PORTABLE.md)
+y `.\scripts\pack-portable.ps1`. Firma / NSIS / self-updater:
 [`docs/RELEASE-UPDATER.md`](docs/RELEASE-UPDATER.md).
 
 ## Documentación
 
+- [`docs/PORTABLE.md`](docs/PORTABLE.md) — empaquetar carpeta portable (próximas versiones)
 - [`docs/LUA-REFERENCE.md`](docs/LUA-REFERENCE.md) — API Lua disponible para módulos
-- [`docs/RELEASE-UPDATER.md`](docs/RELEASE-UPDATER.md) — releases y self-updater
+- [`docs/RELEASE-UPDATER.md`](docs/RELEASE-UPDATER.md) — releases NSIS y self-updater
 - [`dev/README.md`](dev/README.md) — catálogo de prueba para desarrollo
 
 ## Créditos y licencia

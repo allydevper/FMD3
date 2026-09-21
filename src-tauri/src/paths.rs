@@ -1,12 +1,90 @@
-//! Windows long-path helpers (FMD2 parity).
+//! Windows long-path helpers (FMD2 parity) + portable path storage.
 //!
 //! - When `paths.long_paths` is on: prefix absolute paths with `\\?\` / `\\?\UNC\` for I/O.
 //! - When off: truncate download folder paths so they stay under `MAX_PATHDIR` (247).
+//! - Download / queue paths under the executable directory are stored relative to
+//!   the `.exe` so renaming or moving the portable folder keeps working.
 
 use std::path::{Path, PathBuf};
 
 /// FMD2 `MAX_PATHDIR` — leave room under Win32 `MAX_PATH` (260) for a filename.
 pub const MAX_PATHDIR: usize = 247;
+
+fn absolute_loose(path: &Path) -> PathBuf {
+    if path.as_os_str().is_empty() {
+        return PathBuf::new();
+    }
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    crate::db::exe_dir().join(path)
+}
+
+/// If `path` is under the directory of the running `.exe`, return a relative
+/// path (portable). Otherwise return an absolute path (user picked another drive).
+pub fn path_for_storage(path: impl AsRef<Path>) -> String {
+    let path = path.as_ref();
+    let raw = path.to_string_lossy();
+    if raw.trim().is_empty() {
+        return String::new();
+    }
+    let abs = absolute_loose(path);
+    let root = crate::db::exe_dir();
+    let abs_s = abs.to_string_lossy().replace('/', "\\");
+    let root_s = root.to_string_lossy().replace('/', "\\");
+    let abs_trim = abs_s.trim_end_matches('\\');
+    let root_trim = root_s.trim_end_matches('\\');
+
+    #[cfg(windows)]
+    {
+        if abs_trim.eq_ignore_ascii_case(root_trim) {
+            return ".".into();
+        }
+        if abs_trim.len() > root_trim.len() {
+            let (head, tail) = abs_trim.split_at(root_trim.len());
+            if head.eq_ignore_ascii_case(root_trim) && tail.starts_with('\\') {
+                return tail.trim_start_matches('\\').to_string();
+            }
+        }
+        abs_trim.to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(rel) = abs.strip_prefix(&root) {
+            let s = rel.to_string_lossy();
+            if s.is_empty() {
+                return ".".into();
+            }
+            return s.replace('\\', "/");
+        }
+        abs_trim.replace('\\', "/")
+    }
+}
+
+/// Resolve a stored path to an absolute filesystem path.
+/// Relative values are joined to the directory of the running `.exe`.
+pub fn path_from_storage(stored: &str) -> PathBuf {
+    let t = stored.trim();
+    if t.is_empty() {
+        return PathBuf::new();
+    }
+    let p = PathBuf::from(t);
+    if p.is_absolute() {
+        return p;
+    }
+    if t == "." {
+        return crate::db::exe_dir();
+    }
+    crate::db::exe_dir().join(p)
+}
+
+pub fn path_from_storage_string(stored: &str) -> String {
+    let p = path_from_storage(stored);
+    if p.as_os_str().is_empty() {
+        return String::new();
+    }
+    p.to_string_lossy().into_owned()
+}
 
 fn long_paths_enabled() -> bool {
     #[cfg(windows)]

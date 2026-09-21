@@ -41,6 +41,7 @@ pub fn default_download_dir() -> PathBuf {
 }
 
 /// Saved `default_output_dir`, or the default download folder when unset.
+/// Stored values under the `.exe` are relative; this always returns an absolute path.
 pub fn resolve_output_dir(db: &Db) -> Result<String, String> {
     let saved = settings_get(db, "default_output_dir")?.unwrap_or_default();
     let t = saved.trim();
@@ -168,6 +169,9 @@ fn map_favorite(r: &rusqlite::Row<'_>) -> rusqlite::Result<Favorite> {
 }
 
 fn map_queue_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
+    let output_dir: String = r.get(8)?;
+    let manga_path: String = r.get(9)?;
+    let chapter_path: String = r.get(10)?;
     Ok(QueueItem {
         id: r.get(0)?,
         manga_title: r.get(1)?,
@@ -177,9 +181,9 @@ fn map_queue_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
         chapter_index: r.get(5)?,
         chapter_name: r.get(6)?,
         chapter_link: r.get(7)?,
-        output_dir: r.get(8)?,
-        manga_path: r.get(9)?,
-        chapter_path: r.get(10)?,
+        output_dir: crate::paths::path_from_storage_string(&output_dir),
+        manga_path: crate::paths::path_from_storage_string(&manga_path),
+        chapter_path: crate::paths::path_from_storage_string(&chapter_path),
         batch_id: r.get(11)?,
         pack_format: r.get(12)?,
         status: r.get(13)?,
@@ -397,7 +401,55 @@ pub fn open_db() -> Result<Db, String> {
     );
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN alt_titles TEXT", []);
+    migrate_exe_relative_paths(&conn)?;
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// Rewrite absolute download/queue paths that live under the current `.exe`
+/// directory into relative form (idempotent).
+fn migrate_exe_relative_paths(conn: &Connection) -> Result<(), String> {
+    // settings.default_output_dir
+    if let Ok(Some(raw)) = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'default_output_dir'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+    {
+        let stored = crate::paths::path_for_storage(&raw);
+        if stored != raw {
+            conn.execute(
+                "UPDATE settings SET value = ?1 WHERE key = 'default_output_dir'",
+                params![stored],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT id, output_dir, manga_path, chapter_path FROM queue_items")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(i64, String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    for (id, out, manga, chapter) in rows {
+        let out2 = crate::paths::path_for_storage(&out);
+        let manga2 = crate::paths::path_for_storage(&manga);
+        let chapter2 = crate::paths::path_for_storage(&chapter);
+        if out2 != out || manga2 != manga || chapter2 != chapter {
+            conn.execute(
+                "UPDATE queue_items SET output_dir=?1, manga_path=?2, chapter_path=?3 WHERE id=?4",
+                params![out2, manga2, chapter2, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 /// Open portable downloaded-marks DB (`userdata/downloaded.db`).
@@ -616,13 +668,15 @@ pub fn open_app_dbs() -> Result<(Db, Db, Db), String> {
 
 pub fn settings_get(db: &Db, key: &str) -> Result<Option<String>, String> {
     let conn = db.lock();
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        params![key],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(|e| e.to_string())
+    let v: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(resolve_setting_value(key, v))
 }
 
 /// Read a setting without holding QueueState (used by HttpClient / FlareSolverr).
@@ -633,13 +687,36 @@ pub fn settings_get_direct(key: &str) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let conn = Connection::open(&path).map_err(|e| e.to_string())?;
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        params![key],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(|e| e.to_string())
+    let v: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(resolve_setting_value(key, v))
+}
+
+fn resolve_setting_value(key: &str, v: Option<String>) -> Option<String> {
+    let Some(s) = v else {
+        return None;
+    };
+    if key == "default_output_dir" {
+        let resolved = crate::paths::path_from_storage_string(&s);
+        if resolved.is_empty() {
+            return Some(s);
+        }
+        return Some(resolved);
+    }
+    Some(s)
+}
+
+fn store_setting_value(key: &str, value: &str) -> String {
+    if key == "default_output_dir" {
+        return crate::paths::path_for_storage(value);
+    }
+    value.to_string()
 }
 
 /// Write a setting without QueueState (cookie/UA persistence from HttpClient).
@@ -655,10 +732,11 @@ pub fn settings_set_direct(key: &str, value: &str) -> Result<(), String> {
         );",
     )
     .map_err(|e| e.to_string())?;
+    let stored = store_setting_value(key, value);
     conn.execute(
         "INSERT INTO settings(key, value) VALUES(?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![key, value],
+        params![key, stored],
     )
     .map_err(|e| e.to_string())?;
     if key == crate::settings_keys::APP_LANGUAGE {
@@ -668,11 +746,12 @@ pub fn settings_set_direct(key: &str, value: &str) -> Result<(), String> {
 }
 
 pub fn settings_set(db: &Db, key: &str, value: &str) -> Result<(), String> {
+    let stored = store_setting_value(key, value);
     let conn = db.lock();
     conn.execute(
         "INSERT INTO settings(key, value) VALUES(?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![key, value],
+        params![key, stored],
     )
     .map_err(|e| e.to_string())?;
     drop(conn);
@@ -1114,6 +1193,9 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
             continue;
         }
         max_pos += 1;
+        let output_dir = crate::paths::path_for_storage(&item.output_dir);
+        let manga_path = crate::paths::path_for_storage(&item.manga_path);
+        let chapter_path = crate::paths::path_for_storage(&item.chapter_path);
         conn.execute(
             "INSERT INTO queue_items(
                 manga_title, root_url, manga_url, module_id, chapter_index, chapter_name, chapter_link,
@@ -1127,9 +1209,9 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
                 item.chapter_index,
                 item.chapter_name,
                 item.chapter_link,
-                item.output_dir,
-                item.manga_path,
-                item.chapter_path,
+                output_dir,
+                manga_path,
+                chapter_path,
                 item.chapter_display,
                 item.batch_id,
                 item.pack_format,

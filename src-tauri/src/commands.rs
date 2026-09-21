@@ -870,8 +870,8 @@ pub fn queue_add(
     }
     let _ = db::settings_set(&state.db, "default_output_dir", &req.output_dir);
     let batch_id = req.batch_id.trim().to_string();
-    /* Store one absolute form regardless of caller, so every row for a work agrees
-    on the mark key (catalog "download all" passes absolute, other paths may not). */
+    /* Store paths relative to the .exe when under that folder so portable
+    renames keep working; absolute otherwise (other drive / custom folder). */
     let manga_url = crate::lua_host::maybe_fill_host(&req.root_url, &req.manga_url);
     let rename_opts = RenameOpts::from_settings();
     let items: Vec<NewQueueItem> = req

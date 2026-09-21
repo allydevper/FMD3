@@ -1,5 +1,10 @@
 # Self-updater (GitHub Releases)
 
+> **Entregable principal para usuarios:** carpeta portable (`FMD3.exe` + perfil
+> junto al exe). Ver [`PORTABLE.md`](PORTABLE.md) y `scripts/pack-portable.ps1`.
+> Este documento cubre el instalador NSIS y el updater firmado, que siguen
+> disponibles si generas el setup.
+
 FMD3 uses [`tauri-plugin-updater`](https://v2.tauri.app/plugin/updater/) against:
 
 `https://github.com/allydevper/FMD3/releases/latest/download/latest.json`
