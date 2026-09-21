@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type SyntheticEvent,
@@ -450,6 +451,7 @@ export function InfoView() {
   }, []);
 
   const [urlInput, setUrlInput] = useState("");
+  const urlInputRef = useRef<HTMLInputElement>(null);
   const [mangaUrl, setMangaUrl] = useState("");
   const [mangaLoadingUrl, setMangaLoadingUrl] = useState("");
   const [loadBtnDisabled, setLoadBtnDisabled] = useState(false);
@@ -1673,6 +1675,38 @@ export function InfoView() {
   /* ---------------------------------------------------------------------
    * Load manga info
    * ------------------------------------------------------------------- */
+  function applyPastedMangaUrl(text: string, opts?: { notifyIfEmpty?: boolean }): boolean {
+    const url = normalizeMangaUrl(text);
+    if (!url) {
+      if (opts?.notifyIfEmpty) {
+        appToast({
+          message: "No se encontró un enlace válido en el portapapeles.",
+          kind: "err",
+        });
+      }
+      return false;
+    }
+    setUrlInput(url);
+    void loadMangaInfo(url);
+    return true;
+  }
+
+  async function pasteUrlFromClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      applyPastedMangaUrl(text, { notifyIfEmpty: true });
+    } catch {
+      urlInputRef.current?.focus();
+      appToast({ message: "Pulsa Ctrl+V para pegar el enlace.", kind: "" });
+    }
+  }
+
+  function handleUrlPaste(ev: ReactClipboardEvent<HTMLInputElement>) {
+    const text = ev.clipboardData?.getData("text") ?? "";
+    if (!text.trim()) return;
+    if (applyPastedMangaUrl(text)) ev.preventDefault();
+  }
+
   async function loadMangaInfo(explicitUrl?: string, preferredModuleId?: string | null) {
     const seq = ++mangaLoadSeqRef.current;
     const raw = (explicitUrl ?? urlInput).trim();
@@ -1695,7 +1729,7 @@ export function InfoView() {
     const url = normalizeMangaUrl(raw);
     if (!url) {
       log(
-        "URL inválida. Pega un enlace http(s) completo del manga (ej. https://sitio.com/manga/…).",
+        "URL inválida. Pega un enlace http(s) o anticlick (espacios, [.], hxxp…).",
         "err",
       );
       return;
@@ -2923,7 +2957,7 @@ export function InfoView() {
           <div className="chapters-empty">
             <img className="chapters-empty-art" src={chaptersEmptyUrl} alt="" />
             <p className="chapters-empty-text">
-              Doble clic en un título del catálogo, o pega un enlace arriba.
+              Doble clic en un título del catálogo, o pega un enlace (anticlick) arriba.
             </p>
           </div>
         </div>
@@ -3290,17 +3324,28 @@ export function InfoView() {
           <div className="info-center" hidden={infoMode === "filter"}>
             <div className="url-bar-wrap">
               <div className="url-bar">
+                <button
+                  type="button"
+                  className="url-paste"
+                  id="url-paste"
+                  title="Pegar enlace o anticlick"
+                  onClick={() => void pasteUrlFromClipboard()}
+                >
+                  <Icon name="clipboard" className="ico ico-sm" />
+                </button>
                 <input
+                  ref={urlInputRef}
                   id="url"
                   type="text"
                   inputMode="url"
-                  placeholder="https://sitio.com/manga/…"
+                  placeholder="Pega enlace o anticlick…"
                   autoComplete="off"
                   autoCapitalize="off"
                   autoCorrect="off"
                   spellCheck={false}
                   value={urlInput}
                   onChange={(ev) => setUrlInput(ev.target.value)}
+                  onPaste={handleUrlPaste}
                   onKeyDown={(ev) => {
                     if (ev.key === "Enter") void loadMangaInfo();
                   }}

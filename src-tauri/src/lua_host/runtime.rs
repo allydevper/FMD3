@@ -2168,6 +2168,15 @@ pub fn download_chapter(
         let n_workers = max_threads.min(pending.len().max(1));
         let chunk = (pending.len() + n_workers - 1) / n_workers.max(1);
         let cancel_flag = cancel;
+        // Parent stays in the scope so it can poll atomics and emit speed;
+        // workers decrement `alive` on exit (including cancel / fork fail).
+        let alive = AtomicUsize::new(0);
+        struct AliveGuard<'a>(&'a AtomicUsize);
+        impl Drop for AliveGuard<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
         std::thread::scope(|scope| {
             for part in pending.chunks(chunk.max(1)) {
                 let part = part.to_vec();
@@ -2181,7 +2190,10 @@ pub fn download_chapter(
                 let bytes_counter = &bytes_counter;
                 let page_count = page_count;
                 let chapter_referer = &chapter_referer;
+                let alive = &alive;
+                alive.fetch_add(1, Ordering::SeqCst);
                 scope.spawn(move || {
+                    let _keep_alive = AliveGuard(alive);
                     let Ok(client) = http0.fork() else {
                         return;
                     };
@@ -2240,6 +2252,22 @@ pub fn download_chapter(
                         }
                     }
                 });
+            }
+            // Same 100 ms cadence as packing: enough for the UI speed meter
+            // without flooding Tauri. `on_progress` stays on this thread.
+            let tick = std::time::Duration::from_millis(100);
+            loop {
+                if let Some(cb) = on_progress.as_mut() {
+                    cb(
+                        progress.load(Ordering::SeqCst),
+                        page_count,
+                        bytes_counter.load(Ordering::SeqCst),
+                    );
+                }
+                if alive.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                std::thread::sleep(tick);
             }
         });
         if cancelled() {

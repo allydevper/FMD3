@@ -6,14 +6,125 @@ export function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+const INVISIBLE_CHARS = /[\u200B-\u200D\uFEFF\u00AD\u2060\u180E]/g;
+const PROSE_TOKEN =
+  /[áéíóúñüÁÉÍÓÚÑÜ]|^(?:el|la|los|las|de|del|en|un|una|capítulo|capitulo|nuevo|mira|este|esta|esto|link|enlace|anticlick|lee|aquí|aqui)$/i;
+const URLISH_TOKEN = /^[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+$/;
+const HTTP_TOKEN_RE = /https?:\/\/[^\s<>"']+/gi;
+const COLLAPSED_HTTP_RE = /https?:\/\/[a-z0-9][a-z0-9.-]*\.[a-z]{2,}[^\s<>"']*/i;
+const COLLAPSED_WWW_RE = /www\.[a-z0-9.-]+\.[a-z]{2,}[^\s<>"']*/i;
+const COLLAPSED_BARE_RE = /[a-z0-9][a-z0-9.-]*\.[a-z]{2,}\/[^\s<>"']*/i;
+
+function stripInvisible(s: string): string {
+  return s.replace(INVISIBLE_CHARS, "");
+}
+
+function trimUrlJunk(s: string): string {
+  return s.replace(/[)\]}>.,;:!?]+$/g, "");
+}
+
+function unwrapWrappers(s: string): string {
+  let t = s.trim();
+  const md = t.match(/\]\((https?:\/\/[^)\s]+)\)/i);
+  if (md) return md[1];
+  t = t.replace(/^<([^<>]+)>$/, "$1").trim();
+  t = t.replace(/^[`'"]+|[`'"]+$/g, "").trim();
+  return t;
+}
+
+/** Undo common anticlick / defanging used in Telegram, Discord and forums. */
+function refangAnticlick(s: string): string {
+  return s
+    .replace(/hxxps/gi, "https")
+    .replace(/hxxp/gi, "http")
+    .replace(/\[:\]/g, ":")
+    .replace(/\[\/\]/g, "/")
+    .replace(/\\\./g, ".")
+    .replace(/\[\s*(?:\.|dot|punto)\s*\]/gi, ".")
+    .replace(/\(\s*(?:\.|dot|punto)\s*\)/gi, ".")
+    .replace(/\{\s*(?:\.|dot|punto)\s*\}/gi, ".")
+    .replace(/\s+(?:dot|punto)\s+/gi, ".")
+    .replace(/https?\s*:\s*\/\s*\//gi, (m) =>
+      m.toLowerCase().startsWith("https") ? "https://" : "http://",
+    )
+    .replace(/www\s*\./gi, "www.");
+}
+
+function isUrlContinuation(token: string, urlSoFar: string): boolean {
+  if (!token || PROSE_TOKEN.test(token)) return false;
+  if (/^[/?#.&%=_~:@,;*+-]/.test(token)) return true;
+  if (!URLISH_TOKEN.test(token)) return false;
+  const last = urlSoFar.slice(-1);
+  if ("./?#&=-_".includes(last)) return true;
+  /* Space + letters after a host/path char is almost always caption text. */
+  if (/[A-Za-z0-9]$/.test(urlSoFar) && /^[A-Za-z]{2,}$/.test(token)) return false;
+  return true;
+}
+
 /**
- * Normalize pasted manga URL for GetInfo.
+ * Collapse anticlick spaces from the first URL-like token to the end of
+ * that URL, stopping at surrounding caption text.
+ */
+function collapseAnticlickLine(line: string): string | null {
+  const start = line.search(
+    /(?:https?:\/\/|www\.|[a-z0-9-]+\s*\.\s*[a-z]{2,})/i,
+  );
+  if (start < 0) return null;
+  const parts = line.slice(start).split(/(\s+)/);
+  let url = "";
+  for (const part of parts) {
+    if (/^\s+$/.test(part)) continue;
+    if (!url) {
+      url = part;
+      continue;
+    }
+    if (!isUrlContinuation(part, url)) break;
+    url += part;
+  }
+  return url || null;
+}
+
+function pushCandidate(out: string[], raw: string | null | undefined) {
+  if (!raw) return;
+  const cleaned = unwrapWrappers(trimUrlJunk(raw.trim()));
+  if (cleaned && !out.includes(cleaned)) out.push(cleaned);
+}
+
+function anticlickCandidates(raw: string): string[] {
+  const text = refangAnticlick(stripInvisible(raw));
+  const out: string[] = [];
+
+  HTTP_TOKEN_RE.lastIndex = 0;
+  for (const m of text.matchAll(HTTP_TOKEN_RE)) pushCandidate(out, m[0]);
+  pushCandidate(out, text);
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    pushCandidate(out, trimmed);
+    pushCandidate(out, collapseAnticlickLine(trimmed));
+    pushCandidate(out, trimmed.replace(/\s+/g, ""));
+  }
+
+  const collapsed = text.replace(/\s+/g, "");
+  const http = collapsed.match(COLLAPSED_HTTP_RE);
+  if (http) pushCandidate(out, http[0]);
+  const www = collapsed.match(COLLAPSED_WWW_RE);
+  if (www) pushCandidate(out, www[0]);
+  const bare = collapsed.match(COLLAPSED_BARE_RE);
+  if (bare) pushCandidate(out, bare[0]);
+  if (/^(?:https?:\/\/|www\.)/i.test(collapsed)) pushCandidate(out, collapsed);
+
+  return out;
+}
+
+/**
+ * Parse an already-cleaned absolute http(s) URL (or a bare domain path).
  * Rejects plain text (`Listo.`), relative paths without a selected root, etc.
  * Accepts bare domains (`18kami.com/...`) by prefixing `https://`.
  */
-export function normalizeMangaUrl(raw: string): string | null {
+function parseAbsoluteHttpUrl(raw: string): string | null {
   const s = raw.trim();
-  if (!s) return null;
+  if (!s || /\s/.test(s)) return null;
 
   let candidate = s;
   if (!/^https?:\/\//i.test(candidate)) {
@@ -41,6 +152,19 @@ export function normalizeMangaUrl(raw: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Normalize pasted manga URL for GetInfo, including anticlick / defanged
+ * links (`https:// sitio [.] com /manga/…`, `hxxps://…`).
+ */
+export function normalizeMangaUrl(raw: string): string | null {
+  if (!raw || !raw.trim()) return null;
+  for (const candidate of anticlickCandidates(raw)) {
+    const parsed = parseAbsoluteHttpUrl(candidate);
+    if (parsed) return parsed;
+  }
+  return parseAbsoluteHttpUrl(raw);
 }
 
 export function maybeFillHost(root: string, link: string): string {

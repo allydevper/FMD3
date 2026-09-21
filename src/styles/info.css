@@ -1267,6 +1267,27 @@
   box-shadow: 0 0 0 1px var(--focus);
 }
 
+.url-paste {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  margin: 1px 0 1px 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  cursor: pointer;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  padding: 0;
+}
+
+.url-paste:hover {
+  background: var(--hover-tint);
+  color: var(--text);
+}
+
 .url-bar input {
   flex: 1 1 auto;
   min-width: 0;
