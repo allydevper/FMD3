@@ -2,6 +2,7 @@ import * as api from "../api/tauri";
 import { appConfirm } from "../components/AppConfirm";
 import { SK } from "../constants";
 import type { ModulesCheckReport, ModulesUpdateReport } from "../types";
+import { t } from "../i18n";
 
 export type ModulesUpdateLog = (msg: string, kind?: "ok" | "err" | "") => void;
 
@@ -20,28 +21,28 @@ function parseBool(raw: string | null | undefined, fallback: boolean): boolean {
 
 export function summarizeCheck(c: ModulesCheckReport): string {
   const parts: string[] = [];
-  if (c.new_count) parts.push(`${c.new_count} nuevos`);
-  if (c.update_count) parts.push(`${c.update_count} actualizados`);
-  if (c.delete_count) parts.push(`${c.delete_count} eliminados`);
-  if (c.failed_count) parts.push(`${c.failed_count} con error`);
-  return parts.length ? parts.join(", ") : "sin cambios pendientes";
+  if (c.new_count) parts.push(t("modules.new", { n: c.new_count }));
+  if (c.update_count) parts.push(t("modules.updated", { n: c.update_count }));
+  if (c.delete_count) parts.push(t("modules.deleted", { n: c.delete_count }));
+  if (c.failed_count) parts.push(t("modules.failed", { n: c.failed_count }));
+  return parts.length ? parts.join(", ") : t("modules.noPending");
 }
 
 function formatCheckBreakdown(c: ModulesCheckReport): string {
   const parts: string[] = [];
-  if (c.update_count) parts.push(`${c.update_count} actualizados`);
-  if (c.new_count) parts.push(`${c.new_count} nuevos`);
-  if (c.delete_count) parts.push(`${c.delete_count} eliminados`);
-  if (c.failed_count) parts.push(`${c.failed_count} con error`);
-  return parts.length ? parts.join(" · ") : "sin cambios pendientes";
+  if (c.update_count) parts.push(t("modules.updated", { n: c.update_count }));
+  if (c.new_count) parts.push(t("modules.new", { n: c.new_count }));
+  if (c.delete_count) parts.push(t("modules.deleted", { n: c.delete_count }));
+  if (c.failed_count) parts.push(t("modules.failed", { n: c.failed_count }));
+  return parts.length ? parts.join(" · ") : t("modules.noPending");
 }
 
 function summarizeApply(r: ModulesUpdateReport): string {
   const parts: string[] = [];
-  if (r.downloaded) parts.push(`${r.downloaded} descargados`);
-  if (r.deleted) parts.push(`${r.deleted} eliminados`);
-  if (r.failed) parts.push(`${r.failed} con error`);
-  return parts.length ? parts.join(", ") : "sin cambios";
+  if (r.downloaded) parts.push(t("modules.downloaded", { n: r.downloaded }));
+  if (r.deleted) parts.push(t("modules.deleted", { n: r.deleted }));
+  if (r.failed) parts.push(t("modules.failed", { n: r.failed }));
+  return parts.length ? parts.join(", ") : t("modules.noChanges");
 }
 
 /**
@@ -60,12 +61,12 @@ export async function runModulesGithubUpdate(
   const check = await api.modulesUpdateCheck(!silent);
 
   if (!check.found_updates) {
-    if (!silent) log("Módulos: sin actualizaciones", "ok");
+    if (!silent) log(t("modules.none"), "ok");
     return { check, report: null, deferred: false };
   }
 
   if (silent) {
-    log(`Módulos: hay actualizaciones (${summarizeCheck(check)})`, "");
+    log(t("modules.pending", { summary: summarizeCheck(check) }), "");
     return { check, report: null, deferred: true };
   }
 
@@ -81,21 +82,19 @@ export async function runModulesGithubUpdate(
       : [summarizeCheck(check)];
     const fileCount = check.new_count + check.update_count + check.delete_count;
     const ok = await appConfirm({
-      title: "Actualización de módulos",
-      message:
-        "La versión actual de cada archivo se guarda en la copia de seguridad antes de sobrescribirse, así que puedes deshacer.",
-      okLabel: "Actualizar",
-      cancelLabel: "Cancelar",
+      title: t("modules.title"),
+      message: t("modules.warn"),
+      okLabel: t("updates.update"),
+      cancelLabel: t("common.cancel"),
       items: files,
-      meta: `${fileCount || files.length} archivos`,
-      listTitle: "Archivos afectados",
+      meta: t("modules.files", { n: fileCount || files.length }),
+      listTitle: t("modules.filesTitle"),
       listMeta: formatCheckBreakdown(check),
-      footerHint: "Copia de seguridad automática",
+      footerHint: t("modules.backupHint"),
     });
     if (!ok) {
-      // Frees the parked plan; the same changes are reported again next time.
       await api.modulesUpdateDismiss(check.token);
-      log("Actualización de módulos cancelada", "");
+      log(t("modules.cancelled"), "");
       return { check, report: null, deferred: false };
     }
   }
@@ -104,12 +103,12 @@ export async function runModulesGithubUpdate(
   const report = await api.modulesUpdateApply(check.token);
 
   if (report.cancelled) {
-    log(`Actualización de módulos cancelada (${summarizeApply(report)})`, "");
+    log(t("modules.cancelledApply", { summary: summarizeApply(report) }), "");
     return { check, report, deferred: false };
   }
-  for (const line of report.status_lines.slice(0, 20)) log(`Módulos: ${line}`, "err");
+  for (const line of report.status_lines.slice(0, 20)) log(t("modules.line", { msg: line }), "err");
   if (!report.applied) {
-    log("Módulos: no se aplicó ningún cambio", "err");
+    log(t("modules.noneApplied"), "err");
     return { check, report, deferred: false };
   }
 
@@ -117,7 +116,7 @@ export async function runModulesGithubUpdate(
   // module call builds a fresh Lua VM that reads the file off disk, so new code
   // is live immediately. FMD2 needed a relaunch here; this port does not.
   log(
-    `Módulos actualizados: ${summarizeApply(report)} (${report.refreshed_count} cargados)`,
+    t("modules.applied", { summary: summarizeApply(report), n: report.refreshed_count }),
     "ok",
   );
   return { check, report, deferred: false };

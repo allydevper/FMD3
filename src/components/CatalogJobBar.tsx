@@ -2,76 +2,88 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icon";
 import { useApp } from "../context/AppContext";
 import type { CatalogJobState } from "../types";
+import { t, useLanguage } from "../i18n";
 
-/** Phases emitted by the Lua modules updater, in user-facing Spanish. */
-const MODULES_PHASE: Record<string, string> = {
-  probe: "Consultando la fuente",
-  list: "Leyendo el listado",
-  metadata: "Consultando información de los cambios",
-  archive: "Descargando paquete de módulos",
-  download: "Descargando módulos",
-  delete: "Eliminando módulos",
-  persist: "Guardando estado",
-  registry: "Recargando módulos",
-};
+function modulesPhase(phase?: string): string {
+  switch (phase) {
+    case "probe":
+      return t("jobs.phaseProbe");
+    case "list":
+      return t("jobs.phaseList");
+    case "metadata":
+      return t("jobs.phaseMetadata");
+    case "archive":
+      return t("jobs.phaseArchive");
+    case "download":
+      return t("jobs.phaseDownload");
+    case "delete":
+      return t("jobs.phaseDelete");
+    case "persist":
+      return t("jobs.phasePersist");
+    case "registry":
+      return t("jobs.phaseRegistry");
+    default:
+      return t("jobs.modulesUpdating");
+  }
+}
 
 function phaseHeadline(job: CatalogJobState): string {
   if (job.mode === "modules") {
-    if (job.cancelling) return "Cancelando actualización de módulos";
-    const what = MODULES_PHASE[job.phase ?? ""] ?? "Actualizando módulos";
+    if (job.cancelling) return t("jobs.modulesCancel");
+    const what = modulesPhase(job.phase);
     return job.total > 0 ? `${what} [${job.index}/${job.total}]` : what;
   }
   if (job.mode === "favorites") {
-    if (job.cancelling) return "Cancelando revisión de favoritos";
-    if (job.phase === "done") return "Revisión de favoritos lista";
-    return `Revisando favoritos [${job.index}/${job.total}] ${job.moduleName}`;
+    if (job.cancelling) return t("jobs.favCancel");
+    if (job.phase === "done") return t("jobs.favDone");
+    return t("jobs.favChecking", { index: job.index, total: job.total, name: job.moduleName });
   }
   const site = `[${job.index}/${job.total}] ${job.moduleName}`;
-  if (job.cancelling) return `Cancelando · ${job.moduleName}`;
-  if (job.mode === "fetch") return `Descargando lista ${site}`;
+  if (job.cancelling) return t("jobs.cancelName", { name: job.moduleName });
+  if (job.mode === "fetch") return t("jobs.fetchList", { site });
   switch (job.phase) {
     case "scrape":
-      return `Explorando el catálogo del sitio ${site}`;
+      return t("jobs.scrape", { site });
     case "getinfo":
-      return `Importando metadatos de obras nuevas ${site}`;
+      return t("jobs.getinfo", { site });
     case "done":
-      return `Lista actualizada · ${job.moduleName}`;
+      return t("jobs.listDone", { name: job.moduleName });
     default:
-      return `Actualizando lista ${site}`;
+      return t("jobs.updatingList", { site });
   }
 }
 
 function phaseShort(job: CatalogJobState): string {
   if (job.mode === "modules") {
-    if (job.cancelling) return "Cancelando módulos";
+    if (job.cancelling) return t("jobs.modulesCancelShort");
     return job.total > 0
-      ? `Módulos · ${job.index}/${job.total}`
-      : (MODULES_PHASE[job.phase ?? ""] ?? "Módulos");
+      ? t("jobs.modulesShort", { index: job.index, total: job.total })
+      : modulesPhase(job.phase);
   }
   if (job.mode === "favorites") {
-    if (job.cancelling) return "Cancelando favoritos";
-    if (job.phase === "done") return "Favoritos · listo";
-    return `Favoritos · ${job.index}/${job.total}`;
+    if (job.cancelling) return t("jobs.favCancelShort");
+    if (job.phase === "done") return t("jobs.favDoneShort");
+    return t("jobs.favShort", { index: job.index, total: job.total });
   }
-  if (job.cancelling) return `Cancelando · ${job.moduleName}`;
-  if (job.mode === "fetch") return `Descarga · ${job.moduleName}`;
+  if (job.cancelling) return t("jobs.cancelName", { name: job.moduleName });
+  if (job.mode === "fetch") return t("jobs.fetchShort", { name: job.moduleName });
   switch (job.phase) {
     case "scrape": {
       if (job.pageTotal > 0) {
-        return `Catálogo · pág. ${job.page + 1}/${job.pageTotal}`;
+        return t("jobs.scrapePage", { page: job.page + 1, total: job.pageTotal });
       }
-      return `Explorando catálogo · ${job.moduleName}`;
+      return t("jobs.scrapeShort", { name: job.moduleName });
     }
     case "getinfo": {
       if (job.getinfoTotal && job.getinfoTotal > 0) {
-        return `Metadatos · ${job.getinfoIndex ?? 0}/${job.getinfoTotal}`;
+        return t("jobs.getinfoShort", { index: job.getinfoIndex ?? 0, total: job.getinfoTotal });
       }
-      return `Importando metadatos · ${job.moduleName}`;
+      return t("jobs.importShort", { name: job.moduleName });
     }
     case "done":
-      return `Listo · ${job.moduleName}`;
+      return t("jobs.doneShort", { name: job.moduleName });
     default:
-      return `Actualizando · ${job.moduleName}`;
+      return t("jobs.updatingShort", { name: job.moduleName });
   }
 }
 
@@ -86,11 +98,17 @@ function phaseMeta(message: string, phase?: string): string {
 
   rest = rest
     .replace(/^Obteniendo info\s*·\s*/i, "")
+    .replace(/^Getting info\s*[·-]\s*/i, "")
     .replace(/^Buscando títulos nuevos\s*·\s*/i, "")
+    .replace(/^Looking for new titles\s*[·-]\s*/i, "")
     .replace(/^Obteniendo directorio\s*·\s*/i, "")
+    .replace(/^Fetching directory\s*[·-]\s*/i, "")
     .replace(/^Preparando\s*·\s*/i, "")
-    .replace(/^Insertando\s+/i, "Insertando ")
+    .replace(/^Preparing\s*[·-]\s*/i, "")
+    .replace(/^Insertando\s+/i, "")
+    .replace(/^Inserting\s+/i, "")
     .replace(/^listo\s*·\s*/i, "")
+    .replace(/^done\s*[·-]\s*/i, "")
     .replace(/^\·\s*/, "");
 
   if (phase === "scrape" && rest) {
@@ -105,6 +123,7 @@ function phaseMeta(message: string, phase?: string): string {
 }
 
 export function CatalogJobBar() {
+  useLanguage();
   const { catalogJob, cancelCatalogJob } = useApp();
   const [minimized, setMinimized] = useState(false);
   const hadJobRef = useRef(false);
@@ -186,8 +205,8 @@ export function CatalogJobBar() {
           <button
             type="button"
             className="catalog-job-bar-icon-btn"
-            title="Contraer"
-            aria-label="Contraer barra"
+            title={t("jobs.collapse")}
+            aria-label={t("jobs.collapseBar")}
             aria-expanded={true}
             onClick={() => setMinimized(true)}
           >
@@ -197,8 +216,8 @@ export function CatalogJobBar() {
             type="button"
             className="catalog-job-bar-icon-btn catalog-job-bar-cancel"
             disabled={catalogJob.cancelling}
-            title="Cancelar"
-            aria-label="Cancelar"
+            title={t("jobs.cancel")}
+            aria-label={t("jobs.cancel")}
             onClick={() => void cancelCatalogJob()}
           >
             <Icon name="x" className="ico ico-sm" />
@@ -210,7 +229,7 @@ export function CatalogJobBar() {
           role="button"
           tabIndex={0}
           title={title}
-          aria-label="Expandir barra de progreso"
+          aria-label={t("jobs.expandBar")}
           aria-expanded={false}
           onClick={() => setMinimized(false)}
           onKeyDown={(e) => {
@@ -231,8 +250,8 @@ export function CatalogJobBar() {
           <button
             type="button"
             className="catalog-job-bar-icon-btn"
-            title="Expandir"
-            aria-label="Expandir barra"
+            title={t("jobs.expand")}
+            aria-label={t("jobs.expandBar")}
             onClick={(e) => {
               e.stopPropagation();
               setMinimized(false);
@@ -244,8 +263,8 @@ export function CatalogJobBar() {
             type="button"
             className="catalog-job-bar-icon-btn catalog-job-bar-cancel"
             disabled={catalogJob.cancelling}
-            title="Cancelar"
-            aria-label="Cancelar"
+            title={t("jobs.cancel")}
+            aria-label={t("jobs.cancel")}
             onClick={(e) => {
               e.stopPropagation();
               void cancelCatalogJob();

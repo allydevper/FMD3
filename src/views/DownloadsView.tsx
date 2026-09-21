@@ -18,6 +18,7 @@ import {
   useListSelection,
 } from "../hooks/useListSelection";
 import { confirmIfEnabled, settingBool, settingNumber } from "../utils/settings";
+import { t, tPlural, useLanguage } from "../i18n";
 import { catalogLinkKey, mangaPathKey } from "../utils/url";
 import type {
   ChapterInfo,
@@ -29,32 +30,33 @@ import type {
 
 type SortKey = "queue" | "title" | "status" | "pct" | "speed" | "site" | "path" | "added";
 
-const STATUS_NODES: { id: string; label: string; color: string }[] = [
-  { id: "done", label: "Completado", color: "var(--ok)" },
-  { id: "active", label: "En progreso", color: "var(--accent)" },
-  { id: "queued", label: "En cola", color: "var(--muted)" },
-  { id: "paused", label: "Detenido", color: "var(--warn)" },
-  { id: "failed", label: "Falló", color: "var(--bad)" },
+const STATUS_NODES: { id: string; labelKey: string; color: string }[] = [
+  { id: "done", labelKey: "dlStatus.done", color: "var(--ok)" },
+  { id: "active", labelKey: "dlStatus.running", color: "var(--accent)" },
+  { id: "queued", labelKey: "dlStatus.pending", color: "var(--muted)" },
+  { id: "paused", labelKey: "dlStatus.cancelled", color: "var(--warn)" },
+  { id: "failed", labelKey: "dlStatus.failed", color: "var(--bad)" },
 ];
 
-const SORT_COLUMNS: { key: SortKey; label: string; style?: CSSProperties }[] = [
-  { key: "title", label: "Grupo · obra" },
-  { key: "status", label: "Estado" },
-  { key: "pct", label: "Progreso del grupo" },
-  { key: "speed", label: "Ratio", style: { justifyContent: "flex-end" } },
-  { key: "site", label: "Sitio · agregado" },
+const SORT_COLUMNS: { key: SortKey; labelKey: string; style?: CSSProperties }[] = [
+  { key: "title", labelKey: "downloads.colGroup" },
+  { key: "status", labelKey: "downloads.colStatus" },
+  { key: "pct", labelKey: "downloads.colGroupProgress" },
+  { key: "speed", labelKey: "downloads.colRatio", style: { justifyContent: "flex-end" } },
+  { key: "site", labelKey: "downloads.colSiteAdded" },
 ];
 
 function dlStatusMeta(status: string) {
-  return (
+  const base =
     DL_ST[status] || {
       id: status,
       label: status,
       color: "var(--muted)",
       bg: "transparent",
       bar: "var(--muted)",
-    }
-  );
+    };
+  const mapped = t(`dlStatus.${status}`);
+  return { ...base, label: mapped.startsWith("dlStatus.") ? base.label : mapped };
 }
 
 function dlSiteName(item: QueueItem, modules: ModuleMeta[]): string {
@@ -80,11 +82,11 @@ function dlBucketId(item: QueueItem): string {
 
 function dlFmtAdded(item: QueueItem): string {
   const h = dlItemAgeHours(item);
-  if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
-  if (h < 24) return `${Math.round(h)} h`;
-  if (h < 24 * 30) return `${Math.round(h / 24)} d`;
-  if (h < 24 * 365) return `${Math.round(h / 730)} mes`;
-  return `${(h / 8760).toFixed(1)} a`;
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))} ${t("units.min")}`;
+  if (h < 24) return `${Math.round(h)} ${t("units.hourAbbr")}`;
+  if (h < 24 * 30) return `${Math.round(h / 24)} ${t("units.dayAbbr")}`;
+  if (h < 24 * 365) return `${Math.round(h / 730)} ${t("units.monthAbbr")}`;
+  return `${(h / 8760).toFixed(1)} ${t("units.yearAbbr")}`;
 }
 
 function dlContentFormatLabel(fmt: string | undefined | null): string | null {
@@ -100,7 +102,7 @@ function dlContentFormatLabel(fmt: string | undefined | null): string | null {
       return "EPUB";
     case "folder":
     case "none":
-      return "carpeta";
+      return t("downloads.folder");
     default:
       return fmt.toUpperCase();
   }
@@ -126,16 +128,16 @@ function dlItemPct(
     const packing = live.page_total > 0 && done < live.page_total;
     return {
       pct: 100,
-      pages: live.page_total > 0 ? `${done}/${live.page_total} pág` : "",
+      pages: live.page_total > 0 ? `${done}/${live.page_total} ${t("units.pagesAbbr")}` : "",
       // El badge es estrecho: aquí solo la palabra, el conteo va en `pages`.
-      label: packing ? "Empaquetando" : "Procesando",
+      label: packing ? t("downloads.packing") : t("downloads.processing"),
     };
   }
   if (live && live.page_total > 0) {
     const pct = Math.min(100, Math.round((live.page_current / live.page_total) * 100));
     return {
       pct,
-      pages: `${live.page_current}/${live.page_total} pág`,
+      pages: `${live.page_current}/${live.page_total} ${t("units.pagesAbbr")}`,
       label: `${pct}%`,
     };
   }
@@ -283,20 +285,20 @@ function aggregateGroup(
   else if (paused > 0) status = "cancelled";
   else if (queued > 0) status = "pending";
   const parts: string[] = [];
-  if (done) parts.push(`${done} listos`);
+  if (done) parts.push(t("downloads.readyN", { n: done }));
   const downloading = active - processing;
   if (downloading)
-    parts.push(downloading === 1 ? "1 descargando" : `${downloading} descargando`);
-  if (processing) parts.push(`${processing} empaquetando`);
-  if (queued) parts.push(`${queued} en cola`);
-  if (paused) parts.push(`${paused} detenidos`);
-  if (failed) parts.push(`${failed} con error`);
+    parts.push(downloading === 1 ? t("downloads.downloadingOne") : t("downloads.downloadingN", { n: downloading }));
+  if (processing) parts.push(t("downloads.packingN", { n: processing }));
+  if (queued) parts.push(t("downloads.queuedN", { n: queued }));
+  if (paused) parts.push(t("downloads.pausedN", { n: paused }));
+  if (failed) parts.push(t("downloads.failedN", { n: failed }));
   const st = dlStatusMeta(status);
   return {
     status,
     st,
     stLabel:
-      active > 0 && processing === active ? "Empaquetando" : st.label,
+      active > 0 && processing === active ? t("downloads.packing") : st.label,
     done,
     active,
     queued,
@@ -417,6 +419,7 @@ function snapshotItemsForUndo(removed: QueueItem[]): {
 }
 
 export function DownloadsView() {
+  useLanguage();
   const { activeNav, modules, log, setActiveNav, setPendingMangaOpen, cfWebviewActive } =
     useApp();
   const [cfCollapsed, setCfCollapsed] = useState(false);
@@ -563,10 +566,15 @@ export function DownloadsView() {
         });
         if (
           p.message.startsWith("Obteniendo") ||
+          p.message.startsWith("Getting") ||
           p.message.startsWith("Downloading") ||
+          p.message.startsWith("Descargando") ||
           p.message.startsWith("Procesando") ||
+          p.message.startsWith("Processing") ||
           p.message.startsWith("Empaquetando") ||
+          p.message.startsWith("Packing") ||
           p.message.startsWith("Completed") ||
+          p.message.startsWith("Completado") ||
           p.message.startsWith("[")
         ) {
           const m = /^\[(\d+)\/(\d+)\]/.exec(p.message);
@@ -806,9 +814,7 @@ export function DownloadsView() {
     }
     if (n) {
       log(
-        n === 1
-          ? "Capítulo en cola para redescarga"
-          : `${n} capítulos en cola para redescarga`,
+        tPlural("downloads.queuedRedl", n),
         "ok",
       );
     }
@@ -868,11 +874,11 @@ export function DownloadsView() {
           await refreshQueue();
           if (inserted < expectedChapters) {
             log(
-              `Restaurados ${inserted}/${expectedChapters} (algunos ya estaban en cola)`,
+              t("downloads.restoredPartial", { inserted, expected: expectedChapters }),
               inserted ? "ok" : "err",
             );
           } else {
-            log("Elementos restaurados en la cola", "ok");
+            log(t("downloads.restoredQueue"), "ok");
           }
         } catch (e) {
           log(String(e), "err");
@@ -916,7 +922,7 @@ export function DownloadsView() {
 
   async function handleResumeAll() {
     await resumeIds(items.map((i) => i.id));
-    log("Cola reanudada", "ok");
+    log(t("downloads.resumedQueue"), "ok");
   }
 
   async function handleStopAll() {
@@ -925,11 +931,11 @@ export function DownloadsView() {
 
   async function handleCfWebviewClose() {
     const ok = await appConfirm({
-      title: "Cerrar navegador interno",
+      title: t("downloads.cfCloseTitle"),
       message:
-        "Esto cancelará las descargas en curso que dependen de Cloudflare. ¿Cerrar de todas formas?",
-      okLabel: "Cerrar y cancelar",
-      cancelLabel: "Cancelar",
+        t("downloads.cfCloseMsg"),
+      okLabel: t("downloads.cfCloseOk"),
+      cancelLabel: t("common.cancel"),
     });
     if (!ok) return;
     await api.cfWebviewUserClose();
@@ -938,18 +944,18 @@ export function DownloadsView() {
   async function handleClearDone() {
     const ok = await confirmIfEnabled(
       SK.CONFIRM_EMPTY_LIST,
-      "¿Eliminar todos los elementos terminados de la cola?",
+      t("downloads.clearDoneConfirm"),
     );
     if (!ok) return;
     const n = await api.queueClearFinished();
-    log(`Eliminados ${n} terminados`, "ok");
+    log(t("downloads.clearedDone", { n }), "ok");
     await refreshQueue();
   }
 
   function handleAddMore(g: MangaGroup) {
     const url = (g.mangaUrl || g.rootUrl || "").trim();
     if (!url) {
-      log("Este grupo no tiene URL de manga para agregar más capítulos.", "err");
+      log(t("downloads.noMangaUrl"), "err");
       return;
     }
     setPendingMangaOpen({ mangaUrl: url, moduleId: g.moduleId });
@@ -958,7 +964,7 @@ export function DownloadsView() {
 
   function handleSplitGroup(g: MangaGroup) {
     if (g.items.length < 2) {
-      log("Se necesita más de un capítulo para dividir.", "err");
+      log(t("downloads.needSplit"), "err");
       return;
     }
     const max = g.items.length;
@@ -971,13 +977,13 @@ export function DownloadsView() {
     const { group } = splitPrompt;
     const total = group.items.length;
     if (total < 2) {
-      log("Se necesita más de un capítulo para dividir.", "err");
+      log(t("downloads.needSplit"), "err");
       setSplitPrompt(null);
       return;
     }
     let n = Math.floor(splitPrompt.count);
     if (!Number.isFinite(n) || n < 2) {
-      log("La cuenta de descarga debe ser al menos 2.", "err");
+      log(t("downloads.minSplit"), "err");
       return;
     }
     n = Math.min(n, total);
@@ -1065,9 +1071,14 @@ export function DownloadsView() {
   const ctxGroupKeys = new Set(ctxItems.map((i) => mangaGroupKey(i)));
   const ctxCanSplit = ctxGroupKeys.size === 1 && (ctxAddMoreGroup?.items.length ?? 0) >= 2;
 
-  const selLabel = hasSel
-    ? `${selKeys.length} ${selKeys.length === 1 ? "grupo" : "grupos"} · ${selChapterIds.length} cap.`
-    : `${groups.length} ${groups.length === 1 ? "grupo" : "grupos"} · ${groups.reduce((a, g) => a + g.items.length, 0)} capítulos`;
+  const selChCount = hasSel
+    ? selChapterIds.length
+    : groups.reduce((a, g) => a + g.items.length, 0);
+  const selLabel = `${tPlural("downloads.footer.groups", hasSel ? selKeys.length : groups.length)} · ${
+    hasSel
+      ? `${selChCount} ${t("units.chAbbr")}`
+      : tPlural("downloads.footer.chapters", selChCount)
+  }`;
 
   const focusAgg = focusGroup
     ? aggregateGroup(focusGroup, liveProgress)
@@ -1081,20 +1092,20 @@ export function DownloadsView() {
     focusGroup.items.some(
       (i) => i.status === "cancelled" || i.status === "failed" || i.status === "pending",
     );
-  const concurrencyLabel = `${Math.min(activeN || 0, parallelTasks)}/${parallelTasks} tareas en paralelo`;
+  const concurrencyLabel = t("downloads.parallel", { cur: Math.min(activeN || 0, parallelTasks), max: parallelTasks });
 
   return (
     <section id="view-downloads" className="view" hidden={activeNav !== "downloads"}>
       <div className="dl-shell">
         <header className="dl-header">
           <div>
-            <div className="dl-eyebrow">Cola de trabajo</div>
-            <h1 className="dl-title">Descargas</h1>
+            <div className="dl-eyebrow">{t("downloads.eyebrow")}</div>
+            <h1 className="dl-title">{t("downloads.title")}</h1>
           </div>
           <div className="dl-header-actions">
             <div className="dl-speed-block">
               <div className="dl-speed-value mono">{transferLabel}</div>
-              <div className="dl-speed-label">Transferencia</div>
+              <div className="dl-speed-label">{t("downloads.transfer")}</div>
             </div>
             <div className="dl-header-sep" />
             <button
@@ -1104,7 +1115,7 @@ export function DownloadsView() {
               onClick={() => void handleResumeAll()}
             >
               <Icon ico={ICO.play} className="ico ico-sm" />
-              Reanudar todo
+              {t("downloads.resumeAll")}
             </button>
             <button
               type="button"
@@ -1113,7 +1124,7 @@ export function DownloadsView() {
               onClick={() => void handleStopAll()}
             >
               <Icon ico={ICO.pause} className="ico ico-sm" />
-              Detener todo
+              {t("downloads.stopAll")}
             </button>
           </div>
         </header>
@@ -1121,12 +1132,12 @@ export function DownloadsView() {
         <div className="dl-body">
           <aside
             className={`dl-tree${leftCollapsed ? " is-collapsed" : ""}`}
-            aria-label="Filtros de descargas"
+            aria-label={t("downloads.filtersAria")}
           >
             <button
               type="button"
               className="dl-tree-notch"
-              title={leftCollapsed ? "Mostrar filtros" : "Ocultar filtros"}
+              title={leftCollapsed ? t("downloads.showFilters") : t("downloads.hideFilters")}
               aria-expanded={!leftCollapsed}
               onClick={toggleLeftCollapsed}
             >
@@ -1147,7 +1158,7 @@ export function DownloadsView() {
                 className="ell"
                 style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text)" }}
               >
-                Todas las descargas
+                {t("downloads.all")}
               </span>
               <div className="dl-toolbar-spacer" />
               <span className="mono" style={{ fontSize: "11px", color: "var(--muted)" }}>
@@ -1176,7 +1187,7 @@ export function DownloadsView() {
                       color: on ? "var(--text)" : "var(--muted)",
                     }}
                   >
-                    {s.label}
+                    {t(s.labelKey)}
                   </span>
                   <div className="dl-toolbar-spacer" />
                   <span className="mono" style={{ fontSize: "11px", color: "var(--muted)" }}>
@@ -1223,7 +1234,7 @@ export function DownloadsView() {
                       color: on ? "var(--text)" : "var(--muted)",
                     }}
                   >
-                    {b.label}
+                    {t(`dlHist.${b.id}`)}
                   </span>
                   <div className="dl-toolbar-spacer" />
                   <span className="mono" style={{ fontSize: "11px", color: "var(--muted)" }}>
@@ -1243,7 +1254,7 @@ export function DownloadsView() {
                   ref={searchInputRef}
                   className="st-field"
                   type="text"
-                  placeholder="Buscar obra o sitio..."
+                  placeholder={t("downloads.search")}
                   autoComplete="off"
                   spellCheck={false}
                   value={query}
@@ -1253,7 +1264,7 @@ export function DownloadsView() {
                   type="button"
                   className="sites-clear"
                   hidden={!query.trim()}
-                  title="Limpiar"
+                  title={t("common.clear")}
                   onClick={() => {
                     setQuery("");
                     searchInputRef.current?.focus();
@@ -1266,7 +1277,7 @@ export function DownloadsView() {
                 <button
                   type="button"
                   className={`dl-ibtn${hasSel ? "" : " off"}`}
-                  title="Mover al inicio"
+                  title={t("downloads.moveFirst")}
                   disabled={!hasSel}
                   onClick={() => dlMoveSelected(-1, true)}
                 >
@@ -1275,7 +1286,7 @@ export function DownloadsView() {
                 <button
                   type="button"
                   className={`dl-ibtn${hasSel ? "" : " off"}`}
-                  title="Subir"
+                  title={t("downloads.moveUp")}
                   disabled={!hasSel}
                   onClick={() => dlMoveSelected(-1, false)}
                 >
@@ -1284,7 +1295,7 @@ export function DownloadsView() {
                 <button
                   type="button"
                   className={`dl-ibtn${hasSel ? "" : " off"}`}
-                  title="Bajar"
+                  title={t("downloads.moveDown")}
                   disabled={!hasSel}
                   onClick={() => dlMoveSelected(1, false)}
                 >
@@ -1293,7 +1304,7 @@ export function DownloadsView() {
                 <button
                   type="button"
                   className={`dl-ibtn${hasSel ? "" : " off"}`}
-                  title="Mover al final"
+                  title={t("downloads.moveLast")}
                   disabled={!hasSel}
                   onClick={() => dlMoveSelected(1, true)}
                 >
@@ -1309,7 +1320,7 @@ export function DownloadsView() {
                   onClick={() => void resumeIds(selChapterIds)}
                 >
                   <Icon ico={ICO.play} className="ico ico-sm" />
-                  Reanudar
+                  {t("downloads.resume")}
                 </button>
                 <button
                   type="button"
@@ -1318,7 +1329,7 @@ export function DownloadsView() {
                   onClick={() => void pauseIds(selChapterIds)}
                 >
                   <Icon ico={ICO.pause} className="ico ico-sm" />
-                  Detener
+                  {t("downloads.stop")}
                 </button>
                 <button
                   type="button"
@@ -1328,19 +1339,19 @@ export function DownloadsView() {
                     askRemoveItems(
                       selItems,
                       selItems.length === 1
-                        ? "Se quitó de la cola"
-                        : `Se quitaron ${selItems.length} de la cola`,
+                        ? tPlural("downloads.removedFromQueue", 1)
+                        : tPlural("downloads.removedFromQueue", selItems.length),
                     )
                   }
                 >
                   <Icon ico={ICO.trash} className="ico ico-sm" />
-                  Quitar
+                  {t("downloads.remove")}
                 </button>
                 <button
                   type="button"
                   className={`dl-ibtn${canRetrySel ? "" : " off"}`}
                   style={{ borderColor: "transparent" }}
-                  title="Reintentar fallidos"
+                  title={t("downloads.retryFailed")}
                   disabled={!canRetrySel}
                   onClick={() => void retryFailedIds(selChapterIds)}
                 >
@@ -1350,7 +1361,7 @@ export function DownloadsView() {
                   type="button"
                   className={`dl-ibtn${canFolderSel ? "" : " off"}`}
                   style={{ borderColor: "transparent" }}
-                  title="Abrir carpeta"
+                  title={t("downloads.openFolder")}
                   disabled={!canFolderSel}
                   onClick={() => {
                     const it = selItems.find((i) => (i.output_dir || "").trim()) ?? selItems[0];
@@ -1364,7 +1375,7 @@ export function DownloadsView() {
                   type="button"
                   className={`dl-ibtn${canSplitSel ? "" : " off"}`}
                   style={{ borderColor: "transparent" }}
-                  title="Dividir grupo"
+                  title={t("downloads.splitGroup")}
                   disabled={!canSplitSel}
                   onClick={() => {
                     if (selSplitGroup) handleSplitGroup(selSplitGroup);
@@ -1383,7 +1394,7 @@ export function DownloadsView() {
               tabIndex={0}
               role="listbox"
               aria-multiselectable
-              aria-label="Grupos en cola"
+              aria-label={t("downloads.groupsAria")}
               onKeyDown={selG.handleKeyDown}
               onContextMenu={(ev) => {
                 openCtx(ev, []);
@@ -1397,7 +1408,7 @@ export function DownloadsView() {
                     ["--ico" as string]:
                       allOn || someOn ? (allOn ? ICO.check : ICO.dash) : ICO.check,
                   }}
-                  aria-label="Seleccionar todo"
+                  aria-label={t("downloads.selectAll")}
                   onClick={() => selG.toggleAll()}
                 >
                   <span className="sites-cb-mk" />
@@ -1412,7 +1423,7 @@ export function DownloadsView() {
                       style={col.style}
                       onClick={() => handleSort(col.key)}
                     >
-                      {col.label}
+                      {t(col.labelKey)}
                       <Icon
                         ico={ICO.chevron}
                         className="ico dl-sort-ico"
@@ -1470,7 +1481,7 @@ export function DownloadsView() {
                         type="button"
                         className={`sites-cb${on ? " on" : ""}`}
                         style={{ ["--ico" as string]: ICO.check }}
-                        aria-label="Seleccionar grupo"
+                        aria-label={t("downloads.selectGroup")}
                         tabIndex={-1}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1481,7 +1492,7 @@ export function DownloadsView() {
                       </button>
                       <div
                         className="dl-cell-title"
-                        title="Doble clic para ver los capítulos"
+                        title={t("downloads.dblClickChapters")}
                       >
                         <div className="dl-cell-title-text">
                           <span className="ell dl-manga">{g.title}</span>
@@ -1538,7 +1549,7 @@ export function DownloadsView() {
                         <button
                           type="button"
                           className="dl-ibtn"
-                          title={running ? "Detener grupo" : "Reanudar grupo"}
+                          title={running ? t("downloads.stopGroup") : t("downloads.resumeGroup")}
                           style={{
                             borderColor: "transparent",
                             width: "24px",
@@ -1563,7 +1574,7 @@ export function DownloadsView() {
                         <button
                           type="button"
                           className="dl-ibtn"
-                          title="Quitar grupo"
+                          title={t("downloads.removeGroup")}
                           style={{
                             borderColor: "transparent",
                             width: "24px",
@@ -1573,7 +1584,7 @@ export function DownloadsView() {
                             e.stopPropagation();
                             askRemoveItems(
                               g.items,
-                              `Se quitó «${g.title}» de la cola`,
+                              t("downloads.removedNamed", { title: g.title }),
                             );
                           }}
                         >
@@ -1596,12 +1607,12 @@ export function DownloadsView() {
                     }}
                   />
                   <div className="dl-empty-title">
-                    {query.trim() ? "Sin coincidencias" : "Nada por aquí"}
+                    {query.trim() ? t("downloads.emptyFilter") : t("downloads.emptyTitle")}
                   </div>
                   <div className="dl-empty-desc">
                     {query.trim()
-                      ? `Ningún grupo coincide con “${query.trim()}”.`
-                      : "Esta vista no tiene descargas en este momento."}
+                      ? t("downloads.emptyQuery", { q: query.trim() })
+                      : t("downloads.emptyThisView")}
                   </div>
                 </div>
               )}
@@ -1625,7 +1636,7 @@ export function DownloadsView() {
                         <button
                           type="button"
                           className="dl-ibtn"
-                          title="Minimizar panel"
+                          title={t("downloads.minifyPanel")}
                           style={{
                             width: "22px",
                             height: "22px",
@@ -1638,7 +1649,7 @@ export function DownloadsView() {
                         <button
                           type="button"
                           className="dl-ibtn"
-                          title="Cerrar panel"
+                          title={t("downloads.closePanel")}
                           style={{
                             width: "22px",
                             height: "22px",
@@ -1693,12 +1704,12 @@ export function DownloadsView() {
                           ico={fRunning ? ICO.pause : ICO.play}
                           className="ico ico-sm"
                         />
-                        {fRunning ? "Detener" : "Reanudar"}
+                        {fRunning ? t("downloads.stop") : t("downloads.resume")}
                       </button>
                       <button
                         type="button"
                         className="dl-gbtn is-icon"
-                        title="Reintentar fallidos"
+                        title={t("downloads.retryFailed")}
                         disabled={!focusGroup.items.some((i) => i.status === "failed")}
                         onClick={() =>
                           void retryFailedIds(focusGroup.items.map((i) => i.id))
@@ -1709,7 +1720,7 @@ export function DownloadsView() {
                       <button
                         type="button"
                         className="dl-gbtn is-icon"
-                        title="Abrir carpeta"
+                        title={t("downloads.openFolder")}
                         onClick={() => {
                           const id = focusGroup.items[0]?.id;
                           if (id != null) void handleOpenFolder(id, false);
@@ -1720,7 +1731,7 @@ export function DownloadsView() {
                       <button
                         type="button"
                         className="dl-gbtn is-icon"
-                        title="Agregar más capítulos"
+                        title={t("downloads.addMore")}
                         onClick={() => handleAddMore(focusGroup)}
                       >
                         <Icon ico={ICO.plus} className="ico ico-sm" />
@@ -1728,7 +1739,7 @@ export function DownloadsView() {
                       <button
                         type="button"
                         className="dl-gbtn is-icon"
-                        title="Dividir grupo"
+                        title={t("downloads.splitGroup")}
                         disabled={focusGroup.items.length < 2}
                         onClick={() => handleSplitGroup(focusGroup)}
                       >
@@ -1746,22 +1757,22 @@ export function DownloadsView() {
                         ["--ico" as string]:
                           fAll || fSome ? (fAll ? ICO.check : ICO.dash) : ICO.check,
                       }}
-                      aria-label="Seleccionar capítulos"
+                      aria-label={t("downloads.selectChapters")}
                       onClick={() => selC.toggleAll()}
                     >
                       <span className="sites-cb-mk" />
                     </button>
                     <span style={{ fontSize: "11.5px", color: "var(--muted)" }}>
                       {fSelIds.length
-                        ? `${fSelIds.length} de ${focusGroup.items.length} capítulos`
-                        : `${focusGroup.items.length} capítulos · ${focusAgg.done} listos`}
+                        ? t("downloads.selOf", { sel: fSelIds.length, total: focusGroup.items.length })
+                        : t("downloads.readyOf", { n: focusGroup.items.length, done: focusAgg.done })}
                     </span>
                     <div className="dl-toolbar-spacer" />
                     <button
                       type="button"
                       className={`dl-ibtn${fSelIds.length ? "" : " off"}`}
                       style={{ width: "24px", height: "24px" }}
-                      title="Reanudar seleccionados"
+                      title={t("downloads.resumeSel")}
                       disabled={!fSelIds.length}
                       onClick={() => void resumeIds(fSelIds)}
                     >
@@ -1771,7 +1782,7 @@ export function DownloadsView() {
                       type="button"
                       className={`dl-ibtn${fSelIds.length ? "" : " off"}`}
                       style={{ width: "24px", height: "24px" }}
-                      title="Detener seleccionados"
+                      title={t("downloads.stopSel")}
                       disabled={!fSelIds.length}
                       onClick={() => void pauseIds(fSelIds)}
                     >
@@ -1781,7 +1792,7 @@ export function DownloadsView() {
                       type="button"
                       className={`dl-ibtn${fSelIds.length ? "" : " off"}`}
                       style={{ width: "24px", height: "24px" }}
-                      title="Quitar seleccionados"
+                      title={t("downloads.removeSel")}
                       disabled={!fSelIds.length}
                       onClick={() => {
                         const list = focusGroup.items.filter((c) =>
@@ -1790,7 +1801,7 @@ export function DownloadsView() {
                         askRemoveItems(
                           list,
                           list.length === 1
-                            ? "Se quitó de la cola"
+                            ? tPlural("downloads.removedFromQueue", 1)
                             : `Se quitaron ${list.length} de la cola`,
                         );
                       }}
@@ -1804,7 +1815,7 @@ export function DownloadsView() {
                     tabIndex={0}
                     role="listbox"
                     aria-multiselectable
-                    aria-label="Capitulos del grupo"
+                    aria-label={t("downloads.chaptersAria")}
                     onKeyDown={selC.handleKeyDown}
                     onContextMenu={(ev) => {
                       openCtx(ev, []);
@@ -1863,7 +1874,7 @@ export function DownloadsView() {
                               ["--ico" as string]: ICO.check,
                               marginTop: "2px",
                             }}
-                            aria-label="Seleccionar capítulo"
+                            aria-label={t("downloads.selectChapter")}
                             tabIndex={-1}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1874,7 +1885,7 @@ export function DownloadsView() {
                           </button>
                           <div className="dl-crow-body">
                             <span className="ell dl-crow-label">
-                              {c.chapter_name || `Capítulo ${c.chapter_index + 1}`}
+                              {c.chapter_name || t("downloads.chapterN", { n: c.chapter_index + 1 })}
                             </span>
                             <div className="dl-seg" style={{ height: "3px" }}>
                               <i
@@ -1896,7 +1907,7 @@ export function DownloadsView() {
                                 {isProcessing ? prog.label : st.label}
                               </span>
                               {fmtLabel ? (
-                                <span className="mono dl-tag" title="Formato">
+                                <span className="mono dl-tag" title={t("downloads.format")}>
                                   {fmtLabel}
                                 </span>
                               ) : null}
@@ -1910,7 +1921,7 @@ export function DownloadsView() {
                               <button
                                 type="button"
                                 className="dl-ibtn"
-                                title={canStop ? "Detener" : "Reanudar"}
+                                title={canStop ? t("downloads.stop") : t("downloads.resume")}
                                 style={{
                                   width: "22px",
                                   height: "22px",
@@ -1933,7 +1944,7 @@ export function DownloadsView() {
                             <button
                               type="button"
                               className="dl-ibtn"
-                              title="Abrir carpeta del capítulo"
+                              title={t("downloads.openChapterFolder")}
                               style={{
                                 width: "22px",
                                 height: "22px",
@@ -1949,7 +1960,7 @@ export function DownloadsView() {
                             <button
                               type="button"
                               className="dl-ibtn"
-                              title="Quitar"
+                              title={t("downloads.remove")}
                               style={{
                                 width: "22px",
                                 height: "22px",
@@ -1958,7 +1969,7 @@ export function DownloadsView() {
                               disabled={c.status === "running"}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                askRemoveItems([c], "Se quitó de la cola");
+                                askRemoveItems([c], tPlural("downloads.removedFromQueue", 1));
                               }}
                             >
                               <Icon ico={ICO.trash} className="ico ico-sm" />
@@ -1976,7 +1987,7 @@ export function DownloadsView() {
               <button
                 type="button"
                 className="dl-panel-mini"
-                title="Expandir panel"
+                title={t("downloads.expandPanel")}
                 onClick={() => setPanelMin(false)}
               >
                 <Icon
@@ -1997,16 +2008,16 @@ export function DownloadsView() {
                   {focusAgg.stLabel}
                 </span>
                 <span className="ell" style={{ minWidth: 0, fontSize: "11.5px", color: "var(--muted)" }}>
-                  {`${focusGroup.items.length} cap · ${focusAgg.done} listos${
-                    focusAgg.active ? " · 1 descargando" : ""
-                  }${focusAgg.queued ? ` · ${focusAgg.queued} en cola` : ""}`}
+                  {`${t("downloads.capReady", { n: focusGroup.items.length, done: focusAgg.done })}${
+                    focusAgg.active ? t("downloads.oneDownloading") : ""
+                  }${focusAgg.queued ? t("downloads.queuedSuffix", { n: focusAgg.queued }) : ""}`}
                 </span>
                 <div className="dl-toolbar-spacer" />
                 <button
                   type="button"
                   className="dl-ibtn"
                   style={{ width: "24px", height: "24px", borderColor: "transparent" }}
-                  title={fRunning ? "Detener" : "Reanudar"}
+                  title={fRunning ? t("downloads.stop") : t("downloads.resume")}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (fRunning) void pauseIds(focusGroup.items.map((i) => i.id));
@@ -2025,7 +2036,7 @@ export function DownloadsView() {
                   type="button"
                   className="dl-ibtn"
                   style={{ width: "24px", height: "24px", borderColor: "transparent" }}
-                  title="Expandir panel"
+                  title={t("downloads.expandPanel")}
                   onClick={(e) => {
                     e.stopPropagation();
                     setPanelMin(false);
@@ -2037,7 +2048,7 @@ export function DownloadsView() {
                   type="button"
                   className="dl-ibtn"
                   style={{ width: "24px", height: "24px", borderColor: "transparent" }}
-                  title="Cerrar panel"
+                  title={t("downloads.closePanel")}
                   onClick={(e) => {
                     e.stopPropagation();
                     setFocusKey(null);
@@ -2051,11 +2062,11 @@ export function DownloadsView() {
             <footer className="dl-footer">
               <span className="dl-footer-stat">
                 <span className="dl-dot" style={{ background: "var(--accent)" }} />
-                {activeN === 1 ? "1 descarga activa" : `${activeN} descargas activas`}
+                {activeN === 1 ? t("downloads.activeOne") : t("downloads.activeN", { n: activeN })}
               </span>
-              <span className="dl-footer-muted">{`${queuedN} en cola`}</span>
+              <span className="dl-footer-muted">{t("downloads.queuedN", { n: queuedN })}</span>
               <span className="ell dl-footer-muted" style={{ flex: "0 1 auto" }}>
-                {`${doneN} completados`}
+                {t("downloads.doneN", { n: doneN })}
               </span>
               <div className="dl-footer-spacer" />
               <span className="mono ell dl-footer-conc">{concurrencyLabel}</span>
@@ -2072,12 +2083,12 @@ export function DownloadsView() {
           {cfWebviewActive ? (
             <aside
               className={`dl-cf-panel${cfCollapsed ? " is-collapsed" : ""}`}
-              aria-label="Navegador interno"
+              aria-label={t("downloads.cfAria")}
             >
               <button
                 type="button"
                 className="dl-cf-notch"
-                title={cfCollapsed ? "Mostrar navegador interno" : "Ocultar navegador interno"}
+                title={cfCollapsed ? t("downloads.showCf") : t("downloads.hideCf")}
                 aria-expanded={!cfCollapsed}
                 onClick={() => setCfCollapsed((c) => !c)}
               >
@@ -2088,11 +2099,11 @@ export function DownloadsView() {
               </button>
               <div className="dl-cf-body">
                 <div className="dl-cf-head">
-                  <span className="ell">Navegador interno</span>
+                  <span className="ell">{t("downloads.cfAria")}</span>
                   <button
                     type="button"
                     className="dl-cf-min"
-                    title="Minimizar"
+                    title={t("downloads.minimize")}
                     onClick={() => setCfCollapsed(true)}
                   >
                     <Icon ico={ICO.minus} className="ico ico-sm" />
@@ -2100,7 +2111,7 @@ export function DownloadsView() {
                   <button
                     type="button"
                     className="dl-cf-close"
-                    title="Cerrar y detener descargas en curso"
+                    title={t("downloads.closeStop")}
                     onClick={() => void handleCfWebviewClose()}
                   >
                     <Icon ico={ICO.x} className="ico ico-sm" />
@@ -2140,7 +2151,7 @@ export function DownloadsView() {
               }}
             >
               <Icon ico={ICO.play} className="ico ico-sm" />
-              <span>Reanudar</span>
+              <span>{t("downloads.resume")}</span>
             </button>
             <button
               type="button"
@@ -2154,7 +2165,7 @@ export function DownloadsView() {
               }}
             >
               <Icon ico={ICO.download} className="ico ico-sm" />
-              <span>Redescargar</span>
+              <span>{t("downloads.redownload")}</span>
             </button>
             <button
               type="button"
@@ -2168,7 +2179,7 @@ export function DownloadsView() {
               }}
             >
               <Icon ico={ICO.pause} className="ico ico-sm" />
-              <span>Detener</span>
+              <span>{t("downloads.stop")}</span>
             </button>
             <button
               type="button"
@@ -2184,7 +2195,7 @@ export function DownloadsView() {
               }}
             >
               <Icon ico={ICO.folderOpen} className="ico ico-sm" />
-              <span>Abrir ubicación</span>
+              <span>{t("downloads.openLocation")}</span>
             </button>
             <button
               type="button"
@@ -2199,7 +2210,7 @@ export function DownloadsView() {
               }}
             >
               <Icon ico={ICO.plus} className="ico ico-sm" />
-              <span>Agregar más capítulos</span>
+              <span>{t("downloads.addMore")}</span>
             </button>
             <button
               type="button"
@@ -2214,7 +2225,7 @@ export function DownloadsView() {
               }}
             >
               <Icon ico={ICO.split} className="ico ico-sm" />
-              <span>Dividir grupo</span>
+              <span>{t("downloads.splitGroup")}</span>
             </button>
             <button
               type="button"
@@ -2240,13 +2251,13 @@ export function DownloadsView() {
                 askRemoveItems(
                   list,
                   list.length === 1
-                    ? "Se quitó de la cola"
+                    ? tPlural("downloads.removedFromQueue", 1)
                     : `Se quitaron ${list.length} de la cola`,
                 );
               }}
             >
               <Icon ico={ICO.trash} className="ico ico-sm" />
-              <span>Eliminar</span>
+              <span>{t("downloads.delete")}</span>
             </button>
           </div>
         </div>
@@ -2267,14 +2278,12 @@ export function DownloadsView() {
           >
             <header className="info-modal-head">
               <h2 id="dl-remove-title" className="info-modal-title">
-                Quitar de la cola
+                {t("downloads.removeTitle")}
               </h2>
             </header>
             <div className="info-modal-body">
               <p className="info-modal-confirm-msg">
-                {removeConfirm.items.length === 1
-                  ? "¿Quitar este ítem de la cola?"
-                  : `¿Quitar ${removeConfirm.items.length} ítems de la cola?`}
+                {tPlural("downloads.removeItemConfirm", removeConfirm.items.length)}
               </p>
               <label className="action-check" style={{ marginTop: 14, color: "var(--text)" }}>
                 <input
@@ -2282,7 +2291,7 @@ export function DownloadsView() {
                   checked={removeDeleteFiles}
                   onChange={(e) => setRemoveDeleteFiles(e.target.checked)}
                 />
-                <span>Borrar también los archivos del disco</span>
+                <span>{t("downloads.deleteFiles")}</span>
               </label>
             </div>
             <footer className="info-modal-foot">
@@ -2291,7 +2300,7 @@ export function DownloadsView() {
                 className="info-modal-btn"
                 onClick={() => setRemoveConfirm(null)}
               >
-                Cancelar
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -2304,7 +2313,7 @@ export function DownloadsView() {
                   void removeItemsWithUndo(items, label, deleteFiles);
                 }}
               >
-                Quitar
+                {t("downloads.remove")}
               </button>
             </footer>
           </div>
@@ -2385,7 +2394,7 @@ export function DownloadsView() {
                     <button
                       type="button"
                       className="st-stepper-btn"
-                      aria-label="Más"
+                      aria-label={t("common.more")}
                       disabled={
                         splitBusy ||
                         splitPrompt.count >= splitPrompt.group.items.length
@@ -2420,11 +2429,11 @@ export function DownloadsView() {
                   );
                   const list =
                     sizes.length === 2
-                      ? `${sizes[0]} y ${sizes[1]}`
+                      ? `${sizes[0]} ${t("downloads.and")} ${sizes[1]}`
                       : sizes.join(", ");
                   return running
-                    ? `El capítulo en descarga no se mueve. Quedarán grupos de ${list} caps.`
-                    : `Quedarán grupos de ${list} caps.; cada uno puede ir en paralelo.`;
+                    ? t("downloads.splitHint", { list })
+                    : t("downloads.splitHintIdle", { list });
                 })()}
               </p>
             </div>
@@ -2435,7 +2444,7 @@ export function DownloadsView() {
                 disabled={splitBusy}
                 onClick={() => setSplitPrompt(null)}
               >
-                Cancelar
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -2446,10 +2455,10 @@ export function DownloadsView() {
               >
                 {splitBusy ? (
                   <>
-                    <span className="spinner spinner-sm" aria-hidden /> Dividiendo…
+                    <span className="spinner spinner-sm" aria-hidden /> {t("downloads.splitting")}
                   </>
                 ) : (
-                  "Dividir"
+                  t("downloads.split")
                 )}
               </button>
             </footer>

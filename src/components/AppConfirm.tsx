@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { VirtualList } from "./VirtualList";
+import { t, useLanguage } from "../i18n";
 
 export type AppConfirmOptions = {
   title?: string;
@@ -44,7 +45,7 @@ type ParsedItem = {
 const AppConfirmContext = createContext<ConfirmFn | null>(null);
 
 const LIST_ROW_H = 30;
-const TAG_RE = /^\[(NUEVO|ACTUALIZA|ELIMINA)\]\s*(.*)$/i;
+const TAG_RE = /^\[(NUEVO|ACTUALIZA|ELIMINA|NEW|UPDATE|DELETE)\]\s*(.*)$/i;
 const EMPTY_ITEMS: string[] = [];
 const EMPTY_PARSED: ParsedItem[] = [];
 
@@ -52,7 +53,8 @@ function parseItem(line: string): ParsedItem {
   const m = line.match(TAG_RE);
   if (!m) return { tag: null, tagKind: null, path: line, raw: line };
   const tag = m[1].toUpperCase();
-  const tagKind = tag === "NUEVO" ? "new" : tag === "ELIMINA" ? "del" : "upd";
+  const tagKind =
+    tag === "NUEVO" || tag === "NEW" ? "new" : tag === "ELIMINA" || tag === "DELETE" ? "del" : "upd";
   return { tag, tagKind, path: m[2] || line, raw: line };
 }
 
@@ -66,6 +68,7 @@ export function appConfirm(opts: AppConfirmOptions): Promise<boolean> {
 }
 
 export function AppConfirmProvider({ children }: { children: ReactNode }) {
+  useLanguage();
   const [pending, setPending] = useState<Pending | null>(null);
 
   const confirm = useCallback<ConfirmFn>((opts) => {
@@ -131,7 +134,7 @@ export function AppConfirmProvider({ children }: { children: ReactNode }) {
           >
             <header className="info-modal-head">
               <h2 id="app-confirm-title" className="info-modal-title">
-                {pending.title?.trim() || "Confirmar"}
+                {pending.title?.trim() || t("confirm.defaultTitle")}
               </h2>
               {meta ? <span className="info-modal-meta">{meta}</span> : null}
             </header>
@@ -144,7 +147,7 @@ export function AppConfirmProvider({ children }: { children: ReactNode }) {
                   <div className="info-modal-files">
                     <div className="info-modal-files-head">
                       <span className="info-modal-files-title">
-                        {listTitle || "Detalle"}
+                        {listTitle || t("common.detail")}
                       </span>
                       {listMeta ? (
                         <span className="info-modal-files-meta">{listMeta}</span>
@@ -168,7 +171,11 @@ export function AppConfirmProvider({ children }: { children: ReactNode }) {
                             <span
                               className={`info-modal-files-tag is-${row.tagKind ?? "upd"}`}
                             >
-                              {row.tag}
+                              {row.tagKind === "new"
+                                ? t("common.tagNew")
+                                : row.tagKind === "del"
+                                  ? t("common.tagDelete")
+                                  : t("common.tagUpdate")}
                             </span>
                           ) : null}
                           <span className="info-modal-files-path">{row.path}</span>
@@ -204,7 +211,7 @@ export function AppConfirmProvider({ children }: { children: ReactNode }) {
                   className="info-modal-btn"
                   onClick={() => finish(false)}
                 >
-                  {pending.cancelLabel?.trim() || "Cancelar"}
+                  {pending.cancelLabel?.trim() || t("common.cancel")}
                 </button>
               ) : null}
               <button
@@ -213,7 +220,7 @@ export function AppConfirmProvider({ children }: { children: ReactNode }) {
                 autoFocus
                 onClick={() => finish(true)}
               >
-                {pending.okLabel?.trim() || (pending.alert ? "Entendido" : "Continuar")}
+                {pending.okLabel?.trim() || (pending.alert ? t("common.understood") : t("common.continue"))}
               </button>
             </footer>
           </div>

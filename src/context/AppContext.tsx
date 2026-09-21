@@ -9,6 +9,12 @@ import {
   type ReactNode,
 } from "react";
 import { SK, THEME_KEY } from "../constants";
+import {
+  parseLanguage,
+  setCurrentLanguage,
+  t,
+  type AppLanguage,
+} from "../i18n";
 import type {
   CatalogJobMode,
   CatalogJobScope,
@@ -27,6 +33,7 @@ import { registerBusyProbe } from "../utils/restartGuard";
 
 export type LogKind = "ok" | "err" | "";
 export type AppTheme = "system" | "light" | "dark";
+export type { AppLanguage };
 
 export type StartCatalogJobArgs = {
   mode: CatalogJobMode;
@@ -59,6 +66,8 @@ type AppContextValue = {
   theme: AppTheme;
   setTheme: (theme: AppTheme) => void;
   toggleTheme: () => void;
+  language: AppLanguage;
+  setLanguage: (language: AppLanguage) => void;
   logOpen: boolean;
   setLogOpen: (open: boolean) => void;
   toggleLog: () => void;
@@ -164,9 +173,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const cfNavSwitchedRef = useRef(false);
   const [theme, setThemeState] = useState<AppTheme>("system");
   const [darkTheme, setDarkTheme] = useState(() => localStorage.getItem(THEME_KEY) === "1");
+  const [language, setLanguageState] = useState<AppLanguage>(() =>
+    parseLanguage(typeof localStorage !== "undefined" ? localStorage.getItem("fmd-lang") : "es"),
+  );
   const [logOpen, setLogOpen] = useState(false);
   const [logLines, setLogLines] = useState<{ text: string; kind: LogKind }[]>([
-    { text: "Listo.", kind: "" },
+    { text: t("log.ready"), kind: "" },
   ]);
   const [modules, setModules] = useState<ModuleMeta[]>([]);
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
@@ -217,6 +229,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [applyResolvedDark],
   );
 
+  const setLanguage = useCallback((next: AppLanguage) => {
+    setLanguageState(next);
+    setCurrentLanguage(next);
+    void api.settingsSet(SK.LANG, next);
+  }, []);
+
   const toggleTheme = useCallback(() => {
     setThemeState((prev) => {
       const currentlyDark = resolveDark(prev);
@@ -232,7 +250,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearLog = useCallback(() => {
-    setLogLines([{ text: "Listo.", kind: "" }]);
+    setLogLines([{ text: t("log.ready"), kind: "" }]);
   }, []);
 
   const toggleLog = useCallback(() => setLogOpen((o) => !o), []);
@@ -250,16 +268,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setFavAutoCheckSeq((n) => n + 1);
       const news = results.reduce((a, r) => a + r.new_chapters.length, 0);
       const enq = results.reduce((a, r) => a + r.enqueued, 0);
+      const src = source === "inicio" ? t("ctx.start") : t("ctx.interval");
       if (downloadAfter) {
-        log(
-          `${source === "inicio" ? "Inicio" : "Intervalo"}: ${enq} capítulos encolados desde favoritos`,
-          "ok",
-        );
+        log(t("ctx.enqueued", { source: src, n: enq }), "ok");
       } else {
-        log(
-          `${source === "inicio" ? "Inicio" : "Intervalo"}: ${news} capítulos nuevos en favoritos`,
-          "ok",
-        );
+        log(t("ctx.newFav", { source: src, n: news }), "ok");
       }
     },
     [log],
@@ -284,7 +297,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             const results = await api.favoritesCheckAll(favDownloadAfterRef.current);
             publishFavAutoCheck(results, favDownloadAfterRef.current, "intervalo");
           } catch (e) {
-            log(`Revisión periódica de favoritos: ${e}`, "err");
+            log(t("ctx.favPeriodErr", { err: String(e) }), "err");
           } finally {
             setFavAutoChecking(false);
           }
@@ -382,9 +395,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // Silent must not mean invisible: without this the only sign is a
           // banner inside a settings sub-tab nobody opens.
           appToast({
-            message: `Módulos por actualizar: ${summarizeCheck(check)}`,
+            message: t("ctx.modsPending", { summary: summarizeCheck(check) }),
             action: {
-              label: "Ver",
+              label: t("common.view"),
               onClick: () => openOptionsTab({ tab: "websites", sub: "mods" }),
             },
           });
@@ -392,13 +405,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           await refreshModules();
         }
       } catch (e) {
-        log(`Revisión de módulos: ${e}`, "err");
+        log(t("ctx.modsReviewErr", { err: String(e) }), "err");
         if (!silent) {
           appToast({
-            message: "No se pudieron descargar los módulos.",
+            message: t("ctx.modsDownloadFail"),
             kind: "err",
             action: {
-              label: "Reintentar",
+              label: t("common.retry"),
               onClick: () => void runAutoModulesCheckRef.current(false),
             },
           });
@@ -465,9 +478,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(
     () =>
       registerBusyProbe(() => {
-        if (modulesUpdateBusyRef.current) return "actualización de módulos en curso";
+        if (modulesUpdateBusyRef.current) return t("ctx.busyModules");
         const job = catalogJobRef.current;
-        if (job) return `catálogo en curso (${job.moduleName || job.moduleId})`;
+        if (job) return t("ctx.busyCatalog", { name: job.moduleName || job.moduleId });
         return null;
       }),
     [],
@@ -484,12 +497,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (body && job?.mode === "update") {
           const phase =
             p.phase === "scrape"
-              ? "Explorando el catálogo del sitio"
+              ? t("jobs.logScrape")
               : p.phase === "getinfo"
-                ? "Importando metadatos de obras nuevas"
+                ? t("jobs.logGetinfo")
                 : p.phase === "done"
-                  ? "Lista actualizada"
-                  : "Actualizando lista";
+                  ? t("jobs.logDone")
+                  : t("jobs.logUpdating");
           log(
             `${phase} [${job.index}/${job.total}] ${job.moduleName} | ${body}`,
             "",
@@ -622,7 +635,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const startCatalogJob = useCallback(
     async (args: StartCatalogJobArgs) => {
       if (catalogJobRunningRef.current || catalogJobRef.current) {
-        log("Ya hay una tarea en curso.", "err");
+        log(t("ctx.jobRunning"), "err");
         return;
       }
       const enabled = modules.filter((m) => enabledModuleIds.has(m.id));
@@ -630,22 +643,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (args.scope === "one") {
         const id = args.moduleId;
         if (!id) {
-          log("Elige una fuente en el selector primero.", "err");
+          log(t("ctx.pickSource"), "err");
           return;
         }
         const m = modules.find((x) => x.id === id);
         if (!m || !enabledModuleIds.has(id)) {
-          log("La fuente no está activa. Actívala en Ajustes → Sitios Web.", "err");
+          log(t("ctx.sourceOff"), "err");
           return;
         }
         targets = [m];
       } else {
         targets = [...enabled].sort((a, b) => a.name.localeCompare(b.name));
         if (!targets.length) {
-          log(
-            "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
-            "err",
-          );
+          log(t("ctx.noSites"), "err");
           return;
         }
       }
@@ -656,15 +666,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const touchedIds: string[] = [];
       try {
         await api.catalogJobBegin();
-        const verb = args.mode === "fetch" ? "Descarga" : "Actualización";
+        const verb = args.mode === "fetch" ? t("ctx.download") : t("ctx.update");
         log(
-          `${verb} de catálogo: ${targets.length} sitio${targets.length === 1 ? "" : "s"}…`,
+          targets.length === 1
+            ? t("ctx.catalogStartOne", { verb })
+            : t("ctx.catalogStart", { verb, n: targets.length }),
           "",
         );
         for (let i = 0; i < targets.length; i++) {
           if (catalogCancelRequestedRef.current) break;
           const m = targets[i];
           touchedIds.push(m.id);
+          const runningMsg = args.mode === "fetch" ? t("ctx.downloading") : t("ctx.updating");
           setCatalogJob({
             mode: args.mode,
             scope: args.scope,
@@ -676,7 +689,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             pageTotal: 0,
             bytesDone: 0,
             bytesTotal: 0,
-            message: args.mode === "fetch" ? "Descargando…" : "Actualizando…",
+            message: runningMsg,
             cancelling: false,
           });
           catalogJobRef.current = {
@@ -690,7 +703,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             pageTotal: 0,
             bytesDone: 0,
             bytesTotal: 0,
-            message: args.mode === "fetch" ? "Descargando…" : "Actualizando…",
+            message: runningMsg,
             cancelling: false,
           };
           try {
@@ -698,29 +711,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
               const st = await api.catalogUpdate(m.id);
               doneIds.push(m.id);
               log(
-                `Catálogo OK (${m.name}): +${st.inserted} · ${st.total_in_db} total · ${st.pages_fetched} páginas` +
-                  (st.skipped ? ` · ${st.skipped} omitidos` : ""),
+                t("ctx.catalogOk", {
+                  name: m.name,
+                  inserted: st.inserted,
+                  total: st.total_in_db,
+                  pages: st.pages_fetched,
+                }) + (st.skipped ? t("ctx.catalogSkipped", { n: st.skipped }) : ""),
                 "ok",
               );
             } else {
               const st = await api.catalogFetchFromServer(m.id);
               doneIds.push(m.id);
-              log(`Catálogo reemplazado (${m.name}): ${st.count} títulos`, "ok");
+              log(t("ctx.catalogReplaced", { name: m.name, n: st.count }), "ok");
             }
           } catch (e) {
             const msg = String(e);
-            if (/cancelado/i.test(msg) || catalogCancelRequestedRef.current) {
-              log(`${verb} cancelada.`, "");
+            if (/cancelado|cancelled/i.test(msg) || catalogCancelRequestedRef.current) {
+              log(t("ctx.verbCancelled", { verb }), "");
               break;
             }
-            log(`${verb} falló (${m.name}): ${msg}`, "err");
+            log(t("ctx.verbFailed", { verb, name: m.name, msg }), "err");
             if (args.scope === "one") break;
           }
         }
         if (catalogCancelRequestedRef.current) {
-          log(`${verb} interrumpida.`, "");
+          log(t("ctx.verbInterrupted", { verb }), "");
         } else if (doneIds.length) {
-          log(`${verb} terminada.`, "ok");
+          log(t("ctx.verbDone", { verb }), "ok");
         }
       } finally {
         catalogJobRunningRef.current = false;
@@ -749,9 +766,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         const themeRaw = await api.settingsGet(SK.APP_THEME);
         if (cancelled) return;
-        const t = parseTheme(themeRaw);
-        setThemeState(t);
-        applyResolvedDark(t);
+        const th = parseTheme(themeRaw);
+        setThemeState(th);
+        applyResolvedDark(th);
+
+        const lang = parseLanguage(await api.settingsGet(SK.LANG));
+        if (cancelled) return;
+        setLanguageState(lang);
+        setCurrentLanguage(lang);
 
         // Align defaults with OptionsView DEFAULT_STATE
         const checkOnStart = parseBool(await api.settingsGet(SK.FAV_CHECK_ON_START), true);
@@ -764,7 +786,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             const results = await api.favoritesCheckAll(downloadAfter);
             if (!cancelled) publishFavAutoCheck(results, downloadAfter, "inicio");
           } catch (e) {
-            if (!cancelled) log(`Revisión de favoritos al inicio: ${e}`, "err");
+            if (!cancelled) log(t("ctx.favStartErr", { err: String(e) }), "err");
           } finally {
             setFavAutoChecking(false);
           }
@@ -796,7 +818,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // starts with nothing to browse. Sync it out loud — an empty site list
         // with no explanation reads as a broken app.
         if (!cancelled && !installingApp && (await api.modulesNeedsFirstSync())) {
-          log("Primer arranque: descargando módulos…", "");
+          log(t("ctx.firstBoot"), "");
           await runAutoModulesCheckRef.current(false);
         }
       } catch (e) {
@@ -818,6 +840,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     theme,
     setTheme,
     toggleTheme,
+    language,
+    setLanguage,
     logOpen,
     setLogOpen,
     toggleLog,

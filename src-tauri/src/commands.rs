@@ -69,7 +69,11 @@ pub fn catalog_search(
 ) -> Result<Vec<CatalogEntry>, String> {
     if crate::settings_keys::module_disabled(&module_id) {
         return Err(
-            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+            crate::i18n::t(
+                "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.",
+                "Module is off. Go to Settings → Websites, enable it and save.",
+            )
+            .into(),
         );
     }
     catalog::search(&module_id, &query, limit.unwrap_or(100), offset.unwrap_or(0))
@@ -79,7 +83,11 @@ pub fn catalog_search(
 pub fn catalog_count(module_id: String, query: String) -> Result<i64, String> {
     if crate::settings_keys::module_disabled(&module_id) {
         return Err(
-            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+            crate::i18n::t(
+                "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.",
+                "Module is off. Go to Settings → Websites, enable it and save.",
+            )
+            .into(),
         );
     }
     catalog::count(&module_id, &query)
@@ -253,7 +261,11 @@ pub async fn catalog_update(
 ) -> Result<UpdateListStats, String> {
     if crate::settings_keys::module_disabled(&module_id) {
         return Err(
-            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+            crate::i18n::t(
+                "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.",
+                "Module is off. Go to Settings → Websites, enable it and save.",
+            )
+            .into(),
         );
     }
     let id = module_id.clone();
@@ -289,7 +301,11 @@ pub async fn catalog_fetch_from_server(
 ) -> Result<crate::catalog::CatalogStats, String> {
     if crate::settings_keys::module_disabled(&module_id) {
         return Err(
-            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+            crate::i18n::t(
+                "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.",
+                "Module is off. Go to Settings → Websites, enable it and save.",
+            )
+            .into(),
         );
     }
     let id = module_id.clone();
@@ -388,7 +404,11 @@ pub fn favorites_add(
 ) -> Result<Favorite, String> {
     if crate::settings_keys::module_disabled(&req.module_id) {
         return Err(
-            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+            crate::i18n::t(
+                "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.",
+                "Module is off. Go to Settings → Websites, enable it and save.",
+            )
+            .into(),
         );
     }
     let (last_link, last_name, count) = if let Some(last) = req.chapters.last() {
@@ -611,7 +631,8 @@ async fn check_favorite_inner(
     if crate::settings_keys::module_disabled(&fav.module_id) {
         let _ = db::favorites_touch_checked(&fav_db, id);
         return Err(format!(
-            "Módulo no activado: {} ({})",
+            "{}: {} ({})",
+            crate::i18n::t("Módulo no activado", "Module is off"),
             fav.module_name, fav.module_id
         ));
     }
@@ -694,7 +715,8 @@ pub async fn favorites_enqueue_pending(
     }
     if crate::settings_keys::module_disabled(&fav.module_id) {
         return Err(format!(
-            "Módulo no activado: {} ({})",
+            "{}: {} ({})",
+            crate::i18n::t("Módulo no activado", "Module is off"),
             fav.module_name, fav.module_id
         ));
     }
@@ -778,7 +800,8 @@ pub async fn favorites_download_all(
     let fav = db::favorites_get(&fav_db, id)?;
     if crate::settings_keys::module_disabled(&fav.module_id) {
         return Err(format!(
-            "Módulo no activado: {} ({})",
+            "{}: {} ({})",
+            crate::i18n::t("Módulo no activado", "Module is off"),
             fav.module_name, fav.module_id
         ));
     }
@@ -838,7 +861,11 @@ pub fn queue_add(
     }
     if crate::settings_keys::module_disabled(&req.module_id) {
         return Err(
-            "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into(),
+            crate::i18n::t(
+                "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.",
+                "Module is off. Go to Settings → Websites, enable it and save.",
+            )
+            .into(),
         );
     }
     let _ = db::settings_set(&state.db, "default_output_dir", &req.output_dir);

@@ -2,6 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
 import { appConfirm } from "../components/AppConfirm";
 import { safeRelaunch } from "./restartGuard";
+import { t } from "../i18n";
 
 export type AppUpdateLog = (msg: string, kind?: "ok" | "err" | "") => void;
 
@@ -37,13 +38,13 @@ function friendlyCheckError(err: unknown): string {
     lower.includes("no release") ||
     lower.includes("could not fetch")
   ) {
-    return "No hay actualización disponible.";
+    return t("updates.none");
   }
   return raw;
 }
 
 async function notify(title: string, message: string): Promise<void> {
-  await appConfirm({ title, message, alert: true, okLabel: "Entendido" });
+  await appConfirm({ title, message, alert: true, okLabel: t("common.understood") });
 }
 
 /**
@@ -69,18 +70,18 @@ export async function runAppUpdateCheck(
     update = await check();
   } catch (e) {
     const msg = friendlyCheckError(e);
-    log?.(`Comprobar actualización: ${msg}`, "err");
+    log?.(t("updates.checkPrefix", { msg }), "err");
     if (notifyResult) {
-      await notify("Actualizaciones", msg);
+      await notify(t("updates.title"), msg);
     }
     throw new Error(msg);
   }
 
   if (!update) {
-    const msg = `Al día (v${current})`;
+    const msg = t("updates.upToDate", { v: current });
     log?.(msg, "ok");
     if (notifyResult) {
-      await notify("Actualizaciones", `Ya tienes la última versión (v${current}).`);
+      await notify(t("updates.title"), t("updates.upToDateMsg", { v: current }));
     }
     return idle(msg);
   }
@@ -88,21 +89,21 @@ export async function runAppUpdateCheck(
   const notes = (update.body || "").trim();
   const noteBlock = notes ? `\n\n${notes.slice(0, 800)}${notes.length > 800 ? "…" : ""}` : "";
   const ok = await appConfirm({
-    title: "Actualización disponible",
-    message: `Hay una versión nueva.\n\nActual: v${current}\nNueva: v${update.version}${noteBlock}\n\n¿Descargar e instalar ahora? La app se reiniciará.`,
-    okLabel: "Actualizar",
-    cancelLabel: "Más tarde",
+    title: t("updates.availableTitle"),
+    message: t("updates.availableMsg", { current, next: update.version, notes: noteBlock }),
+    okLabel: t("updates.update"),
+    cancelLabel: t("updates.later"),
   });
 
   if (!ok) {
-    const msg = `Actualización v${update.version} pospuesta`;
+    const msg = t("updates.postponed", { v: update.version });
     log?.(msg, "");
     // Postponing used to leave no trace at all, so the app forgot until the
     // next launch. The caller surfaces this the same way as pending modules.
     return idle(msg, { available: true, version: update.version, deferred: true });
   }
 
-  log?.(`Descargando v${update.version}…`, "");
+  log?.(t("updates.downloading", { v: update.version }), "");
   let downloaded = 0;
   let contentLength = 0;
   try {
@@ -115,29 +116,29 @@ export async function runAppUpdateCheck(
           downloaded += event.data.chunkLength;
           if (contentLength > 0 && downloaded % (512 * 1024) < event.data.chunkLength) {
             const pct = Math.min(100, Math.round((downloaded / contentLength) * 100));
-            log?.(`Descarga ${pct}%`, "");
+            log?.(t("updates.pct", { pct }), "");
           }
           break;
         case "Finished":
-          log?.("Descarga terminada; instalando…", "");
+          log?.(t("updates.installing"), "");
           break;
       }
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    log?.(`Error al instalar actualización: ${msg}`, "err");
+    log?.(t("updates.installErr", { msg }), "err");
     if (notifyResult) {
-      await notify("Error al actualizar", msg);
+      await notify(t("updates.installErrTitle"), msg);
     }
     throw new Error(msg);
   }
 
-  log?.("Reiniciando…", "ok");
-  const relaunched = await safeRelaunch(`Se instaló la versión v${update.version}.`);
+  log?.(t("updates.restarting"), "ok");
+  const relaunched = await safeRelaunch(t("updates.installed", { v: update.version }));
   if (!relaunched) {
-    log?.("Reinicio pospuesto; la nueva versión se usará al cerrar la app.", "");
+    log?.(t("updates.restartLater"), "");
   }
-  return idle(`Actualizado a v${update.version}`, {
+  return idle(t("updates.updated", { v: update.version }), {
     available: true,
     version: update.version,
     installing: true,

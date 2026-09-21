@@ -1,6 +1,7 @@
 import { relaunch } from "@tauri-apps/plugin-process";
 import * as api from "../api/tauri";
 import { appConfirm } from "../components/AppConfirm";
+import { t } from "../i18n";
 
 /**
  * Nothing used to stand between `relaunch()` and a download in flight: both the
@@ -36,7 +37,7 @@ export async function busyReasons(): Promise<string[]> {
   try {
     const running = (await api.queueList()).filter((i) => i.status === "running").length;
     if (running > 0) {
-      reasons.push(running === 1 ? "1 descarga en curso" : `${running} descargas en curso`);
+      reasons.push(running === 1 ? t("restart.dlOne") : t("restart.dlMany", { n: running }));
     }
   } catch {
     // Queue unreachable: fall back to whatever the in-memory probes said.
@@ -52,10 +53,10 @@ export async function safeRelaunch(reason: string): Promise<boolean> {
   const busy = await busyReasons();
   if (busy.length > 0) {
     const ok = await appConfirm({
-      title: "Reiniciar ahora",
-      message: `${reason}\n\nHay trabajo en curso que se interrumpirá:`,
-      okLabel: "Reiniciar igualmente",
-      cancelLabel: "Esperar",
+      title: t("restart.title"),
+      message: t("restart.message", { reason }),
+      okLabel: t("restart.anyway"),
+      cancelLabel: t("restart.wait"),
       items: busy,
     });
     if (!ok) return false;

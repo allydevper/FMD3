@@ -188,7 +188,11 @@ pub fn start_worker(app: AppHandle) {
                     "queue-progress",
                     progress_event(
                         &item,
-                        format!("Obteniendo páginas: {}", item.chapter_name),
+                        format!(
+                            "{}: {}",
+                            crate::i18n::t("Obteniendo páginas", "Getting pages"),
+                            item.chapter_name
+                        ),
                         pending_count(&db),
                         0,
                         0,
@@ -336,7 +340,11 @@ fn process_item(
         "queue-progress",
         progress_event(
             &item,
-            format!("Downloading {}", item.chapter_name),
+            format!(
+                "{} {}",
+                crate::i18n::t("Descargando", "Downloading"),
+                item.chapter_name
+            ),
             pending_count(&app.state::<QueueState>().db),
             0,
             0,
@@ -478,7 +486,11 @@ fn process_item(
                 "queue-progress",
                 progress_event(
                     &item,
-                    format!("Empaquetando {}", item.chapter_name),
+                    format!(
+                        "{} {}",
+                        crate::i18n::t("Empaquetando", "Packing"),
+                        item.chapter_name
+                    ),
                     pending_left,
                     done,
                     total,
@@ -607,7 +619,12 @@ fn process_item(
         "queue-progress",
         progress_event(
             &item,
-            format!("Completed ({} files)", result.files.len()),
+            format!(
+                "{} ({} {})",
+                crate::i18n::t("Completado", "Completed"),
+                result.files.len(),
+                crate::i18n::t("archivos", "files")
+            ),
             pending_count(&app.state::<QueueState>().db),
             result.files.len() as u32,
             result.files.len() as u32,
@@ -615,10 +632,11 @@ fn process_item(
         ),
     );
     crate::log_file::append(&format!(
-        "OK  {} - {} ({} archivos)",
+        "OK  {} - {} ({} {})",
         item.manga_title,
         item.chapter_name,
-        result.files.len()
+        result.files.len(),
+        crate::i18n::t("archivos", "files")
     ));
     maybe_notify_group_done(&app, &item);
     Ok(())
@@ -665,9 +683,15 @@ fn maybe_notify_group_done(app: &AppHandle, item: &QueueItem) {
     let title = item.manga_title.trim();
     let title = if title.is_empty() { "Manga" } else { title };
     let body = if failed {
-        format!("\"{title}\" — Falló")
+        format!(
+            "\"{title}\" — {}",
+            crate::i18n::t("Falló", "Failed")
+        )
     } else {
-        format!("\"{title}\" — Finalizado")
+        format!(
+            "\"{title}\" — {}",
+            crate::i18n::t("Finalizado", "Finished")
+        )
     };
     use tauri_plugin_notification::NotificationExt;
     let _ = app.notification().builder().title("FMD3").body(body).show();

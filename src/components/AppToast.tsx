@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "./Icon";
+import { t, useLanguage } from "../i18n";
 
 export type AppToastKind = "ok" | "err" | "";
 
@@ -67,6 +68,7 @@ export function appToastUndo(opts: AppToastUndoOptions): void {
 }
 
 export function AppToastProvider({ children }: { children: ReactNode }) {
+  useLanguage();
   const [pending, setPending] = useState<Pending | null>(null);
   const seqRef = useRef(0);
   const timerRef = useRef<number | undefined>(undefined);
@@ -158,14 +160,14 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
           ) : null}
           {pending.onUndo ? (
             <button type="button" className="app-toast-undo" onClick={handleUndo}>
-              Deshacer
+              {t("common.undo")}
             </button>
           ) : null}
           <button
             type="button"
             className="app-toast-close"
-            title="Cerrar"
-            aria-label="Cerrar"
+            title={t("common.close")}
+            aria-label={t("common.close")}
             onClick={dismiss}
           >
             <Icon name="x" className="ico ico-sm" />

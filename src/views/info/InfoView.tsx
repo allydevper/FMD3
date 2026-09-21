@@ -36,7 +36,6 @@ import {
   CH_ROW_GAP,
   CH_ROW_H,
   DEFAULT_GENRES,
-  FILTER_CUSTOM_HINT,
   GENRE_TRI_CYCLE,
   MARK_REFRESH_DEBOUNCE_MS,
   emptyAdvFilter,
@@ -48,6 +47,7 @@ import {
 import { useApp } from "../../context/AppContext";
 import * as api from "../../api/tauri";
 import { confirmIfEnabled } from "../../utils/settings";
+import { genreLabel, t, tPlural, useLanguage } from "../../i18n";
 import {
   catalogLinkKey,
   maybeFillHost,
@@ -116,13 +116,13 @@ function formatMangaStatus(raw: string | undefined): string {
   const s = (raw || "").trim();
   switch (s) {
     case "0":
-      return "Completado";
+      return t("mangaStatus.completed");
     case "1":
-      return "En curso";
+      return t("mangaStatus.ongoing");
     case "2":
-      return "Hiatus";
+      return t("mangaStatus.hiatus");
     case "3":
-      return "Cancelado";
+      return t("mangaStatus.cancelled");
     case "Unknown":
       return "";
     default:
@@ -135,13 +135,13 @@ function chapterNum(index: number): string {
 }
 
 function isNaTitle(title: string | undefined | null): boolean {
-  const t = (title || "").trim();
-  return !t || t.toUpperCase() === "N/A";
+  const raw = (title || "").trim();
+  return !raw || raw.toUpperCase() === "N/A";
 }
 
 function inaccessibleInfoMessage(moduleName: string): string {
-  const mod = moduleName.trim() || "módulo";
-  return `✗ Info inaccesible (${mod}). Título N/A — ¿URL o scrape?`;
+  const mod = moduleName.trim() || t("explore.moduleFallback");
+  return t("explore.inaccessible", { mod });
 }
 
 function genreChipClass(state: GenreTri): string {
@@ -151,6 +151,7 @@ function genreChipClass(state: GenreTri): string {
 }
 
 export function InfoView() {
+  useLanguage();
   const {
     activeNav,
     setActiveNav,
@@ -292,14 +293,14 @@ export function InfoView() {
 
   function showFavoriteRemovedToast(snapshot: FavoriteAddRequest, matchesSidebar: boolean) {
     appToastUndo({
-      message: "Se quitó de favoritos",
+      message: tPlural("favorites.removed", 1),
       durationMs: 6000,
       onUndo: async () => {
         try {
           const fav = await api.favoritesAdd(snapshot);
           favoritesCacheUpsert(fav);
           if (matchesSidebar) applySidebarFavoriteState(true, fav.id);
-          log(`Favorito restaurado: ${fav.title}`, "ok");
+          log(t("explore.favRestored", { title: fav.title }), "ok");
         } catch (e) {
           log(String(e), "err");
         }
@@ -703,7 +704,7 @@ export function InfoView() {
         "not downloaded", which looks exactly like lost marks. Say so out loud —
         a silent catch here hid a stale-binary mismatch for a whole round. */
         if (cancelled) return;
-        log(`No se pudieron resolver las claves de capítulo: ${String(e)}`, "err");
+        log(t("explore.chapterKeysFail", { err: String(e) }), "err");
       });
     return () => {
       cancelled = true;
@@ -880,7 +881,7 @@ export function InfoView() {
         if (snapshot.allSites) {
           catalogQueryRef.current = catalogText.trim();
           await loadAllSitesCatalog(true, true, snapshot);
-          log(`Filtro aplicado (todas las fuentes): ${catalogTotalRef.current} títulos`, "ok");
+          log(t("explore.filterAppliedAll", { n: catalogTotalRef.current }), "ok");
           return;
         }
 
@@ -912,7 +913,7 @@ export function InfoView() {
           return `${e.title} ${e.alttitles || ""}`.toLowerCase().includes(needle);
         }).length;
         setCatalogStatsText(String(n));
-        log(`Filtro aplicado: ${n} títulos`, "ok");
+        log(t("explore.filterApplied", { n }), "ok");
       } catch (e) {
         log(String(e), "err");
       } finally {
@@ -1112,7 +1113,7 @@ export function InfoView() {
       catalogLoadedKeyRef.current = "";
       if (!silent) {
         log(
-          "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
+          t("ctx.noSites"),
           "err",
         );
       }
@@ -1127,7 +1128,7 @@ export function InfoView() {
       setCatalogLoading(false);
       setCatalogFetched(false);
       if (!silent) {
-        log("Elige una fuente en el selector (o actívala en Ajustes → Sitios Web).", "err");
+        log(t("explore.pickSourceOrEnable"), "err");
       }
       return;
     }
@@ -1170,7 +1171,7 @@ export function InfoView() {
       catalogLoadedKeyRef.current = key;
       setCatalogFetched(true);
       if (silent && !sameResultSet) bumpCatalogReset();
-      if (!silent && actualTotal > 0) log(`Catálogo: ${actualTotal} títulos`, "ok");
+      if (!silent && actualTotal > 0) log(t("explore.catalogCount", { n: actualTotal }), "ok");
       // El refresco tira las páginas ya cargadas: pedir primero las de la zona
       // visible, o se ven filas vacías hasta que el relleno secuencial llega.
       // Con filtro avanzado local los índices visibles no son los de las filas.
@@ -1189,7 +1190,7 @@ export function InfoView() {
       const msg = String(e);
       if (/deshabilitado|disabled|no activado/i.test(msg)) {
         log(
-          "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
+          t("ctx.noSites"),
           "err",
         );
       } else {
@@ -1219,7 +1220,7 @@ export function InfoView() {
       catalogLoadedKeyRef.current = "";
       if (!silent) {
         log(
-          "No hay sitios activos. Ve a Ajustes → Sitios Web, marca los que quieras y guarda.",
+          t("ctx.noSites"),
           "err",
         );
       }
@@ -1454,7 +1455,7 @@ export function InfoView() {
     setAdvFilterAppliedBoth(false);
     clearCatalogSelection();
     void loadCatalog(true, true);
-    log("Filtro quitado.", "ok");
+    log(t("explore.filterRemoved"), "ok");
   }
 
   /* ---------------------------------------------------------------------
@@ -1462,7 +1463,7 @@ export function InfoView() {
    * ------------------------------------------------------------------- */
   function paintRows(opts: PaintOpts) {
     setSidebarRows({
-      title: opts.title.trim() || "(sin título)",
+      title: opts.title.trim() || t("explore.untitled"),
       authors: (opts.authors || "").trim(),
       artists: (opts.artists || "").trim(),
       genres: (opts.genres || "").trim(),
@@ -1481,7 +1482,7 @@ export function InfoView() {
     const pending = pendingSidebarTitleRef.current.trim();
     if (pending && !isNaTitle(pending)) return pending;
     const fromSidebar = sidebarRows.title.trim();
-    if (fromSidebar && !isNaTitle(fromSidebar) && fromSidebar !== "(sin título)") {
+    if (fromSidebar && !isNaTitle(fromSidebar) && fromSidebar !== t("explore.untitled")) {
       return fromSidebar;
     }
     const fromList = activeCatalogTitle.trim();
@@ -1680,7 +1681,7 @@ export function InfoView() {
     if (!url) {
       if (opts?.notifyIfEmpty) {
         appToast({
-          message: "No se encontró un enlace válido en el portapapeles.",
+          message: t("explore.clipboardEmpty"),
           kind: "err",
         });
       }
@@ -1697,7 +1698,7 @@ export function InfoView() {
       applyPastedMangaUrl(text, { notifyIfEmpty: true });
     } catch {
       urlInputRef.current?.focus();
-      appToast({ message: "Pulsa Ctrl+V para pegar el enlace.", kind: "" });
+      appToast({ message: t("explore.pasteHint"), kind: "" });
     }
   }
 
@@ -1729,7 +1730,7 @@ export function InfoView() {
     const url = normalizeMangaUrl(raw);
     if (!url) {
       log(
-        "URL inválida. Pega un enlace http(s) o anticlick (espacios, [.], hxxp…).",
+        t("explore.invalidUrl"),
         "err",
       );
       return;
@@ -1739,7 +1740,7 @@ export function InfoView() {
     setMangaUrl(url);
     setMangaLoadingUrl(url);
     resetCoverForLoad();
-    log("Cargando info vía Lua GetInfo…");
+    log(t("explore.loadingGetInfo"));
     setLoadBtnDisabled(true);
     setChaptersLoading(true);
 
@@ -1764,7 +1765,7 @@ export function InfoView() {
           pool.find((m) => m.id === selectedModuleId) ??
           pool[0];
         if (moduleId && preferred.id !== moduleId) {
-          log(`Sitio detectado por la URL: ${preferred.name}`, "");
+          log(t("explore.siteDetected", { name: preferred.name }), "");
         }
         moduleId = preferred.id;
         // Pegar URL: alinear el selector de fuente (y el catálogo) con el host.
@@ -1777,12 +1778,12 @@ export function InfoView() {
           const newly = await ensureModuleEnabled(preferred.id);
           if (seq !== mangaLoadSeqRef.current) return;
           if (newly) {
-            log(`Sitio activado automáticamente: ${preferred.name}`, "ok");
+            log(t("explore.siteAutoEnabled", { name: preferred.name }), "ok");
           }
         }
       } else if (!enabledModules.length) {
         abortWrongModule(
-          "No hay sitios activos y ninguno coincide con esta URL. Ve a Ajustes → Sitios Web o pega una URL de un módulo instalado.",
+          t("explore.noSitesMatchUrl"),
         );
         return;
       } else {
@@ -1795,7 +1796,7 @@ export function InfoView() {
           urlMatchesModuleHost(url, listed.root_url);
         if (!keepListed) {
           abortWrongModule(
-            "Ningún módulo coincide con esta URL. Activa el sitio en Ajustes → Sitios Web o elige uno en el selector.",
+            t("explore.noModuleMatchUrl"),
           );
           return;
         }
@@ -1874,7 +1875,7 @@ export function InfoView() {
         await syncFavoriteState(url, moduleId);
         const msg = inaccessibleInfoMessage(modName);
         log(
-          `${msg} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
+          t("explore.updateManual", { msg }),
           "err",
         );
         return;
@@ -1925,13 +1926,13 @@ export function InfoView() {
       if (seq !== mangaLoadSeqRef.current) return;
       if (!result.title.trim() && result.chapters.length === 0) {
         log(
-          `Sin datos (${result.module_name}). ¿URL correcta o sitio bloqueado?`,
+          t("explore.noData", { mod: result.module_name }),
           "err",
         );
       } else if (result.chapters.length === 0) {
-        log(`OK sin capítulos (${result.module_name})`, "ok");
+        log(t("explore.okNoChapters", { mod: result.module_name }), "ok");
       } else {
-        log(`OK: ${result.chapters.length} capítulos (${result.module_name})`, "ok");
+        log(t("explore.okChapters", { n: result.chapters.length, mod: result.module_name }), "ok");
       }
     } catch (e) {
       if (seq !== mangaLoadSeqRef.current) return;
@@ -1958,7 +1959,7 @@ export function InfoView() {
       await syncFavoriteState(url, moduleId);
       const msg = inaccessibleInfoMessage(modName);
       log(
-        `${msg} ${String(e)} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
+        t("explore.updateManual", { msg: `${msg} ${String(e)}` }),
         "err",
       );
     } finally {
@@ -1998,7 +1999,7 @@ export function InfoView() {
     // Marca el corazón en cuanto se abre (antes de GetInfo).
     void syncFavoriteState(url, moduleId);
     if (mangaLoadingUrl === url) {
-      log(`Ya se está cargando: ${title}`);
+      log(t("explore.alreadyLoading", { title }));
       setInfoPanelOpen(true);
       applyCatalogStub(e);
       return;
@@ -2020,13 +2021,13 @@ export function InfoView() {
       // Stub already painted real masterlist title; keep it (never show N/A in sidebar).
       const msg = inaccessibleInfoMessage(modName);
       log(
-        `${msg} Actualiza a mano (corrige URL / módulo o limpia caché) para no reintentar la URL inválida.`,
+        t("explore.updateManual", { msg }),
         "err",
       );
       return;
     }
 
-    log(`Abriendo ${title}…`);
+    log(t("explore.opening", { title }));
     await loadMangaInfo(url, moduleId);
   }
 
@@ -2148,18 +2149,18 @@ export function InfoView() {
     const menu = catalogCtxMenu;
     setCatalogCtxMenu(null);
     if (menu?.isFav) {
-      log("Ya está en favoritos.", "ok");
+      log(t("explore.alreadyFav"), "ok");
       return;
     }
     const { moduleId, mod } = catalogEntryModule(entry);
     if (!mod || !moduleId) {
-      log("No hay fuente para este título.", "err");
+      log(t("explore.noSource"), "err");
       return;
     }
     const root = mod.root_url || "";
     const url = maybeFillHost(root, entry.link);
     if (!url) {
-      log("Enlace vacío; no se puede añadir a favoritos.", "err");
+      log(t("explore.emptyLinkFav"), "err");
       return;
     }
     const title = entry.title || entry.link;
@@ -2177,7 +2178,7 @@ export function InfoView() {
           urlsReferToSameManga(f.manga_url, entry.link),
       );
       if (existing) {
-        log("Ya está en favoritos.", "ok");
+        log(t("explore.alreadyFav"), "ok");
         if (matchesSidebar) applySidebarFavoriteState(true, existing.id);
         return;
       }
@@ -2196,7 +2197,7 @@ export function InfoView() {
       favoritesCacheUpsert(fav);
       if (matchesSidebar) applySidebarFavoriteState(true, fav.id);
       log(
-        `Favorito guardado: ${fav.title} (sin GetInfo; el check rellenará capítulos)`,
+        t("explore.favSavedNoInfo", { title: fav.title }),
         "ok",
       );
       const gotoFav = await api.settingsGet("ui.goto_favorites_on_add");
@@ -2299,12 +2300,12 @@ export function InfoView() {
     setCatalogCtxMenu(null);
     const title = entry.title || entry.link;
     if (favId == null) {
-      log("No se encontró el favorito.", "err");
+      log(t("explore.favNotFound"), "err");
       return;
     }
     const { moduleId, mod } = catalogEntryModule(entry);
     if (!mod || !moduleId) {
-      log("No hay fuente para este título.", "err");
+      log(t("explore.noSource"), "err");
       return;
     }
     const root = mod.root_url || "";
@@ -2325,7 +2326,7 @@ export function InfoView() {
       await api.favoritesRemove(favId);
       favoritesCacheRemove(favId);
       if (matchesSidebar) applySidebarFavoriteState(false, null);
-      log(`Quitado de favoritos: ${title}`, "ok");
+      log(t("explore.removedFavLog", { title }), "ok");
       showFavoriteRemovedToast(snapshot, matchesSidebar);
     } catch (e) {
       log(String(e), "err");
@@ -2346,31 +2347,31 @@ export function InfoView() {
       })
       .filter((e): e is CatalogEntry => e != null);
     if (!prepared.length) {
-      log("Selecciona al menos un título del catálogo.", "err");
+      log(t("explore.selectCatalogTitle"), "err");
       return;
     }
     const n = prepared.length;
     const ok = await confirmIfEnabled(
       SK.CONFIRM_DELETE,
       n === 1
-        ? `¿Quitar «${prepared[0].title || prepared[0].link}» de la lista? No volverá al actualizar el catálogo.`
-        : `¿Quitar ${n} títulos de la lista? No volverán al actualizar el catálogo.`,
+        ? t("explore.removeFromListOne", { title: prepared[0].title || prepared[0].link })
+        : t("explore.removeFromListMany", { n }),
       true,
-      "Quitar de la lista",
+      t("explore.removeFromList"),
     );
     if (!ok) return;
     try {
       const snapshots = await api.catalogHide(prepared);
       if (!snapshots.length) {
-        log("No se pudo quitar de la lista.", "err");
+        log(t("explore.removeFailed"), "err");
         return;
       }
       clearCatalogSelection();
       await loadCatalog(true, true);
       const label =
         snapshots.length === 1
-          ? "Se quitó de la lista"
-          : `Se quitaron ${snapshots.length} títulos de la lista`;
+          ? tPlural("explore.removedFromList", 1)
+          : tPlural("explore.removedFromList", snapshots.length);
       appToastUndo({
         message: label,
         durationMs: 6000,
@@ -2381,7 +2382,7 @@ export function InfoView() {
             log(
               snapshots.length === 1
                 ? `Restaurado: ${snapshots[0].title || snapshots[0].link}`
-                : `Restaurados ${snapshots.length} títulos`,
+                : t("explore.restoredTitles", { n: snapshots.length }),
               "ok",
             );
           } catch (e) {
@@ -2458,7 +2459,7 @@ export function InfoView() {
     if (typeof dir === "string") {
       setOutputDir(dir);
       await api.settingsSet("default_output_dir", dir);
-      log(`Carpeta por defecto: ${dir}`, "ok");
+      log(t("explore.defaultFolder", { dir }), "ok");
     }
   }
 
@@ -2466,26 +2467,26 @@ export function InfoView() {
   async function downloadAllFromCatalog(entry: CatalogEntry): Promise<number> {
     const { moduleId, mod } = catalogEntryModule(entry);
     if (!mod || !moduleId) {
-      log("No hay fuente para este título.", "err");
+      log(t("explore.noSource"), "err");
       return 0;
     }
     const root = mod.root_url || "";
     const url = maybeFillHost(root, entry.link);
     if (!url) {
-      log("Enlace vacío; no se puede descargar.", "err");
+      log(t("explore.emptyLinkDl"), "err");
       return 0;
     }
     const title = entry.title || entry.link;
     const dir = await ensureOutputDir();
     if (!dir) {
-      log("Elige una carpeta de salida.", "err");
+      log(t("explore.pickOutput"), "err");
       return 0;
     }
-    log(`Obteniendo info: ${title}…`);
+    log(t("explore.gettingInfo", { title }));
     try {
       const info = await api.getMangaInfo(url, moduleId);
       if (!info.chapters?.length) {
-        log(`Sin capítulos: ${info.title || title} · ${url}`, "err");
+        log(t("explore.noChaptersFor", { title: info.title || title, url }), "err");
         return 0;
       }
       const n = await api.queueAdd({
@@ -2513,7 +2514,7 @@ export function InfoView() {
             ? {}
             : {
                 action: {
-                  label: "Ver descargas",
+                  label: t("explore.viewDownloads"),
                   onClick: () => setActiveNav("downloads"),
                 },
               }),
@@ -2533,19 +2534,19 @@ export function InfoView() {
       ? entries
       : [...catalogSelectedEntriesRef.current.values()];
     if (!list.length) {
-      log("No hay títulos seleccionados.", "err");
+      log(t("explore.noTitlesSelected"), "err");
       return;
     }
     let total = 0;
     for (let i = 0; i < list.length; i++) {
       const e = list[i]!;
       if (list.length > 1) {
-        log(`[${i + 1}/${list.length}] Descargar todo: ${e.title || e.link}`);
+        log(t("explore.downloadAllItem", { i: i + 1, total: list.length, title: e.title || e.link }));
       }
       total += await downloadAllFromCatalog(e);
     }
     if (list.length > 1) {
-      log(`Descargar todo: ${total} capítulo(s) en ${list.length} título(s).`, "ok");
+      log(t("explore.downloadAllLog", { ch: total, titles: list.length }), "ok");
     }
   }
 
@@ -2556,13 +2557,13 @@ export function InfoView() {
   useEffect(() => {
     if (activeNav !== "info") return;
     const onKey = (ev: KeyboardEvent) => {
-      const t = ev.target as HTMLElement | null;
+      const el = ev.target as HTMLElement | null;
       if (
-        t &&
-        (t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.tagName === "SELECT" ||
-          t.isContentEditable)
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.tagName === "SELECT" ||
+          el.isContentEditable)
       ) {
         return;
       }
@@ -2573,7 +2574,7 @@ export function InfoView() {
           downloadAllFromCatalogBulkRef.current(selected);
           return;
         }
-        log("Selecciona al menos un título del catálogo (Ctrl+D).", "err");
+        log(t("explore.selectCatalogCtrlD"), "err");
         return;
       }
       if (ev.key === "Delete") {
@@ -2590,20 +2591,20 @@ export function InfoView() {
   async function handleEnqueue() {
     if (enqueueBusy) return;
     if (!manga) {
-      log("Carga un manga primero.", "err");
-      appToast({ message: "Carga un manga primero.", kind: "err" });
+      log(t("explore.loadMangaFirst"), "err");
+      appToast({ message: t("explore.loadMangaFirst"), kind: "err" });
       return;
     }
     const chapters = manga.chapters.filter((c) => selected.has(c.index));
     if (!chapters.length) {
-      log("Selecciona al menos un capítulo.", "err");
-      appToast({ message: "Selecciona al menos un capítulo.", kind: "err" });
+      log(t("explore.selectChapterMin"), "err");
+      appToast({ message: t("explore.selectChapterMin"), kind: "err" });
       return;
     }
     const dir = await ensureOutputDir();
     if (!dir) {
-      log("Elige una carpeta de salida.", "err");
-      appToast({ message: "Elige una carpeta de salida.", kind: "err" });
+      log(t("explore.pickOutput"), "err");
+      appToast({ message: t("explore.pickOutput"), kind: "err" });
       return;
     }
     setEnqueueBusy(true);
@@ -2620,7 +2621,7 @@ export function InfoView() {
       });
       const msg = taskStopped
         ? `Encolados ${n} (detenidos).`
-        : `Encolados ${n} capítulo(s).`;
+        : t("explore.queuedChapters", { n });
       log(msg, "ok");
       const gotoDlRaw = await api.settingsGet("ui.goto_downloads_on_add");
       const gotoDl = gotoDlRaw !== "0" && gotoDlRaw !== "false";
@@ -2631,7 +2632,7 @@ export function InfoView() {
           ? {}
           : {
               action: {
-                label: "Ver descargas",
+                label: t("explore.viewDownloads"),
                 onClick: () => setActiveNav("downloads"),
               },
             }),
@@ -2650,9 +2651,9 @@ export function InfoView() {
     if (!manga) return;
     const chapters = manga.chapters.filter((c) => selected.has(c.index));
     if (chapters.length < 2) {
-      log("Selecciona al menos 2 capítulos para dividir.", "err");
+      log(t("explore.selectSplitMin"), "err");
       appToast({
-        message: "Selecciona al menos 2 capítulos para dividir.",
+        message: t("explore.selectSplitMin"),
         kind: "err",
       });
       return;
@@ -2672,15 +2673,15 @@ export function InfoView() {
     const chapters = splitPrompt.chapters;
     let n = Math.floor(splitPrompt.count);
     if (!Number.isFinite(n) || n < 2) {
-      log("La cuenta de descarga debe ser al menos 2.", "err");
-      appToast({ message: "La cuenta de descarga debe ser al menos 2.", kind: "err" });
+      log(t("explore.minSplit"), "err");
+      appToast({ message: t("explore.minSplit"), kind: "err" });
       return;
     }
     n = Math.min(n, chapters.length);
     const dir = await ensureOutputDir();
     if (!dir) {
-      log("Elige una carpeta de salida.", "err");
-      appToast({ message: "Elige una carpeta de salida.", kind: "err" });
+      log(t("explore.pickOutput"), "err");
+      appToast({ message: t("explore.pickOutput"), kind: "err" });
       return;
     }
     // FMD2: base = len div N, remainder get +1 (first rem batches).
@@ -2725,7 +2726,7 @@ export function InfoView() {
           ? {}
           : {
               action: {
-                label: "Ver descargas",
+                label: t("explore.viewDownloads"),
                 onClick: () => setActiveNav("downloads"),
               },
             }),
@@ -2745,14 +2746,14 @@ export function InfoView() {
     const live = mangaRef.current || manga;
     const url = (mangaUrl || urlInput || "").trim();
     if (!url) {
-      log("Carga un manga primero.", "err");
+      log(t("explore.loadMangaFirst"), "err");
       return;
     }
 
     if (isFavorite) {
       if (favoriteId == null) {
         await syncFavoriteState(url);
-        log("No se encontró el favorito; vuelve a intentar.", "err");
+        log(t("explore.favNotFoundRetry"), "err");
         return;
       }
       const title = live?.title || sidebarRows.title || url;
@@ -2761,7 +2762,7 @@ export function InfoView() {
       const mod =
         (moduleId ? modules.find((m) => m.id === moduleId) : undefined) || currentModule;
       if (!mod || !moduleId) {
-        log("No hay fuente para este título.", "err");
+        log(t("explore.noSource"), "err");
         return;
       }
       const snapshot: FavoriteAddRequest = {
@@ -2777,7 +2778,7 @@ export function InfoView() {
         favoritesCacheRemove(favoriteId);
         setIsFavorite(false);
         setFavoriteId(null);
-        log(`Quitado de favoritos: ${title}`, "ok");
+        log(t("explore.removedFavLog", { title }), "ok");
         showFavoriteRemovedToast(snapshot, true);
       } catch (e) {
         log(String(e), "err");
@@ -2790,7 +2791,7 @@ export function InfoView() {
     const mod =
       (moduleId ? modules.find((m) => m.id === moduleId) : undefined) || currentModule;
     if (!mod || !moduleId) {
-      log("No hay fuente para este título.", "err");
+      log(t("explore.noSource"), "err");
       return;
     }
 
@@ -2806,7 +2807,7 @@ export function InfoView() {
       if (existing) {
         setIsFavorite(true);
         setFavoriteId(existing.id);
-        log("Ya está en favoritos.", "ok");
+        log(t("explore.alreadyFav"), "ok");
         return;
       }
     } catch {
@@ -2826,7 +2827,7 @@ export function InfoView() {
       setIsFavorite(true);
       setFavoriteId(fav.id);
       log(
-        `Favorito guardado: ${fav.title} (último: ${fav.last_chapter_name || "—"})`,
+        t("explore.favSavedLast", { title: fav.title, last: fav.last_chapter_name || t("common.dash") }),
         "ok",
       );
       const gotoFav = await api.settingsGet("ui.goto_favorites_on_add");
@@ -2841,7 +2842,7 @@ export function InfoView() {
     try {
       await openUrl(mangaUrl);
     } catch (e) {
-      log(`No se pudo abrir: ${e}`, "err");
+      log(t("explore.openFailed", { err: String(e) }), "err");
     }
   }
 
@@ -2883,30 +2884,30 @@ export function InfoView() {
 
   function resetAdvFilterForm() {
     setAdvFilter(emptyAdvFilter());
-    log("Valores del filtro reiniciados.", "ok");
+    log(t("explore.filterReset"), "ok");
   }
 
   /* ---------------------------------------------------------------------
    * Derived render values
    * ------------------------------------------------------------------- */
   const sourceLabel = sourcesLoading
-    ? "Cargando fuentes…"
+    ? t("explore.loadingSources")
     : currentModule && enabledModuleIds.has(currentModule.id)
       ? currentModule.name
       : enabledModules.length
-        ? "Seleccionar fuente…"
-        : "Sin fuentes";
+        ? t("explore.selectSource")
+        : t("explore.noSources");
 
   const infoRows: { icon: IconName; label: string; value: string }[] = [];
-  if (sidebarRows.authors) infoRows.push({ icon: "user", label: "Autor", value: sidebarRows.authors });
-  if (sidebarRows.artists) infoRows.push({ icon: "brush", label: "Artista", value: sidebarRows.artists });
-  if (sidebarRows.genres) infoRows.push({ icon: "about", label: "Géneros", value: sidebarRows.genres });
-  if (sidebarRows.status) infoRows.push({ icon: "status", label: "Estado", value: sidebarRows.status });
-  const fuente = sidebarRows.moduleName || currentModule?.name || "—";
-  const capsLabel = sidebarRows.numchapter ? `caps. ${sidebarRows.numchapter}` : "caps. —";
+  if (sidebarRows.authors) infoRows.push({ icon: "user", label: t("explore.author"), value: sidebarRows.authors });
+  if (sidebarRows.artists) infoRows.push({ icon: "brush", label: t("explore.artist"), value: sidebarRows.artists });
+  if (sidebarRows.genres) infoRows.push({ icon: "about", label: t("explore.genres"), value: sidebarRows.genres });
+  if (sidebarRows.status) infoRows.push({ icon: "status", label: t("explore.status"), value: sidebarRows.status });
+  const fuente = sidebarRows.moduleName || currentModule?.name || t("common.dash");
+  const capsLabel = sidebarRows.numchapter ? t("explore.caps", { n: sidebarRows.numchapter }) : t("explore.capsDash");
 
   const chaptersHasManga = !!manga;
-  const selectAllLabel = chSel.allSelected ? "Deseleccionar" : "Seleccionar todo";
+  const selectAllLabel = chSel.allSelected ? t("explore.deselect") : t("explore.selectAll");
 
   function renderChaptersBody() {
     if (chaptersLoading) {
@@ -2914,13 +2915,13 @@ export function InfoView() {
         <div className="chapters-list" id="chapters">
           <div className="panel-loading">
             <span className="spinner" />
-            Cargando capítulos…
+            {t("explore.loadingChapters")}
           </div>
         </div>
       );
     }
     if (infoInaccessible) {
-      const mod = infoInaccessible.moduleName.trim() || "el sitio";
+      const mod = infoInaccessible.moduleName.trim() || t("explore.theSite");
       return (
         <div className="chapters-list" id="chapters">
           <div className="chapters-empty chapters-inaccessible">
@@ -2931,9 +2932,9 @@ export function InfoView() {
                     <Icon name="unplug" className="ico ico-lg" />
                   </div>
                   <div className="chapters-fail-copy">
-                    <p className="chapters-fail-title">No se pudo leer la información</p>
+                    <p className="chapters-fail-title">{t("explore.infoFailTitle")}</p>
                     <p className="chapters-fail-desc">
-                      Revisa que sea la página de la obra en {mod}.
+                      {t("explore.failDesc", { mod })}
                     </p>
                   </div>
                 </div>
@@ -2943,7 +2944,7 @@ export function InfoView() {
                   disabled={loadBtnDisabled || !urlInput.trim()}
                   onClick={() => void loadMangaInfo()}
                 >
-                  <Icon name="refresh" className="ico ico-sm" /> Reintentar
+                  <Icon name="refresh" className="ico ico-sm" /> {t("common.retry")}
                 </button>
               </div>
             </div>
@@ -2957,7 +2958,7 @@ export function InfoView() {
           <div className="chapters-empty">
             <img className="chapters-empty-art" src={chaptersEmptyUrl} alt="" />
             <p className="chapters-empty-text">
-              Doble clic en un título del catálogo, o pega un enlace (anticlick) arriba.
+              {t("explore.emptyChapters")}
             </p>
           </div>
         </div>
@@ -2966,7 +2967,7 @@ export function InfoView() {
     if (!manga.chapters.length) {
       return (
         <div className="chapters-list" id="chapters">
-          <div className="catalog-empty">Sin capítulos.</div>
+          <div className="catalog-empty">{t("explore.noChapters")}</div>
         </div>
       );
     }
@@ -2986,7 +2987,7 @@ export function InfoView() {
           tabIndex: 0,
           role: "listbox",
           "aria-multiselectable": true,
-          "aria-label": "Capítulos",
+          "aria-label": t("explore.chapters"),
           onKeyDown: chSel.handleKeyDown,
         }}
         renderItem={(c, _i, style: CSSProperties) => {
@@ -3017,14 +3018,14 @@ export function InfoView() {
               }}
               onClick={(ev) => chSel.handleRowClick(c.index, ev)}
               title={
-                isDl ? "Descargado" : isQ ? "En cola / descargando" : undefined
+                isDl ? t("explore.downloaded") : isQ ? t("explore.queued") : undefined
               }
             >
               <button
                 type="button"
                 className="ch-box"
                 tabIndex={-1}
-                aria-label="Seleccionar capítulo"
+                aria-label={t("explore.selectChapter")}
                 onClick={(ev) => {
                   ev.stopPropagation();
                   chSel.handleCheckboxClick(c.index);
@@ -3033,7 +3034,7 @@ export function InfoView() {
                 {on && <Icon name="check" className="ico ico-sm" style={{ color: "var(--on-accent)" }} />}
               </button>
               <span className="ch-num">{chapterNum(c.index)}</span>
-              <span className="ch-title">{c.name || `Capítulo ${c.index + 1}`}</span>
+              <span className="ch-title">{c.name || t("explore.chapterN", { n: c.index + 1 })}</span>
             </div>
           );
         }}
@@ -3047,9 +3048,9 @@ export function InfoView() {
       return (
         <div className="catalog-results" id="catalog-list">
           <div className="catalog-empty">
-            No hay sitios activos.
+            {t("explore.noSitesBody").split("\n")[0]}
             <br />
-            Ve a Ajustes → Sitios Web, marca los que quieras y guarda.
+            {t("explore.noSitesBody").split("\n")[1]}
           </div>
         </div>
       );
@@ -3061,7 +3062,7 @@ export function InfoView() {
     if (catalogError) {
       return (
         <div className="catalog-results" id="catalog-list">
-          <div className="catalog-empty">Error al cargar el catálogo.</div>
+          <div className="catalog-empty">{t("explore.catalogError")}</div>
         </div>
       );
     }
@@ -3076,12 +3077,12 @@ export function InfoView() {
         <div className="catalog-results" id="catalog-list">
           <div className="catalog-empty">
             {filterMiss ? (
-              "Sin coincidencias con el filtro."
+              t("explore.filterMiss")
             ) : (
               <>
-                Sin resultados.
+                {t("explore.noResults")}
                 <br />
-                Actualiza la lista con el icono junto a Fuente.
+                {t("explore.updateListHint")}
               </>
             )}
           </div>
@@ -3103,7 +3104,7 @@ export function InfoView() {
           tabIndex: 0,
           role: "listbox",
           "aria-multiselectable": true,
-          "aria-label": "Catálogo",
+          "aria-label": t("explore.catalogAria"),
           onKeyDown: handleCatalogKeyDown,
         }}
         onRange={(s, e) => {
@@ -3171,7 +3172,7 @@ export function InfoView() {
               id="seg-search"
               onClick={() => setInfoMode("search")}
             >
-              Info
+              {t("explore.info")}
             </button>
             <button
               type="button"
@@ -3179,10 +3180,10 @@ export function InfoView() {
               id="seg-filter"
               onClick={() => setInfoMode("filter")}
             >
-              Filtro
+              {t("explore.filter")}
             </button>
           </div>
-          <div className="field-label">Fuente</div>
+          <div className="field-label">{t("explore.source")}</div>
           <div className="source-row">
             <div className="source-dd">
               <button
@@ -3212,7 +3213,7 @@ export function InfoView() {
                     ref={sourceQRef}
                     id="source-q"
                     type="text"
-                    placeholder="Buscar fuente..."
+                    placeholder={t("explore.searchSource")}
                     autoComplete="off"
                     autoCapitalize="off"
                     autoCorrect="off"
@@ -3238,7 +3239,7 @@ export function InfoView() {
                     ))
                   ) : (
                     <div className="catalog-empty" style={{ color: "var(--on-accent)", opacity: 0.7 }}>
-                      Sin fuentes
+                      {t("explore.noSources")}
                     </div>
                   )}
                 </div>
@@ -3248,7 +3249,7 @@ export function InfoView() {
               type="button"
               className="ghost"
               id="source-tools"
-              title="Herramientas de catálogo"
+              title={t("explore.catalogTools")}
               disabled={!!catalogJob}
               onClick={() => {
                 setSourceToolsAction("update_one");
@@ -3264,7 +3265,7 @@ export function InfoView() {
               <input
                 id="catalog-q"
                 type="text"
-                placeholder="Buscar título..."
+                placeholder={t("explore.searchTitle")}
                 autoComplete="off"
                 autoCapitalize="off"
                 autoCorrect="off"
@@ -3284,7 +3285,7 @@ export function InfoView() {
                 className="search-clear"
                 id="catalog-clear"
                 hidden={!catalogText.trim()}
-                title="Limpiar"
+                title={t("common.clear")}
                 onClick={clearCatalogFilter}
               >
                 <Icon name="x" className="ico ico-sm" />
@@ -3294,9 +3295,9 @@ export function InfoView() {
         </div>
         <div className="search-mode-bar">
           <span>
-            Modo:{" "}
+            {t("explore.mode")}{" "}
             <strong id="catalog-mode-label">
-              {advFilterApplied ? "Avanzada" : "Individual"}
+              {advFilterApplied ? t("explore.advancedMode") : t("explore.individualMode")}
             </strong>
           </span>
           <div className="search-mode-right">
@@ -3304,7 +3305,7 @@ export function InfoView() {
               type="button"
               className="ghost ghost-sm"
               id="catalog-clear-adv"
-              title="Quitar filtro"
+              title={t("explore.removeFilter")}
               onClick={clearAllFilters}
             >
               <Icon name="filterOff" className="ico ico-sm" />
@@ -3328,7 +3329,7 @@ export function InfoView() {
                   type="button"
                   className="url-paste"
                   id="url-paste"
-                  title="Pegar enlace o anticlick"
+                  title={t("explore.pasteTitle")}
                   onClick={() => void pasteUrlFromClipboard()}
                 >
                   <Icon name="clipboard" className="ico ico-sm" />
@@ -3338,7 +3339,7 @@ export function InfoView() {
                   id="url"
                   type="text"
                   inputMode="url"
-                  placeholder="Pega enlace o anticlick…"
+                  placeholder={t("explore.pastePh")}
                   autoComplete="off"
                   autoCapitalize="off"
                   autoCorrect="off"
@@ -3355,7 +3356,7 @@ export function InfoView() {
                   className="url-clear"
                   id="url-clear"
                   hidden={!urlInput.trim()}
-                  title="Limpiar"
+                  title={t("common.clear")}
                   onClick={() => setUrlInput("")}
                 >
                   <Icon name="x" className="ico ico-sm" />
@@ -3364,7 +3365,7 @@ export function InfoView() {
                   type="button"
                   className="url-go"
                   id="load"
-                  title="Cargar"
+                  title={t("explore.load")}
                   disabled={loadBtnDisabled || !urlInput.trim()}
                   onClick={() => void loadMangaInfo()}
                 >
@@ -3377,14 +3378,14 @@ export function InfoView() {
               <div className="chapters-tex" aria-hidden="true" />
               <div className="chapters-head" id="chapters-head" hidden={!chaptersHasManga}>
                 <div className="chapters-head-left">
-                  <span className="chapters-label">Capítulos</span>
+                  <span className="chapters-label">{t("explore.chapters")}</span>
                   <span className="chapters-meta" id="chapters-available" hidden={!chaptersHasManga}>
-                    {manga ? `${manga.chapters.length} disponibles` : ""}
+                    {manga ? t("explore.available", { n: manga.chapters.length }) : ""}
                   </span>
                 </div>
                 <div className="chapters-head-right">
                   <span className="sel-count" id="count" hidden={!chaptersHasManga}>
-                    {manga ? `${selected.size} seleccionados` : ""}
+                    {manga ? t("explore.selectedCount", { n: selected.size }) : ""}
                   </span>
                   <button
                     type="button"
@@ -3410,7 +3411,7 @@ export function InfoView() {
               type="button"
               className="info-sidebar-notch"
               id="info-sidebar-notch"
-              title={infoSidebarCollapsed ? "Mostrar panel" : "Ocultar panel"}
+              title={infoSidebarCollapsed ? t("explore.showPanel") : t("explore.hidePanel")}
               aria-expanded={!infoSidebarCollapsed}
               hidden={hideInfo || (!manga && !infoPanelOpen)}
               onClick={() => setInfoSidebarCollapsed((c) => !c)}
@@ -3430,7 +3431,7 @@ export function InfoView() {
                 <div className="cover-frame">
                   <img
                     id="cover-img"
-                    alt="portada"
+                    alt={t("explore.coverAlt")}
                     src={coverSrc}
                     className={[
                       coverIsDefault ? "is-default" : "",
@@ -3442,7 +3443,7 @@ export function InfoView() {
                     onError={handleCoverImgError}
                   />
                   <div className="cover-placeholder" id="cover-ph" hidden>
-                    Sin portada
+                    {t("explore.noCover")}
                   </div>
                 </div>
                 <div>
@@ -3461,7 +3462,7 @@ export function InfoView() {
                     disabled={!mangaUrl || !!infoInaccessible}
                     onClick={() => void handleOnlineClick()}
                   >
-                    <Icon name="external" className="ico ico-sm" /> Leer en línea
+                    <Icon name="external" className="ico ico-sm" /> {t("explore.readOnline")}
                   </button>
                   <button
                     type="button"
@@ -3472,7 +3473,7 @@ export function InfoView() {
                   >
                     <Icon name={isFavorite ? "heartSolid" : "heart"} className="ico ico-sm" />
                     <span id="fav-label">
-                      {isFavorite ? "Quitar de favoritos" : "Añadir a favoritos"}
+                      {isFavorite ? t("explore.removeFav") : t("explore.addFav")}
                     </span>
                   </button>
                 </div>
@@ -3488,7 +3489,7 @@ export function InfoView() {
                   ))}
                   {sidebarRows.summary ? (
                     <div className="info-summary">
-                      <h3 className="info-summary-title">Sinopsis</h3>
+                      <h3 className="info-summary-title">{t("explore.synopsis")}</h3>
                       <div className="info-summary-text">{sidebarRows.summary}</div>
                     </div>
                   ) : null}
@@ -3506,8 +3507,8 @@ export function InfoView() {
           <div className="filter-panel" id="filter-panel" hidden={infoMode !== "filter"}>
             <header className="filter-head">
               <div>
-                <div className="filter-eyebrow">Búsqueda avanzada</div>
-                <h1 className="filter-title">Filtro</h1>
+                <div className="filter-eyebrow">{t("explore.advanced")}</div>
+                <h1 className="filter-title">{t("explore.filterTitle")}</h1>
               </div>
               <div className="filter-head-meta">
                 <Icon name="filter" className="ico ico-sm" />
@@ -3515,7 +3516,7 @@ export function InfoView() {
                   <span className="filter-active-n" id="filter-active-count">
                     {filterActiveCount}
                   </span>{" "}
-                  filtros activos
+                  {t("explore.activeFilters")}
                 </span>
               </div>
             </header>
@@ -3526,25 +3527,25 @@ export function InfoView() {
                   <div className="filter-card-head">
                     <div className="filter-card-title">
                       <Icon name="tag" className="ico ico-sm" />
-                      <h2>Géneros</h2>
+                      <h2>{t("explore.genres")}</h2>
                       <Icon
                         name="about"
                         className="filter-hint ico ico-sm"
-                        title={FILTER_CUSTOM_HINT}
+                        title={t("filterHint")}
                       />
                     </div>
                     <div className="filter-legend" aria-hidden="true">
                       <span className="filter-legend-item">
                         <span className="filter-legend-dot inc" />
-                        Incluir
+                        {t("explore.include")}
                       </span>
                       <span className="filter-legend-item">
                         <span className="filter-legend-dot exc" />
-                        Excluir
+                        {t("explore.exclude")}
                       </span>
                     </div>
                   </div>
-                  <div className="filter-genres" id="filter-genres" role="group" aria-label="Géneros">
+                  <div className="filter-genres" id="filter-genres" role="group" aria-label={t("explore.genres")}>
                     {DEFAULT_GENRES.map((g) => {
                       const state = advFilter.genres[g.id] ?? "ignore";
                       return (
@@ -3555,35 +3556,35 @@ export function InfoView() {
                           data-genre={g.id}
                           title={
                             state === "include"
-                              ? "Incluir"
+                              ? t("explore.include")
                               : state === "exclude"
-                                ? "Excluir"
-                                : "No importa (clic para cambiar)"
+                                ? t("explore.exclude")
+                                : t("explore.genreIgnore")
                           }
                           onClick={() => cycleGenre(g.id)}
                         >
                           <span className="dot" aria-hidden="true" />
-                          {g.label}
+                          {genreLabel(g.id)}
                         </button>
                       );
                     })}
                   </div>
                   <div className="filter-extra">
                     <label className="filter-extra-label" id="filter-custom-label" htmlFor="filter-custom">
-                      Géneros extra
+                      {t("explore.extraGenres")}
                     </label>
                     <input
                       id="filter-custom"
                       className="st-field"
                       type="text"
-                      placeholder="Ej.: Aventura, !Ecchi, Comedia"
+                      placeholder={t("explore.extraPh")}
                       autoComplete="off"
                       spellCheck={false}
                       value={advFilter.customGenres}
                       onChange={(ev) => updateFilterField("customGenres", ev.target.value)}
                     />
                     <div className="filter-extra-hint">
-                      Antepón <code>!</code> para excluir un género
+                      {t("explore.extraHint")}
                     </div>
                   </div>
                 </section>
@@ -3592,50 +3593,50 @@ export function InfoView() {
                   <div className="filter-card-head">
                     <div className="filter-card-title">
                       <Icon name="text" className="ico ico-sm" />
-                      <h2>Detalles</h2>
+                      <h2>{t("explore.details")}</h2>
                     </div>
                   </div>
                   <div className="filter-details">
-                    <label htmlFor="filter-title">Título</label>
+                    <label htmlFor="filter-title">{t("explore.titleField")}</label>
                     <div className="fl-row">
                       <input
                         id="filter-title"
                         className="st-field"
                         type="text"
-                        placeholder="Parte del título"
+                        placeholder={t("explore.titlePh")}
                         autoComplete="off"
                         spellCheck={false}
                         value={advFilter.title}
                         onChange={(ev) => updateFilterField("title", ev.target.value)}
                       />
                     </div>
-                    <label htmlFor="filter-authors">Autor</label>
+                    <label htmlFor="filter-authors">{t("explore.author")}</label>
                     <div className="fl-row">
                       <input
                         id="filter-authors"
                         className="st-field"
                         type="text"
-                        placeholder="Nombre del autor"
+                        placeholder={t("explore.authorPh")}
                         autoComplete="off"
                         spellCheck={false}
                         value={advFilter.authors}
                         onChange={(ev) => updateFilterField("authors", ev.target.value)}
                       />
                     </div>
-                    <label htmlFor="filter-artists">Artista</label>
+                    <label htmlFor="filter-artists">{t("explore.artist")}</label>
                     <div className="fl-row">
                       <input
                         id="filter-artists"
                         className="st-field"
                         type="text"
-                        placeholder="Nombre del artista"
+                        placeholder={t("explore.artistPh")}
                         autoComplete="off"
                         spellCheck={false}
                         value={advFilter.artists}
                         onChange={(ev) => updateFilterField("artists", ev.target.value)}
                       />
                     </div>
-                    <label htmlFor="filter-status">Estado</label>
+                    <label htmlFor="filter-status">{t("explore.status")}</label>
                     <div className="fl-row">
                       <div className="filter-select-wrap">
                         <select
@@ -3649,21 +3650,21 @@ export function InfoView() {
                             )
                           }
                         >
-                          <option value={0}>Completado</option>
-                          <option value={1}>En curso</option>
-                          <option value={2}>En pausa</option>
-                          <option value={3}>Cancelado</option>
-                          <option value={4}>Sin filtrar</option>
+                          <option value={0}>{t("mangaStatus.completed")}</option>
+                          <option value={1}>{t("mangaStatus.ongoing")}</option>
+                          <option value={2}>{t("mangaStatus.paused")}</option>
+                          <option value={3}>{t("mangaStatus.cancelled")}</option>
+                          <option value={4}>{t("mangaStatus.unfiltered")}</option>
                         </select>
                       </div>
                     </div>
-                    <label htmlFor="filter-summary">Sinopsis</label>
+                    <label htmlFor="filter-summary">{t("explore.summary")}</label>
                     <div className="fl-row">
                       <input
                         id="filter-summary"
                         className="st-field"
                         type="text"
-                        placeholder="Texto en la sinopsis"
+                        placeholder={t("explore.summaryPh")}
                         autoComplete="off"
                         spellCheck={false}
                         value={advFilter.summary}
@@ -3675,7 +3676,7 @@ export function InfoView() {
 
                 <div className="filter-col filter-col-side">
                   <section className="filter-card">
-                    <h2 className="filter-card-label">Coincidencia de géneros</h2>
+                    <h2 className="filter-card-label">{t("explore.genreMatch")}</h2>
                     <label className="opt-row">
                       <input
                         type="radio"
@@ -3687,8 +3688,8 @@ export function InfoView() {
                       />
                       <span className="radio" aria-hidden="true" />
                       <div>
-                        <div className="opt-row-title">Cualquiera de los marcados</div>
-                        <div className="opt-row-desc">Coincide con al menos uno</div>
+                        <div className="opt-row-title">{t("explore.anyMarked")}</div>
+                        <div className="opt-row-desc">{t("explore.anyMarkedDesc")}</div>
                       </div>
                     </label>
                     <label className="opt-row">
@@ -3702,18 +3703,18 @@ export function InfoView() {
                       />
                       <span className="radio" aria-hidden="true" />
                       <div>
-                        <div className="opt-row-title">Todos los marcados</div>
-                        <div className="opt-row-desc">Debe cumplir todos</div>
+                        <div className="opt-row-title">{t("explore.allMarked")}</div>
+                        <div className="opt-row-desc">{t("explore.allMarkedDesc")}</div>
                       </div>
                     </label>
                   </section>
 
                   <section className="filter-card">
-                    <h2 className="filter-card-label">Opciones</h2>
+                    <h2 className="filter-card-label">{t("explore.options")}</h2>
                     <label className="opt-row opt-row-switch">
                       <div>
-                        <div className="opt-row-title">Solo mangas nuevos</div>
-                        <div className="opt-row-desc">Recién añadidos al catálogo</div>
+                        <div className="opt-row-title">{t("explore.onlyNew")}</div>
+                        <div className="opt-row-desc">{t("explore.onlyNewDesc")}</div>
                       </div>
                       <span className="st-switch">
                         <input
@@ -3729,8 +3730,8 @@ export function InfoView() {
                     </label>
                     <label className="opt-row opt-row-switch">
                       <div>
-                        <div className="opt-row-title">Buscar en todas las fuentes</div>
-                        <div className="opt-row-desc">Ignora la fuente seleccionada</div>
+                        <div className="opt-row-title">{t("explore.allSources")}</div>
+                        <div className="opt-row-desc">{t("explore.allSourcesDesc")}</div>
                       </div>
                       <span className="st-switch">
                         <input
@@ -3746,8 +3747,8 @@ export function InfoView() {
                     </label>
                     <label className="opt-row opt-row-switch">
                       <div>
-                        <div className="opt-row-title">Usar expresión regular</div>
-                        <div className="opt-row-desc">Patrones avanzados en los campos de texto</div>
+                        <div className="opt-row-title">{t("explore.regex")}</div>
+                        <div className="opt-row-desc">{t("explore.regexDesc")}</div>
                       </div>
                       <span className="st-switch">
                         <input
@@ -3768,13 +3769,13 @@ export function InfoView() {
 
             <div className="filter-actions">
               <button type="button" className="btn" id="filter-apply" onClick={applyAdvFilter}>
-                <Icon name="filter" className="ico ico-sm" /> Aplicar filtro
+                <Icon name="filter" className="ico ico-sm" /> {t("explore.applyFilter")}
               </button>
               <button type="button" className="secondary" id="filter-remove" onClick={removeAdvFilter}>
-                Quitar filtro
+                {t("explore.removeFilter")}
               </button>
               <button type="button" className="secondary" id="filter-reset" onClick={resetAdvFilterForm}>
-                Reiniciar
+                {t("explore.reset")}
               </button>
               <div className="filter-actions-spacer" />
               <button
@@ -3783,7 +3784,7 @@ export function InfoView() {
                 id="filter-back"
                 onClick={() => setInfoMode("search")}
               >
-                <Icon name="arrowLeft" className="ico ico-sm" /> Regresar
+                <Icon name="arrowLeft" className="ico ico-sm" /> {t("explore.back")}
               </button>
             </div>
           </div>
@@ -3791,13 +3792,13 @@ export function InfoView() {
 
         <div className="action-bar">
           <div className="action-path">
-            <span className="action-path-label">Guardar en</span>
+            <span className="action-path-label">{t("explore.saveTo")}</span>
             <div className="path-field">
               <input
                 id="path-input"
                 type="text"
                 readOnly
-                placeholder="Sin carpeta de salida"
+                placeholder={t("explore.noOutput")}
                 autoComplete="off"
                 value={outputDir}
               />
@@ -3805,21 +3806,21 @@ export function InfoView() {
                 type="button"
                 className="path-browse"
                 id="pick"
-                title="Examinar…"
+                title={t("explore.browseEllipsis")}
                 onClick={() => void handlePickOutputDir()}
               >
                 <Icon name="folder" className="ico ico-sm" />
               </button>
             </div>
           </div>
-          <label className="action-check" title="Encolar sin iniciar el worker">
+          <label className="action-check" title={t("explore.queueWithoutStart")}>
             <input
               type="checkbox"
               id="task-stopped"
               checked={taskStopped}
               onChange={(e) => setTaskStopped(e.target.checked)}
             />{" "}
-            Tarea detenida
+            {t("explore.taskStopped")}
           </label>
           <div className="action-btns">
             <button
@@ -3827,10 +3828,10 @@ export function InfoView() {
               className="btn-split"
               id="btn-split"
               disabled={!manga || selected.size < 2 || enqueueBusy || splitBusy}
-              title="Partir la selección en N tareas de cola"
+              title={t("explore.splitN")}
               onClick={() => void handleSplitDownload()}
             >
-              <Icon name="split" className="ico ico-sm" /> Dividir descarga
+              <Icon name="split" className="ico ico-sm" /> {t("explore.splitDownload")}
             </button>
             <button
               type="button"
@@ -3842,11 +3843,11 @@ export function InfoView() {
             >
               {enqueueBusy ? (
                 <>
-                  <span className="spinner spinner-sm" aria-hidden /> Encolando…
+                  <span className="spinner spinner-sm" aria-hidden /> {t("explore.enqueueing")}
                 </>
               ) : (
                 <>
-                  <Icon name="download" className="ico ico-sm" /> Descargar
+                  <Icon name="download" className="ico ico-sm" /> {t("explore.download")}
                 </>
               )}
             </button>
@@ -3869,19 +3870,19 @@ export function InfoView() {
           >
             <header className="info-modal-head">
               <h2 id="source-tools-title" className="info-modal-title">
-                Catálogo
+                {t("explore.catalogTitle")}
               </h2>
               <button
                 type="button"
                 className="ghost"
-                title="Cerrar"
+                title={t("common.close")}
                 onClick={() => setSourceToolsOpen(false)}
               >
                 <Icon name="x" className="ico" />
               </button>
             </header>
             <div className="info-modal-body">
-              <div className="catalog-tools-radios" role="radiogroup" aria-label="Acción de catálogo">
+              <div className="catalog-tools-radios" role="radiogroup" aria-label={t("explore.catalogAction")}>
                 <div className="catalog-tools-group">
                   <label
                     className={`catalog-tools-radio${sourceToolsAction === "update_one" ? " is-on" : ""}`}
@@ -3894,7 +3895,7 @@ export function InfoView() {
                       onChange={() => setSourceToolsAction("update_one")}
                     />
                     <span className="catalog-tools-radio-mark" aria-hidden="true" />
-                    <span>Actualizar lista de manga</span>
+                    <span>{t("explore.updateList")}</span>
                   </label>
                   <label
                     className={`catalog-tools-radio${sourceToolsAction === "fetch_one" ? " is-on" : ""}`}
@@ -3907,7 +3908,7 @@ export function InfoView() {
                       onChange={() => setSourceToolsAction("fetch_one")}
                     />
                     <span className="catalog-tools-radio-mark" aria-hidden="true" />
-                    <span>Descargar la lista de manga desde el servidor FMD</span>
+                    <span>{t("explore.fetchOne")}</span>
                   </label>
                 </div>
                 <div className="catalog-tools-group is-split">
@@ -3922,7 +3923,7 @@ export function InfoView() {
                       onChange={() => setSourceToolsAction("update_all")}
                     />
                     <span className="catalog-tools-radio-mark" aria-hidden="true" />
-                    <span>Actualizar todas las listas inmediatamente</span>
+                    <span>{t("explore.updateAll")}</span>
                   </label>
                   <label
                     className={`catalog-tools-radio${sourceToolsAction === "fetch_all" ? " is-on" : ""}`}
@@ -3935,7 +3936,7 @@ export function InfoView() {
                       onChange={() => setSourceToolsAction("fetch_all")}
                     />
                     <span className="catalog-tools-radio-mark" aria-hidden="true" />
-                    <span>Descargar todas las listas desde el servidor FMD inmediatamente</span>
+                    <span>{t("explore.fetchAll")}</span>
                   </label>
                 </div>
               </div>
@@ -3946,7 +3947,7 @@ export function InfoView() {
                 className="info-modal-btn"
                 onClick={() => setSourceToolsOpen(false)}
               >
-                Cerrar
+                {t("common.close")}
               </button>
               <button
                 type="button"
@@ -3965,17 +3966,17 @@ export function InfoView() {
                     if (mode === "fetch") {
                       const name =
                         scope === "one"
-                          ? currentModule?.name || "esta fuente"
-                          : "todos los sitios activos";
+                          ? currentModule?.name || t("explore.thisSource")
+                          : t("explore.allActiveSites");
                       const msg =
                         scope === "one"
-                          ? `Se reemplazará por completo el catálogo local de ${name}. ¿Continuar?`
-                          : `Se reemplazarán los catálogos locales de ${name}. ¿Continuar?`;
+                          ? t("explore.replaceOne", { name })
+                          : t("explore.replaceAll", { name });
                       const ok = await appConfirm({
-                        title: "Descargar catálogo",
+                        title: t("explore.fetchCatalog"),
                         message: msg,
-                        okLabel: "Continuar",
-                        cancelLabel: "Cancelar",
+                        okLabel: t("common.continue"),
+                        cancelLabel: t("common.cancel"),
                       });
                       if (!ok) return;
                     }
@@ -3988,7 +3989,7 @@ export function InfoView() {
                   })();
                 }}
               >
-                Aplicar
+                {t("explore.apply")}
               </button>
             </footer>
           </div>
@@ -4011,7 +4012,7 @@ export function InfoView() {
           >
             {catalogCtxMenu.isBulk ? (
               <div className="catalog-ctx-title">
-                {`${catalogCtxMenu.bulkCount} títulos seleccionados`}
+                {t("explore.selectedTitles", { n: catalogCtxMenu.bulkCount })}
               </div>
             ) : null}
             {(catalogCtxMenu.isBulk
@@ -4019,7 +4020,7 @@ export function InfoView() {
                   {
                     id: "dl-all",
                     icon: "download" as IconName,
-                    label: `Descargar todo (${catalogCtxMenu.bulkCount})`,
+                    label: t("explore.downloadAllN", { n: catalogCtxMenu.bulkCount }),
                     hint: "Ctrl+D",
                     onClick: () =>
                       void downloadAllFromCatalogBulk([
@@ -4029,13 +4030,13 @@ export function InfoView() {
                   {
                     id: "fav",
                     icon: "heart" as IconName,
-                    label: `Agregar a favoritos (${catalogCtxMenu.bulkCount})`,
+                    label: t("explore.addFavN", { n: catalogCtxMenu.bulkCount }),
                     onClick: () => void addFavoritesFromCatalogBulk(),
                   },
                   {
                     id: "remove",
                     icon: "x" as IconName,
-                    label: `Quitar de la lista (${catalogCtxMenu.bulkCount})`,
+                    label: t("explore.removeFromListN", { n: catalogCtxMenu.bulkCount }),
                     hint: "Supr",
                     sep: true,
                     danger: true,
@@ -4049,7 +4050,7 @@ export function InfoView() {
                   {
                     id: "view",
                     icon: "about" as IconName,
-                    label: "Ver información",
+                    label: t("explore.viewInfo"),
                     onClick: () => {
                       const entry = catalogCtxMenu.entry;
                       setCatalogCtxMenu(null);
@@ -4059,7 +4060,7 @@ export function InfoView() {
                   {
                     id: "dl-all",
                     icon: "download" as IconName,
-                    label: "Descargar todo",
+                    label: t("explore.downloadAll"),
                     hint: "Ctrl+D",
                     sep: true,
                     onClick: () => {
@@ -4072,8 +4073,8 @@ export function InfoView() {
                     id: "fav",
                     icon: (catalogCtxMenu.isFav ? "heartSolid" : "heart") as IconName,
                     label: catalogCtxMenu.isFav
-                      ? "Quitar de favoritos"
-                      : "Agregar a favoritos",
+                      ? t("explore.removeFav")
+                      : t("explore.addToFav"),
                     onClick: () => {
                       if (catalogCtxMenu.isFav) {
                         void removeFavoriteFromCatalog(
@@ -4088,7 +4089,7 @@ export function InfoView() {
                   {
                     id: "remove",
                     icon: "x" as IconName,
-                    label: "Quitar de la lista",
+                    label: t("explore.removeFromList"),
                     hint: "Supr",
                     sep: true,
                     danger: true,
@@ -4142,24 +4143,24 @@ export function InfoView() {
           >
             <header className="info-split-head">
               <h2 id="split-dl-title" className="info-modal-title">
-                Dividir en varias descargas
+                {t("explore.splitInto")}
               </h2>
               <p className="info-split-sub">
-                {splitPrompt.chapters.length} capítulos seleccionados
-                {manga?.title ? ` de ${manga.title}` : ""}
+                {t("explore.splitSelected", { n: splitPrompt.chapters.length })}
+                {manga?.title ? t("explore.splitOf", { title: manga.title }) : ""}
               </p>
             </header>
             <div className="info-modal-body info-split-body">
               <div className="info-split-row">
                 <label className="info-split-label" htmlFor="split-dl-count">
-                  Número de tareas
+                  {t("explore.splitTasks")}
                 </label>
                 <div className="info-split-stepper st-num-wrap">
                   <div className="st-stepper">
                     <button
                       type="button"
                       className="st-stepper-btn"
-                      aria-label="Menos"
+                      aria-label={t("explore.less")}
                       disabled={splitBusy || splitPrompt.count <= 2}
                       onClick={() =>
                         setSplitPrompt((prev) =>
@@ -4202,7 +4203,7 @@ export function InfoView() {
                     <button
                       type="button"
                       className="st-stepper-btn"
-                      aria-label="Más"
+                      aria-label={t("explore.more")}
                       disabled={
                         splitBusy ||
                         splitPrompt.count >= splitPrompt.chapters.length
@@ -4227,8 +4228,7 @@ export function InfoView() {
                 </div>
               </div>
               <p className="info-split-hint">
-                Cada tarea se descarga por separado y aparece como un grupo
-                propio en Descargas.
+                {t("explore.splitHint2")}
               </p>
             </div>
             <footer className="info-modal-foot">
@@ -4238,7 +4238,7 @@ export function InfoView() {
                 disabled={splitBusy}
                 onClick={() => setSplitPrompt(null)}
               >
-                Cancelar
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -4249,10 +4249,10 @@ export function InfoView() {
               >
                 {splitBusy ? (
                   <>
-                    <span className="spinner spinner-sm" aria-hidden /> Dividiendo…
+                    <span className="spinner spinner-sm" aria-hidden /> {t("explore.splitting")}
                   </>
                 ) : (
-                  "Dividir"
+                  t("explore.split")
                 )}
               </button>
             </footer>

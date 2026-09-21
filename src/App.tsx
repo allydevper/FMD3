@@ -5,6 +5,7 @@ import { ICO } from "./icons";
 import { AppConfirmProvider, appConfirm } from "./components/AppConfirm";
 import { AppToastProvider } from "./components/AppToast";
 import { AppProvider, useApp } from "./context/AppContext";
+import { t, useLanguage } from "./i18n";
 import type { NavId } from "./types";
 import * as api from "./api/tauri";
 import { DownloadsView } from "./views/DownloadsView";
@@ -14,12 +15,11 @@ import { OptionsView } from "./views/OptionsView";
 import { InfoView } from "./views/info/InfoView";
 import "./styles/index.css";
 
-const NAV_ITEMS: { id: NavId; label: string; icon: keyof typeof ICO; title: string }[] = [
-  { id: "downloads", label: "Descargas", icon: "download", title: "Descargas" },
-  // El id sigue siendo "info" (NavId, data-nav, CSS); solo cambia la etiqueta.
-  { id: "info", label: "Explorar", icon: "info", title: "Explorar" },
-  { id: "favorites", label: "Favoritos", icon: "heart", title: "Favoritos" },
-  { id: "about", label: "Sobre", icon: "about", title: "Sobre" },
+const NAV_ITEMS: { id: NavId; icon: keyof typeof ICO; labelKey: string }[] = [
+  { id: "downloads", icon: "download", labelKey: "nav.downloads" },
+  { id: "info", icon: "info", labelKey: "nav.explore" },
+  { id: "favorites", icon: "heart", labelKey: "nav.favorites" },
+  { id: "about", icon: "about", labelKey: "nav.about" },
 ];
 
 function LogDrawer() {
@@ -51,10 +51,10 @@ function ExitConfirmBridge() {
       void (async () => {
         try {
           const ok = await appConfirm({
-            title: "Confirmar salida",
-            message: "¿Seguro que deseas salir de FMD3?",
-            okLabel: "Salir",
-            cancelLabel: "Cancelar",
+            title: t("exit.title"),
+            message: t("exit.message"),
+            okLabel: t("exit.ok"),
+            cancelLabel: t("common.cancel"),
           });
           if (cancelled) {
             await api.appCancelExit();
@@ -81,6 +81,7 @@ function ExitConfirmBridge() {
 }
 
 function Shell() {
+  useLanguage();
   const {
     activeNav,
     setActiveNav,
@@ -111,7 +112,7 @@ function Shell() {
         if (cancelled) return;
         setModules(mods);
         // Fuente/módulo: InfoView restaura ui.selected_module; no pisar aquí.
-        log("DB lista (favoritos/cola en AppData/FMD3).", "ok");
+        log(t("log.dbReady"), "ok");
       } catch (e) {
         log(String(e), "err");
       }
@@ -146,18 +147,18 @@ function Shell() {
         </filter>
       </svg>
       <div className="shell-body">
-        <nav className="nav-rail" aria-label="Principal">
+        <nav className="nav-rail" aria-label={t("nav.main")}>
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
               type="button"
               className={`nav-item${activeNav === item.id ? " active" : ""}`}
               data-nav={item.id}
-              title={item.title}
+              title={t(item.labelKey)}
               onClick={() => setActiveNav(item.id)}
             >
               <Icon name={item.icon} className="ico ico-lg" />
-              <span>{item.label}</span>
+              <span>{t(item.labelKey)}</span>
             </button>
           ))}
           <div className="nav-spacer" />
@@ -165,7 +166,7 @@ function Shell() {
             type="button"
             className={`nav-item icon-only${activeNav === "options" ? " active" : ""}`}
             data-nav="options"
-            title={modulesPending ? "Opciones — hay módulos por actualizar" : "Opciones"}
+            title={modulesPending ? t("nav.optionsPending") : t("nav.options")}
             onClick={() =>
               modulesPending
                 ? openOptionsTab({ tab: "websites", sub: "mods" })
@@ -179,7 +180,7 @@ function Shell() {
             type="button"
             className="nav-item icon-only"
             id="theme-toggle"
-            title="Tema"
+            title={t("nav.theme")}
             onClick={toggleTheme}
           >
             <Icon name={darkTheme ? "sun" : "moon"} className="ico ico-lg" />
@@ -188,7 +189,7 @@ function Shell() {
             type="button"
             className={`nav-item icon-only${logOpen ? " is-on" : ""}`}
             id="log-toggle"
-            title="Log"
+            title={t("nav.log")}
             onClick={toggleLog}
           >
             <Icon name="terminal" className="ico ico-lg" />
@@ -206,7 +207,7 @@ function Shell() {
         </div>
       </div>
       <select id="module-sel" hidden>
-        <option value="">Auto</option>
+        <option value="">{t("common.auto")}</option>
       </select>
       </AppToastProvider>
       </AppConfirmProvider>

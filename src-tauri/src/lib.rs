@@ -1,6 +1,7 @@
 mod catalog;
 mod catalog_job;
 mod commands;
+mod i18n;
 mod cover_cache;
 mod db;
 mod db_import;
@@ -62,9 +63,9 @@ fn restore_main_window(app: &AppHandle) {
 }
 
 fn build_tray_icon(app: &AppHandle) -> Result<TrayIcon, String> {
-    let show_i = MenuItem::with_id(app, "show", "Mostrar", true, None::<&str>)
+    let show_i = MenuItem::with_id(app, "show", crate::i18n::t("Mostrar", "Show"), true, None::<&str>)
         .map_err(|e| e.to_string())?;
-    let quit_i = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)
+    let quit_i = MenuItem::with_id(app, "quit", crate::i18n::t("Salir", "Exit"), true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let menu = Menu::with_items(app, &[&show_i, &quit_i]).map_err(|e| e.to_string())?;
     let icon = app

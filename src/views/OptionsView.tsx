@@ -15,6 +15,7 @@ import { ICO } from "../icons";
 import { DEFAULT_USER_AGENT, PACK_EXT, SK } from "../constants";
 import * as api from "../api/tauri";
 import { useApp, type AppTheme } from "../context/AppContext";
+import { formatMb, localeTag, parseLanguage, t, useLanguage, type AppLanguage } from "../i18n";
 import type { HiddenEntry, LuaFileVersion, LuaRepoEntry } from "../types";
 import { runModulesGithubUpdate, summarizeCheck } from "../utils/modulesUpdate";
 
@@ -33,15 +34,15 @@ type OptTabId =
   | "websites";
 type SitesTabId = "list" | "mods";
 
-const OPTIONS_CATS: { id: OptTabId; label: string; icon: string }[] = [
-  { id: "general", label: "General", icon: ICO.settings },
-  { id: "view", label: "Vista", icon: ICO.layout },
-  { id: "downloads", label: "Descargas", icon: ICO.download },
-  { id: "network", label: "Red", icon: ICO.link },
-  { id: "saveto", label: "Guardar en", icon: ICO.folder },
-  { id: "updates", label: "Actualizaciones", icon: ICO.refresh },
-  { id: "hidden", label: "Papelera", icon: ICO.trash },
-  { id: "websites", label: "Sitios Web", icon: ICO.globe },
+const OPTIONS_CATS: { id: OptTabId; icon: string }[] = [
+  { id: "general", icon: ICO.settings },
+  { id: "view", icon: ICO.layout },
+  { id: "downloads", icon: ICO.download },
+  { id: "network", icon: ICO.link },
+  { id: "saveto", icon: ICO.folder },
+  { id: "updates", icon: ICO.refresh },
+  { id: "hidden", icon: ICO.trash },
+  { id: "websites", icon: ICO.globe },
 ];
 
 /** Papelera: tamaño de página del backend y alto de fila (lista virtual). */
@@ -49,13 +50,6 @@ const HIDDEN_PAGE = 200;
 const HIDDEN_ROW_H = 48;
 
 const PACK_FORMATS = ["none", "zip", "cbz", "pdf", "epub"] as const;
-const PACK_OPTIONS: { value: (typeof PACK_FORMATS)[number]; label: string }[] = [
-  { value: "none", label: "Ninguno" },
-  { value: "zip", label: "ZIP" },
-  { value: "cbz", label: "CBZ" },
-  { value: "pdf", label: "PDF" },
-  { value: "epub", label: "EPUB" },
-];
 
 const TOKENS_MANGA = ["%WEBSITE%", "%MANGA%", "%AUTHOR%", "%ARTIST%"];
 const TOKENS_CHAPTER = ["%WEBSITE%", "%MANGA%", "%CHAPTER%", "%AUTHOR%", "%ARTIST%", "%NUMBERING%"];
@@ -72,10 +66,9 @@ type RenameShape = {
 
 /* Atajos para las combinaciones habituales. Sin `\` ni `/` en los patrones:
    `apply_pattern` los pasa por `sanitize_filename`, que los elimina. */
-const RENAME_PRESETS: { id: string; label: string; shape: RenameShape }[] = [
+const RENAME_PRESETS: { id: string; shape: RenameShape }[] = [
   {
     id: "manga-chapter-page",
-    label: "Manga / Capítulo / página",
     shape: {
       mangaFolderOn: true,
       chapterFolderOn: true,
@@ -86,7 +79,6 @@ const RENAME_PRESETS: { id: string; label: string; shape: RenameShape }[] = [
   },
   {
     id: "manga-numbered-chapter-page",
-    label: "Manga / Nº - Capítulo / página",
     shape: {
       mangaFolderOn: true,
       chapterFolderOn: true,
@@ -97,7 +89,6 @@ const RENAME_PRESETS: { id: string; label: string; shape: RenameShape }[] = [
   },
   {
     id: "site-manga-chapter-page",
-    label: "Sitio - Manga / Capítulo / página",
     shape: {
       mangaFolderOn: true,
       chapterFolderOn: true,
@@ -108,7 +99,6 @@ const RENAME_PRESETS: { id: string; label: string; shape: RenameShape }[] = [
   },
   {
     id: "manga-chapter-in-filename",
-    label: "Manga / capítulo_página",
     shape: {
       mangaFolderOn: true,
       chapterFolderOn: false,
@@ -119,18 +109,27 @@ const RENAME_PRESETS: { id: string; label: string; shape: RenameShape }[] = [
   },
 ];
 
+function packOptions(): { value: (typeof PACK_FORMATS)[number]; label: string }[] {
+  return [
+    { value: "none", label: t("options.packNone") },
+    { value: "zip", label: "ZIP" },
+    { value: "cbz", label: "CBZ" },
+    { value: "pdf", label: "PDF" },
+    { value: "epub", label: "EPUB" },
+  ];
+}
+
 const RENAME_PRESET_CUSTOM = "custom";
+
+function renamePresetLabel(id: string): string {
+  if (id === RENAME_PRESET_CUSTOM) return t("common.custom");
+  return t(`options.renamePreset.${id}`);
+}
 
 const SITE_ROW_H = 31;
 const SITE_OVERSCAN = 10;
 const MOD_ROW_H = 32;
 const MOD_OVERSCAN = 10;
-
-function formatMb(bytes: number): string {
-  if (bytes <= 0) return "0 MB";
-  const mb = bytes / (1024 * 1024);
-  return mb < 0.1 ? "menos de 0,1 MB" : `${mb.toFixed(1).replace(".", ",")} MB`;
-}
 
 type OptionsFormState = {
   ua: string;
@@ -174,6 +173,7 @@ type OptionsFormState = {
   gotoFav: boolean;
   newDays: number;
   theme: AppTheme;
+  language: AppLanguage;
   afterFinish: string;
   trayMinimize: boolean;
   trayStart: boolean;
@@ -240,6 +240,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   gotoFav: false,
   newDays: 1,
   theme: "system",
+  language: "es",
   afterFinish: "none",
   trayMinimize: false,
   trayStart: false,
@@ -330,7 +331,7 @@ function deriveConvertTo(_convertTo: string, _pngAsJpeg: boolean, _webpAs: strin
 function patternMissingRequired(kind: "manga" | "chapter" | "page", pattern: string): string | null {
   const upper = pattern.toUpperCase();
   if (kind === "manga" && !upper.includes("%MANGA%")) {
-    return "Debe incluir al menos %MANGA%.";
+    return t("options.patNeedManga");
   }
   if (
     kind === "chapter" &&
@@ -338,10 +339,10 @@ function patternMissingRequired(kind: "manga" | "chapter" | "page", pattern: str
     !upper.includes("%NUMBERING%") &&
     !upper.includes("%CHAPTERINDEX%")
   ) {
-    return "Debe incluir %CHAPTER% o %NUMBERING%.";
+    return t("options.patNeedChapter");
   }
   if (kind === "page" && !upper.includes("%FILENAME%")) {
-    return "Debe incluir al menos %FILENAME%.";
+    return t("options.patNeedFile");
   }
   return null;
 }
@@ -406,13 +407,13 @@ function repoEntryToRow(e: LuaRepoEntry): ModRow {
       dateTitle: title,
       msg: e.pin.origin,
       updated: false,
-      badge: "Mi versión",
+      badge: t("options.badgeMine"),
       pinned: true,
       pinOrigin: e.pin.origin,
     };
   }
   if (flag === "new") {
-    badge = "Nuevo";
+    badge = t("options.badgeNew");
     updated = true;
   } else if (flag === "update") {
     badge = "Update";
@@ -439,15 +440,15 @@ function repoEntryToRow(e: LuaRepoEntry): ModRow {
 }
 
 function relDateFromUnix(sec: number | null | undefined): { when: string; title: string } {
-  if (sec == null || !Number.isFinite(sec)) return { when: "—", title: "" };
+  if (sec == null || !Number.isFinite(sec)) return { when: t("common.dash"), title: "" };
   const d = new Date(sec * 1000);
-  const title = d.toLocaleString();
+  const title = d.toLocaleString(localeTag());
   const days = Math.round((Date.now() - d.getTime()) / 86400000);
-  if (days <= 0) return { when: "hoy", title };
-  if (days === 1) return { when: "ayer", title };
-  if (days < 30) return { when: `hace ${days} días`, title };
-  if (days < 365) return { when: `hace ${Math.round(days / 30)} meses`, title };
-  return { when: `hace ${(days / 365).toFixed(1)} años`, title };
+  if (days <= 0) return { when: t("options.relToday"), title };
+  if (days === 1) return { when: t("options.relYesterday"), title };
+  if (days < 30) return { when: t("options.relDays", { n: days }), title };
+  if (days < 365) return { when: t("options.relMonths", { n: Math.round(days / 30) }), title };
+  return { when: t("options.relYears", { n: (days / 365).toFixed(1) }), title };
 }
 
 function buildSitesFlat(
@@ -557,7 +558,7 @@ function OptRow({
   return (
     <div
       className={`st-row${statusClass}`}
-      title={title ?? (status === "none" ? "Sin función" : status === "partial" ? "Incompleto" : undefined)}
+      title={title ?? (status === "none" ? t("options.stubNone") : status === "partial" ? t("options.stubPartial") : undefined)}
     >
       <div className="st-meta">
         <div className="st-label">{label}</div>
@@ -587,7 +588,7 @@ function Stepper({
 }) {
   return (
     <div className="st-stepper">
-      <button type="button" className="st-stepper-btn" aria-label="Menos" onClick={() => onChange(clampNum(value - 1, min, max))}>
+      <button type="button" className="st-stepper-btn" aria-label={t("common.less")} onClick={() => onChange(clampNum(value - 1, min, max))}>
         −
       </button>
       <input
@@ -601,7 +602,7 @@ function Stepper({
         onChange={(e) => onChange(clampNum(Number(e.target.value), min, max))}
       />
       {suffix ? <span className="st-stepper-suffix">{suffix}</span> : null}
-      <button type="button" className="st-stepper-btn" aria-label="Más" onClick={() => onChange(clampNum(value + 1, min, max))}>
+      <button type="button" className="st-stepper-btn" aria-label={t("common.more")} onClick={() => onChange(clampNum(value + 1, min, max))}>
         +
       </button>
     </div>
@@ -632,7 +633,7 @@ function SwitchRow({
   return (
     <label
       className={`st-row click${statusClass}`}
-      title={title ?? (status === "none" ? "Sin función" : status === "partial" ? "Incompleto" : undefined)}
+      title={title ?? (status === "none" ? t("options.stubNone") : status === "partial" ? t("options.stubPartial") : undefined)}
     >
       <div className="st-meta">
         <div className="st-label">
@@ -654,41 +655,6 @@ function SwitchRow({
         </span>
       </span>
     </label>
-  );
-}
-
-function StubSelectRow({
-  id,
-  label,
-  desc,
-  options,
-  defaultValue,
-}: {
-  id?: string;
-  label: string;
-  desc: string;
-  options: { value: string; label: string }[];
-  defaultValue: string;
-  onDirty?: () => void;
-}) {
-  const [value, setValue] = useState(defaultValue);
-  return (
-    <OptRow label={label} desc={desc} status="none">
-      <div className="st-select filter-select-wrap">
-        <select
-          id={id}
-          className="opt-stub"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        >
-          {options.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      </div>
-    </OptRow>
   );
 }
 
@@ -756,7 +722,7 @@ function BoundStepperRow({
 function TokenInsert({ tokens, onInsert }: { tokens: string[]; onInsert: (token: string) => void }) {
   return (
     <div className="st-token-insert">
-      <span className="st-token-insert-label">Insertar:</span>
+      <span className="st-token-insert-label">{t("options.insert")}</span>
       {tokens.map((t) => (
         <button key={t} type="button" className="st-token-chip" onClick={() => onInsert(t)}>
           {t}
@@ -779,6 +745,7 @@ export function OptionsView() {
     modules,
     refreshModules,
     setTheme,
+    setLanguage,
     refreshEnabledModules,
     enabledModuleIds,
     setFavAutoCheck,
@@ -789,6 +756,7 @@ export function OptionsView() {
     pendingOptionsTab,
     clearPendingOptionsTab,
   } = useApp();
+  useLanguage();
 
   const [optTab, setOptTab] = useState<OptTabId>("general");
   const [dirty, setDirty] = useState(false);
@@ -853,7 +821,7 @@ export function OptionsView() {
       .clearLogFile()
       .then(() => {
         setLogClearFlash("done");
-        log("Log borrado", "ok");
+        log(t("options.logDeleted"), "ok");
         if (logClearTimerRef.current != null) window.clearTimeout(logClearTimerRef.current);
         logClearTimerRef.current = window.setTimeout(() => {
           setLogClearFlash("idle");
@@ -875,10 +843,10 @@ export function OptionsView() {
     if (cacheClearFlash === "working") return;
     void (async () => {
       const ok = await appConfirm({
-        title: "Limpiar caché",
-        message: "¿Borrar info y portadas en caché?\n\nFavoritos, cola y catálogo no se tocan.",
-        okLabel: "Limpiar",
-        cancelLabel: "Cancelar",
+        title: t("options.cache.title"),
+        message: t("options.cache.message"),
+        okLabel: t("options.cache.button"),
+        cancelLabel: t("common.cancel"),
       });
       if (!ok) return;
       setCacheClearFlash("working");
@@ -983,6 +951,7 @@ export function OptionsView() {
         : themeRaw === "light" || themeRaw === "claro"
           ? "light"
           : "system";
+    const language = parseLanguage(await get(SK.LANG));
     const afterFinish =
       ((await get(SK.AFTER_FINISH)) || "none").toLowerCase() === "exit" ? "exit" : "none";
     const logOn = parseB(await get(SK.LOG_ON), false);
@@ -1065,6 +1034,7 @@ export function OptionsView() {
       gotoFav,
       newDays,
       theme,
+      language,
       afterFinish,
       logOn,
       logFile,
@@ -1152,6 +1122,7 @@ export function OptionsView() {
     await api.settingsSet(SK.UI_GOTO_FAV, boolStr(s.gotoFav));
     await api.settingsSet(SK.UI_NEW_DAYS, String(s.newDays));
     await api.settingsSet(SK.APP_THEME, s.theme);
+    await api.settingsSet(SK.LANG, s.language);
     await api.settingsSet(SK.AFTER_FINISH, s.afterFinish === "exit" ? "exit" : "none");
     await api.settingsSet(SK.LOG_ON, boolStr(s.logOn));
     await api.settingsSet(SK.LOG_FILE, s.logFile || "fmd.log");
@@ -1187,6 +1158,7 @@ export function OptionsView() {
       setOutputDir(dir);
     }
     setTheme(s.theme);
+    setLanguage(s.language);
     await refreshEnabledModules();
     await setFavAutoCheck(s.favIntervalOn);
     setDirty(false);
@@ -1198,8 +1170,10 @@ export function OptionsView() {
     }, 2200);
     log(
       enabled.length
-        ? `Ajustes guardados · ${enabled.length} sitio${enabled.length === 1 ? "" : "s"} activo${enabled.length === 1 ? "" : "s"}`
-        : "Ajustes guardados · ningún sitio activo",
+        ? enabled.length === 1
+          ? t("options.savedSites.one")
+          : t("options.savedSites.other", { n: enabled.length })
+        : t("options.savedSites.none"),
       "ok",
     );
     } catch (e) {
@@ -1209,7 +1183,7 @@ export function OptionsView() {
         setSaveFlash("idle");
         saveFlashTimerRef.current = undefined;
       }, 2800);
-      log(`No se pudieron guardar los ajustes: ${e}`, "err");
+      log(t("options.saveFailed", { err: String(e) }), "err");
     }
   }, [
     s,
@@ -1218,6 +1192,7 @@ export function OptionsView() {
     modules,
     siteOn,
     setTheme,
+    setLanguage,
     refreshEnabledModules,
     setFavAutoCheck,
     saveFlash,
@@ -1480,15 +1455,12 @@ export function OptionsView() {
         const stale = rows.filter((r) => !r.has_snapshot).length;
         await loadHidden(hiddenApplied);
         notifyCatalogChanged([...byModule.keys()]);
-        log(
-          n === 1 ? "1 título restaurado." : `${n} títulos restaurados.`,
-          "ok",
-        );
+        log(n === 1 ? t("options.restored.one") : t("options.restored.other", { n }), "ok");
         if (stale) {
           log(
             stale === 1
-              ? "1 título se ocultó antes de la papelera: volverá al actualizar la lista."
-              : `${stale} títulos se ocultaron antes de la papelera: volverán al actualizar la lista.`,
+              ? t("options.restoredStale.one")
+              : t("options.restoredStale.other", { n: stale }),
           );
         }
       } catch (e) {
@@ -1503,12 +1475,12 @@ export function OptionsView() {
   /** Restaura todo lo que coincida con el filtro actual (lo que se está viendo). */
   const restoreAllHidden = useCallback(async () => {
     if (!hiddenTotal || hiddenBusy) return;
-    const scope = hiddenApplied ? ` que coinciden con "${hiddenApplied}"` : "";
+    const scope = hiddenApplied ? t("options.restoreMatch", { q: hiddenApplied }) : "";
     const ok = await appConfirm({
-      title: "Restaurar de la papelera",
-      message: `Se restaurarán ${hiddenTotal} títulos${scope} a sus catálogos.\n\n¿Continuar?`,
-      okLabel: "Restaurar todo",
-      cancelLabel: "Cancelar",
+      title: t("options.restoreTitle"),
+      message: t("options.restoreAllMsg", { n: hiddenTotal, scope }),
+      okLabel: t("options.restoreAllOk"),
+      cancelLabel: t("common.cancel"),
     });
     if (!ok) return;
     setHiddenBusy(true);
@@ -1518,7 +1490,7 @@ export function OptionsView() {
       const n = await api.catalogUnhideAll(null, hiddenApplied);
       await loadHidden(hiddenApplied);
       notifyCatalogChanged(modules.map((m) => m.id));
-      log(n === 1 ? "1 título restaurado." : `${n} títulos restaurados.`, "ok");
+      log(n === 1 ? t("options.restored.one") : t("options.restored.other", { n }), "ok");
     } catch (e) {
       log(String(e), "err");
     } finally {
@@ -1647,7 +1619,7 @@ export function OptionsView() {
       setRepoEntries(list);
       setModsBackupBytes(bytes);
     } catch (e) {
-      log(`No se pudo listar módulos: ${e}`, "err");
+      log(t("options.listModsFailed", { err: String(e) }), "err");
     }
   }, [log]);
 
@@ -1657,11 +1629,11 @@ export function OptionsView() {
       const n = await api.modulesBackupClear();
       setModsBackupBytes(0);
       setModsBackupFlash("done");
-      log(`Copias de seguridad de módulos borradas (${n} puntos)`, "ok");
+      log(t("options.backupsCleared", { n }), "ok");
       window.setTimeout(() => setModsBackupFlash("idle"), 2400);
     } catch (e) {
       setModsBackupFlash("error");
-      log(`No se pudieron borrar las copias: ${e}`, "err");
+      log(t("options.backupsClearFailed", { err: String(e) }), "err");
       window.setTimeout(() => setModsBackupFlash("idle"), 2800);
     }
   }, [log]);
@@ -1777,7 +1749,7 @@ export function OptionsView() {
       await refreshModules();
       await loadRepoEntries();
     } catch (e) {
-      log(`No se pudo revisar módulos: ${e}`, "err");
+      log(t("options.checkModsFailed", { err: String(e) }), "err");
     } finally {
       setModsChecking(false);
     }
@@ -1795,25 +1767,28 @@ export function OptionsView() {
   const undoModulesUpdate = useCallback(async () => {
     if (modsChecking) return;
     const ok = await appConfirm({
-      title: "Deshacer actualización",
-      message:
-        "Se restaurará la versión anterior de cada archivo modificado en la última actualización. ¿Continuar?",
-      okLabel: "Deshacer",
-      cancelLabel: "Cancelar",
+      title: t("options.undoTitle"),
+      message: t("options.undoMsg"),
+      okLabel: t("options.undoOk"),
+      cancelLabel: t("common.cancel"),
     });
     if (!ok) return;
     setModsChecking(true);
     try {
       const r = await api.modulesUndo();
       log(
-        `Módulos restaurados: ${r.restored} · eliminados: ${r.removed} (${r.refreshed_count} cargados)`,
+        t("options.modsRestored", {
+          restored: r.restored,
+          removed: r.removed,
+          n: r.refreshed_count,
+        }),
         r.failed.length ? "err" : "ok",
       );
-      for (const f of r.failed.slice(0, 10)) log(`Módulos: ${f}`, "err");
+      for (const f of r.failed.slice(0, 10)) log(t("options.modsLine", { msg: f }), "err");
       await refreshModules();
       await loadRepoEntries();
     } catch (e) {
-      log(`No se pudo deshacer: ${e}`, "err");
+      log(t("options.undoFailed", { err: String(e) }), "err");
     } finally {
       setModsChecking(false);
     }
@@ -1823,19 +1798,19 @@ export function OptionsView() {
   const pinModuleFile = useCallback(
     async (path: string) => {
       const ok = await appConfirm({
-        title: "Usar mi versión",
-        message: `${path} dejará de actualizarse desde FMD2. Se conserva el archivo que ya tienes; la copia oficial queda en las copias de seguridad.`,
-        okLabel: "Usar mi versión",
-        cancelLabel: "Cancelar",
+        title: t("options.pinConfirmTitle"),
+        message: t("options.pinMsg", { path }),
+        okLabel: t("options.pin"),
+        cancelLabel: t("common.cancel"),
       });
       if (!ok) return;
       try {
         const r = await api.modulesPinKeep(path);
-        log(`${path}: ahora usa tu versión (${r.refreshed_count} módulos cargados)`, "ok");
+        log(t("options.pinnedOk", { path, n: r.refreshed_count }), "ok");
         await refreshModules();
         await loadRepoEntries();
       } catch (e) {
-        log(`No se pudo usar tu versión de ${path}: ${e}`, "err");
+        log(t("options.pinFailed", { path, err: String(e) }), "err");
       }
     },
     [refreshModules, loadRepoEntries, log],
@@ -1845,18 +1820,18 @@ export function OptionsView() {
   const unpinModuleFile = useCallback(
     async (path: string) => {
       const ok = await appConfirm({
-        title: "Volver al oficial",
-        message: `${path} volverá a actualizarse desde FMD2. Tu archivo no se toca ahora: la próxima revisión te ofrecerá la versión oficial y tú decides.`,
-        okLabel: "Volver al oficial",
-        cancelLabel: "Cancelar",
+        title: t("options.unpinConfirmTitle"),
+        message: t("options.unpinMsg", { path }),
+        okLabel: t("options.unpin"),
+        cancelLabel: t("common.cancel"),
       });
       if (!ok) return;
       try {
         await api.modulesUnpin(path);
-        log(`${path}: vuelve a seguir al oficial`, "ok");
+        log(t("options.unpinnedOk", { path }), "ok");
         await loadRepoEntries();
       } catch (e) {
-        log(`No se pudo volver al oficial en ${path}: ${e}`, "err");
+        log(t("options.unpinFailed", { path, err: String(e) }), "err");
       }
     },
     [loadRepoEntries, log],
@@ -1869,27 +1844,27 @@ export function OptionsView() {
       try {
         versions = await api.modulesHistory(path);
       } catch (e) {
-        log(`No se pudo leer el historial de ${path}: ${e}`, "err");
+        log(t("options.historyFailed", { path, err: String(e) }), "err");
         return;
       }
       if (!versions.length) {
         await appConfirm({
-          title: "Sin versiones anteriores",
-          message: `No hay copias guardadas de ${path}.`,
+          title: t("options.noHistoryTitle"),
+          message: t("options.noHistoryMsg", { path }),
           alert: true,
-          okLabel: "Entendido",
+          okLabel: t("common.understood"),
         });
         return;
       }
       const target = versions[0];
       const when = target.updated_at
         ? new Date(target.updated_at * 1000).toLocaleString()
-        : "fecha desconocida";
+        : t("options.unknownDate");
       const ok = await appConfirm({
-        title: "Revertir módulo",
-        message: `Restaurar ${path} a la versión guardada el ${when}.`,
-        okLabel: "Revertir",
-        cancelLabel: "Cancelar",
+        title: t("options.revertModTitle"),
+        message: t("options.revertMsg", { path, when }),
+        okLabel: t("options.revert"),
+        cancelLabel: t("common.cancel"),
         items: versions
           .slice(0, 20)
           .map(
@@ -1902,11 +1877,11 @@ export function OptionsView() {
       if (!ok) return;
       try {
         const r = await api.modulesRevert(path, target.content_id);
-        log(`${path} revertido (${r.refreshed_count} módulos cargados)`, "ok");
+        log(t("options.revertedOk", { path, n: r.refreshed_count }), "ok");
         await refreshModules();
         await loadRepoEntries();
       } catch (e) {
-        log(`No se pudo revertir ${path}: ${e}`, "err");
+        log(t("options.revertFailed", { path, err: String(e) }), "err");
       }
     },
     [refreshModules, loadRepoEntries, log],
@@ -1918,12 +1893,12 @@ export function OptionsView() {
     <section id="view-options" className="view" hidden={activeNav !== "options"}>
       <div className="options-shell">
         <header className="options-header">
-          <div className="options-eyebrow">Preferencias</div>
-          <h1 className="options-title">Configuración</h1>
+          <div className="options-eyebrow">{t("options.eyebrow")}</div>
+          <h1 className="options-title">{t("options.title")}</h1>
         </header>
 
         <div className="options-main">
-          <nav className="options-cats" role="tablist" aria-label="Categorías">
+          <nav className="options-cats" role="tablist" aria-label={t("options.catsAria")}>
             {OPTIONS_CATS.map((cat) => (
               <button
                 key={cat.id}
@@ -1934,7 +1909,7 @@ export function OptionsView() {
                 onClick={() => setOptTab(cat.id)}
               >
                 <Icon ico={cat.icon} className="ico ico-sm" />
-                <span>{cat.label}</span>
+                <span>{t(`options.cat.${cat.id}`)}</span>
               </button>
             ))}
           </nav>
@@ -1947,39 +1922,30 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.settings} className="ico ico-sm" />
-                      <h2>Aplicación</h2>
+                      <h2>{t("options.sectionApp")}</h2>
                     </div>
                     <div className="st-card">
-                      <StubSelectRow
-                        label="Idioma"
-                        desc="Idioma de la interfaz"
-                        defaultValue="en"
-                        onDirty={markDirty}
+                      <SelectRow
+                        label={t("options.language.label")}
+                        desc={t("options.language.desc")}
+                        value={s.language}
+                        onChange={(v) => update("language", parseLanguage(v))}
                         options={[
-                          { value: "de", label: "Deutsch" },
                           { value: "en", label: "English" },
                           { value: "es", label: "Español" },
-                          { value: "fr", label: "Français" },
-                          { value: "id_ID", label: "Bahasa Indonesia" },
-                          { value: "pl_PL", label: "Polski" },
-                          { value: "pt_BR", label: "Português (Brasil)" },
-                          { value: "ru_RU", label: "Русский" },
-                          { value: "tr_TR", label: "Türkçe" },
-                          { value: "zh", label: "中文" },
-                          { value: "el_GR", label: "Ελληνικά" },
                         ]}
                       />
                       <SelectRow
-                        label="Tema"
-                        desc="Apariencia clara, oscura o según el sistema"
+                        label={t("options.theme.label")}
+                        desc={t("options.theme.desc")}
                         value={s.theme}
                         onChange={(v) =>
                           update("theme", (v === "dark" || v === "light" || v === "system" ? v : "system") as AppTheme)
                         }
                         options={[
-                          { value: "system", label: "Sistema" },
-                          { value: "light", label: "Claro" },
-                          { value: "dark", label: "Oscuro" },
+                          { value: "system", label: t("options.theme.system") },
+                          { value: "light", label: t("options.theme.light") },
+                          { value: "dark", label: t("options.theme.dark") },
                         ]}
                       />
                       {/* FMD2 "After download finish" / LetFMDDo — oculto por ahora (casi no aporta
@@ -2004,51 +1970,51 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.minimize} className="ico ico-sm" />
-                      <h2>Sistema y bandeja</h2>
+                      <h2>{t("options.sectionTray")}</h2>
                     </div>
                     <div className="st-card">
                       <SwitchRow
                         id="opt-tray-start"
-                        label="Minimizar al iniciar"
-                        desc="Arranca en la bandeja del sistema"
+                        label={t("options.trayStart.label")}
+                        desc={t("options.trayStart.desc")}
                         checked={s.trayStart}
                         onChange={(v) => update("trayStart", v)}
                       />
                       <SwitchRow
                         id="opt-tray-minimize"
-                        label="Minimizar a la bandeja"
-                        desc="Al minimizar, se oculta en la bandeja"
+                        label={t("options.trayMinimize.label")}
+                        desc={t("options.trayMinimize.desc")}
                         checked={s.trayMinimize}
                         onChange={(v) => update("trayMinimize", v)}
                       />
-                      <SwitchRow id="opt-notify" label="Globo de notificación" desc="Aviso del sistema al terminar todos los capítulos en cola de un manga" checked={s.notify} onChange={(v) => update("notify", v)} />
+                      <SwitchRow id="opt-notify" label={t("options.notify.label")} desc={t("options.notify.desc")} checked={s.notify} onChange={(v) => update("notify", v)} />
                     </div>
                   </section>
 
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.message} className="ico ico-sm" />
-                      <h2>Confirmaciones</h2>
+                      <h2>{t("options.sectionConfirm")}</h2>
                     </div>
                     <div className="st-card">
                       <SwitchRow
                         id="opt-confirm-exit"
-                        label="Salir"
-                        desc="Pedir confirmación al cerrar la app"
+                        label={t("options.confirmExit.label")}
+                        desc={t("options.confirmExit.desc")}
                         checked={s.confirmExit}
                         onChange={(v) => update("confirmExit", v)}
                       />
                       <SwitchRow
                         id="opt-confirm-delete"
-                        label="Borrar descarga / favorito / lista"
-                        desc="Confirmar eliminaciones"
+                        label={t("options.confirmDelete.label")}
+                        desc={t("options.confirmDelete.desc")}
                         checked={s.confirmDelete}
                         onChange={(v) => update("confirmDelete", v)}
                       />
                       <SwitchRow
                         id="opt-confirm-empty"
-                        label="Vaciar terminados"
-                        desc="Confirmar al borrar descargas finalizadas"
+                        label={t("options.confirmEmpty.label")}
+                        desc={t("options.confirmEmpty.desc")}
                         checked={s.confirmEmptyList}
                         onChange={(v) => update("confirmEmptyList", v)}
                       />
@@ -2058,29 +2024,29 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.broom} className="ico ico-sm" />
-                      <h2>Mantenimiento</h2>
+                      <h2>{t("options.sectionMaint")}</h2>
                     </div>
                     <div className="st-card">
                       <SwitchRow
                         id="opt-vacuum"
-                        label="Vacuum de bases al salir"
-                        desc="Compacta favoritos y la base de la app al cerrar"
+                        label={t("options.vacuum.label")}
+                        desc={t("options.vacuum.desc")}
                         checked={s.vacuum}
                         onChange={(v) => update("vacuum", v)}
                       />
                       <div className="st-row st-row-actions">
                         <div className="st-meta">
-                          <div className="st-label">Caché</div>
+                          <div className="st-label">{t("options.cache.label")}</div>
                           <div className="st-desc">
-                            Borra info y portadas guardadas. No afecta favoritos, cola ni catálogo.
+                            {t("options.cache.desc")}
                           </div>
                           {cacheClearFlash === "done" ? (
                             <div className="st-inline-ok" role="status">
-                              Caché limpiada
+                              {t("options.cache.done")}
                             </div>
                           ) : cacheClearFlash === "error" ? (
                             <div className="st-inline-err" role="status">
-                              No se pudo limpiar
+                              {t("options.cache.error")}
                             </div>
                           ) : null}
                         </div>
@@ -2092,10 +2058,10 @@ export function OptionsView() {
                           onClick={runCacheClear}
                         >
                           {cacheClearFlash === "working"
-                            ? "Limpiando…"
+                            ? t("options.cache.working")
                             : cacheClearFlash === "done"
-                              ? "Listo"
-                              : "Limpiar"}
+                              ? t("common.ready")
+                              : t("options.cache.button")}
                         </button>
                       </div>
                     </div>
@@ -2104,20 +2070,20 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.file} className="ico ico-sm" />
-                      <h2>Registro (log)</h2>
+                      <h2>{t("options.sectionLog")}</h2>
                     </div>
                     <div className="st-card">
                       <SwitchRow
                         id="opt-log"
-                        label="Activar registro"
-                        desc="Guarda la actividad en un archivo de log"
+                        label={t("options.logOn.label")}
+                        desc={t("options.logOn.desc")}
                         checked={s.logOn}
                         onChange={(v) => update("logOn", v)}
                       />
                       <div id="opt-log-extra" hidden={!s.logOn}>
                         <div className="st-row">
                           <div className="st-form-inline">
-                            <span className="st-form-key">Archivo</span>
+                            <span className="st-form-key">{t("options.logFile")}</span>
                             <input
                               className="st-field st-mono"
                               type="text"
@@ -2132,11 +2098,11 @@ export function OptionsView() {
                           <div className="st-meta">
                             {logClearFlash === "done" ? (
                               <div className="st-inline-ok" role="status">
-                                Archivo de log borrado
+                                {t("options.logCleared")}
                               </div>
                             ) : logClearFlash === "error" ? (
                               <div className="st-inline-err" role="status">
-                                No se pudo borrar
+                                {t("options.logClearError")}
                               </div>
                             ) : null}
                           </div>
@@ -2147,10 +2113,10 @@ export function OptionsView() {
                             onClick={runLogClear}
                           >
                             {logClearFlash === "working"
-                              ? "Borrando…"
+                              ? t("options.logClearing")
                               : logClearFlash === "done"
-                                ? "Listo"
-                                : "Borrar archivo de log"}
+                                ? t("common.ready")
+                                : t("options.logClearBtn")}
                           </button>
                           <button
                             type="button"
@@ -2159,7 +2125,7 @@ export function OptionsView() {
                               void api.openLogFile().catch((e) => log(String(e), "err"));
                             }}
                           >
-                            Abrir log
+                            {t("options.logOpen")}
                           </button>
                         </div>
                       </div>
@@ -2176,27 +2142,27 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.sliders} className="ico ico-sm" />
-                      <h2>Interfaz</h2>
+                      <h2>{t("options.sectionUi")}</h2>
                     </div>
                     <div className="st-card">
-                      <SwitchRow id="opt-load-covers" label="Cargar portada del manga" desc="Descarga portadas; si está apagado solo usa las ya en caché" checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
+                      <SwitchRow id="opt-load-covers" label={t("options.loadCovers.label")} desc={t("options.loadCovers.desc")} checked={s.loadCovers} onChange={(v) => update("loadCovers", v)} />
                       <SwitchRow
                         id="opt-live-search"
-                        label="Búsqueda en vivo"
-                        desc="Filtra mientras escribes (lento en listas largas)"
+                        label={t("options.liveSearch.label")}
+                        desc={t("options.liveSearch.desc")}
                         checked={s.liveSearch}
                         onChange={(v) => update("liveSearch", v)}
                       />
-                      <SwitchRow id="opt-goto-dl" label="Ir a Descargas al añadir" desc="Cambia a la vista Descargas al crear tareas" checked={s.gotoDl} onChange={(v) => update("gotoDl", v)} />
-                      <SwitchRow id="opt-goto-fav" label="Ir a Favoritos al añadir manga" desc="Cambia a Favoritos al guardar un título" checked={s.gotoFav} onChange={(v) => update("gotoFav", v)} />
+                      <SwitchRow id="opt-goto-dl" label={t("options.gotoDl.label")} desc={t("options.gotoDl.desc")} checked={s.gotoDl} onChange={(v) => update("gotoDl", v)} />
+                      <SwitchRow id="opt-goto-fav" label={t("options.gotoFav.label")} desc={t("options.gotoFav.desc")} checked={s.gotoFav} onChange={(v) => update("gotoFav", v)} />
                       <BoundStepperRow
                         id="opt-new-days"
-                        label="Marcar manga como nuevo"
-                        desc="Días desde que se añadió al catálogo"
+                        label={t("options.newDays.label")}
+                        desc={t("options.newDays.desc")}
                         value={s.newDays}
                         min={1}
                         max={365}
-                        unit="días"
+                        unit={t("units.days")}
                         onChange={(v) => update("newDays", v)}
                       />
                     </div>
@@ -2212,18 +2178,18 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.download} className="ico ico-sm" />
-                      <h2>Descargas</h2>
+                      <h2>{t("options.sectionDownloads")}</h2>
                     </div>
                     <div className="st-card">
-                      <BoundStepperRow label="Tareas en paralelo" desc="Capítulos descargando a la vez" value={s.parallelTasks} min={1} max={32} onChange={(v) => update("parallelTasks", v)} />
+                      <BoundStepperRow label={t("options.parallelTasks.label")} desc={t("options.parallelTasks.desc")} value={s.parallelTasks} min={1} max={32} onChange={(v) => update("parallelTasks", v)} />
                       <SwitchRow
                         id="opt-one-chapter-per-manga"
-                        label="Un capítulo a la vez por obra"
-                        desc="No inicia otro capítulo del mismo manga mientras uno está en progreso; otras obras sí usan los slots libres"
+                        label={t("options.oneChapter.label")}
+                        desc={t("options.oneChapter.desc")}
                         checked={s.oneChapterPerManga}
                         onChange={(v) => update("oneChapterPerManga", v)}
                       />
-                      <OptRow label="Páginas en paralelo" desc="Imágenes bajando a la vez dentro de un capítulo">
+                      <OptRow label={t("options.pageThreads.label")} desc={t("options.pageThreads.desc")}>
                         <div className="st-num-wrap">
                           <Stepper
                             id="set-threads"
@@ -2234,26 +2200,26 @@ export function OptionsView() {
                           />
                         </div>
                       </OptRow>
-                      <BoundStepperRow label="Reintentos de tarea" desc="Si la tarea falla, cuántas veces reintentar" value={s.taskRetries} min={0} max={10} onChange={(v) => update("taskRetries", v)} />
+                      <BoundStepperRow label={t("options.taskRetries.label")} desc={t("options.taskRetries.desc")} value={s.taskRetries} min={0} max={10} onChange={(v) => update("taskRetries", v)} />
                     </div>
                   </section>
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.layers} className="ico ico-sm" />
-                      <h2>Cola</h2>
+                      <h2>{t("options.sectionQueue")}</h2>
                     </div>
                     <div className="st-card">
                       <SwitchRow
                         id="opt-sort-on-add"
-                        label="Ordenar cola al añadir tareas"
-                        desc="Si está apagado, lo nuevo va al final; si está activo, reordena por título A–Z"
+                        label={t("options.sortOnAdd.label")}
+                        desc={t("options.sortOnAdd.desc")}
                         checked={s.sortOnAdd}
                         onChange={(v) => update("sortOnAdd", v)}
                       />
                       <SwitchRow
                         id="opt-clear-done"
-                        label="Borrar tareas completadas al cerrar"
-                        desc="Al salir, quita de la cola solo las terminadas con éxito"
+                        label={t("options.clearDone.label")}
+                        desc={t("options.clearDone.desc")}
                         checked={s.clearDoneExit}
                         onChange={(v) => update("clearDoneExit", v)}
                       />
@@ -2270,25 +2236,25 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.link} className="ico ico-sm" />
-                      <h2>Red</h2>
+                      <h2>{t("options.sectionNetwork")}</h2>
                     </div>
                     <div className="st-card">
-                      <BoundStepperRow label="Timeout" desc="Segundos de espera de conexión" value={s.httpTimeout} min={1} max={300} suffix="s" onChange={(v) => update("httpTimeout", v)} />
+                      <BoundStepperRow label={t("options.timeout.label")} desc={t("options.timeout.desc")} value={s.httpTimeout} min={1} max={300} suffix="s" onChange={(v) => update("httpTimeout", v)} />
                       <BoundStepperRow
-                        label="Reintentos de conexión"
-                        desc="Reintentos por petición HTTP (0 = no reintentar)"
+                        label={t("options.httpRetries.label")}
+                        desc={t("options.httpRetries.desc")}
                         value={s.httpRetries}
                         min={0}
                         max={5}
                         onChange={(v) => update("httpRetries", v)}
                       />
-                      <OptRow label="User-Agent" desc="Cabecera HTTP enviada por defecto">
+                      <OptRow label={t("options.ua.label")} desc={t("options.ua.desc")}>
                         <input
                           id="set-ua"
                           className="st-field st-mono st-field-ua"
                           type="text"
                           value={s.ua}
-                          placeholder="(por defecto)"
+                          placeholder={t("options.ua.placeholder")}
                           autoComplete="off"
                           spellCheck={false}
                           onChange={(e) => update("ua", e.target.value)}
@@ -2296,22 +2262,22 @@ export function OptionsView() {
                       </OptRow>
                       <SwitchRow
                         id="set-cf-internal-browser"
-                        label="Navegador interno (Cloudflare)"
-                        desc="Para algunos bloqueos conviene instalar Cloudflare One (WARP) y reintentar. Activa esto si no basta. No combinar con Usar proxy."
+                        label={t("options.cfBrowser.label")}
+                        desc={t("options.cfBrowser.desc")}
                         checked={s.cfInternalBrowser}
                         onChange={(v) => update("cfInternalBrowser", v)}
                       />
                       <SwitchRow
                         id="set-use-proxy"
-                        label="Usar proxy"
-                        desc="Enruta el tráfico HTTP por un proxy"
+                        label={t("options.useProxy.label")}
+                        desc={t("options.useProxy.desc")}
                         checked={s.useProxy}
                         onChange={(v) => update("useProxy", v)}
                       />
                       <div className="st-nest" hidden={!s.useProxy}>
                         <div className="st-nest-inner">
                           <div className="st-nest-row">
-                            <label htmlFor="set-proxy-type">Tipo</label>
+                            <label htmlFor="set-proxy-type">{t("options.proxyType")}</label>
                             <div className="st-select st-select-full filter-select-wrap">
                               <select
                                 id="set-proxy-type"
@@ -2325,12 +2291,12 @@ export function OptionsView() {
                             </div>
                           </div>
                           <div className="st-nest-row">
-                            <label htmlFor="set-proxy-host">Host</label>
+                            <label htmlFor="set-proxy-host">{t("options.proxyHost")}</label>
                             <input
                               id="set-proxy-host"
                               className="st-field st-mono"
                               type="text"
-                              placeholder="host o IP"
+                              placeholder={t("options.proxyHostPh")}
                               autoComplete="off"
                               spellCheck={false}
                               value={s.proxyHost}
@@ -2338,7 +2304,7 @@ export function OptionsView() {
                             />
                           </div>
                           <div className="st-nest-row">
-                            <label htmlFor="set-proxy-port">Puerto</label>
+                            <label htmlFor="set-proxy-port">{t("options.proxyPort")}</label>
                             <div>
                               <Stepper
                                 id="set-proxy-port"
@@ -2351,12 +2317,12 @@ export function OptionsView() {
                             </div>
                           </div>
                           <div className="st-nest-row">
-                            <label htmlFor="set-proxy-user">Usuario</label>
+                            <label htmlFor="set-proxy-user">{t("options.proxyUser")}</label>
                             <input
                               id="set-proxy-user"
                               className="st-field st-mono"
                               type="text"
-                              placeholder="opcional"
+                              placeholder={t("common.optional")}
                               autoComplete="off"
                               spellCheck={false}
                               value={s.proxyUser}
@@ -2364,12 +2330,12 @@ export function OptionsView() {
                             />
                           </div>
                           <div className="st-nest-row">
-                            <label htmlFor="set-proxy-pass">Contraseña</label>
+                            <label htmlFor="set-proxy-pass">{t("options.proxyPass")}</label>
                             <input
                               id="set-proxy-pass"
                               className="st-field st-mono"
                               type="password"
-                              placeholder="opcional"
+                              placeholder={t("common.optional")}
                               autoComplete="off"
                               value={s.proxyPass}
                               onChange={(e) => update("proxyPass", e.target.value)}
@@ -2390,20 +2356,20 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.folder} className="ico ico-sm" />
-                      <h2>Destino</h2>
+                      <h2>{t("options.sectionDest")}</h2>
                     </div>
                     <div className="st-card">
                       <div className="st-row st-row-stack">
                         <div className="st-meta">
-                          <div className="st-label">Ruta de descarga por defecto</div>
-                          <div className="st-desc">Carpeta raíz donde se guardan los capítulos</div>
+                          <div className="st-label">{t("options.outputPath.label")}</div>
+                          <div className="st-desc">{t("options.outputPath.desc")}</div>
                         </div>
                         <div className="path-field path-field-exam">
                           <input
                             id="set-output-dir"
                             type="text"
                             readOnly
-                            placeholder="Sin carpeta de salida"
+                            placeholder={t("options.noOutput")}
                             autoComplete="off"
                             value={s.outputDirField}
                           />
@@ -2411,11 +2377,11 @@ export function OptionsView() {
                             type="button"
                             className="path-browse path-browse-label"
                             id="set-output-browse"
-                            title="Examinar…"
+                            title={t("options.browseTitle")}
                             onClick={() => void handleBrowseOutputDir()}
                           >
                             <Icon ico={ICO.folder} className="ico ico-sm" />
-                            Examinar
+                            {t("common.browse")}
                           </button>
                         </div>
                       </div>
@@ -2425,16 +2391,16 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.file} className="ico ico-sm" />
-                      <h2>Formato de salida</h2>
+                      <h2>{t("options.sectionPack")}</h2>
                     </div>
                     <div className="st-card">
                       <div className="st-row">
                         <div className="st-meta">
-                          <div className="st-label">Guardar capítulos como</div>
-                          <div className="st-desc">Contenedor del capítulo descargado</div>
+                          <div className="st-label">{t("options.packAs.label")}</div>
+                          <div className="st-desc">{t("options.packAs.desc")}</div>
                         </div>
-                        <div className="st-seg" id="set-pack" role="radiogroup" aria-label="Guardar capítulos como">
-                          {PACK_OPTIONS.map((opt) => (
+                        <div className="st-seg" id="set-pack" role="radiogroup" aria-label={t("options.packAs.label")}>
+                          {packOptions().map((opt) => (
                             <button
                               key={opt.value}
                               type="button"
@@ -2449,17 +2415,16 @@ export function OptionsView() {
                       </div>
                       <SwitchRow
                         id="set-pack-delete"
-                        label="Borrar carpeta tras empaquetar"
-                        desc="Elimina la carpeta de imágenes al crear el archivo"
+                        label={t("options.packDelete.label")}
+                        desc={t("options.packDelete.desc")}
                         checked={s.packDelete}
                         onChange={(v) => update("packDelete", v)}
                       />
                       <div className="st-row" id="set-pdf-quality-row" hidden={s.packFormat !== "pdf"}>
                         <div className="st-meta">
-                          <div className="st-label">Calidad del PDF</div>
+                          <div className="st-label">{t("options.pdfQuality.label")}</div>
                           <div className="st-desc">
-                            Las imágenes que ya estén en esta calidad o por debajo se
-                            incluyen sin recomprimir; solo se recomprimen las que la superan
+                            {t("options.pdfQuality.desc")}
                           </div>
                         </div>
                         <div className="st-num-wrap">
@@ -2479,20 +2444,20 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.image} className="ico ico-sm" />
-                      <h2>Conversión de imagen</h2>
+                      <h2>{t("options.sectionConvert")}</h2>
                     </div>
                     <div className="st-card">
                       <SwitchRow
                         id="set-png-as-jpeg"
-                        label="Guardar PNG como JPEG"
-                        desc="Reduce mucho el peso; pierde la transparencia"
+                        label={t("options.pngAsJpeg.label")}
+                        desc={t("options.pngAsJpeg.desc")}
                         checked={s.pngAsJpeg}
                         onChange={(v) => update("pngAsJpeg", v)}
                       />
                       <SelectRow
                         id="set-webp-as"
-                        label="Guardar WebP como"
-                        desc="Formato al convertir imágenes WebP"
+                        label={t("options.webpAs.label")}
+                        desc={t("options.webpAs.desc")}
                         value={s.webpAs}
                         onChange={(v) => update("webpAs", v)}
                         options={[
@@ -2503,21 +2468,21 @@ export function OptionsView() {
                       />
                       <SelectRow
                         id="set-png-level"
-                        label="Compresión PNG"
-                        desc="Más compresión, guardado más lento"
+                        label={t("options.pngLevel.label")}
+                        desc={t("options.pngLevel.desc")}
                         value={s.pngLevel}
                         onChange={(v) => update("pngLevel", v)}
                         options={[
-                          { value: "0", label: "Ninguno" },
-                          { value: "1", label: "El más rápido" },
-                          { value: "2", label: "Predeterminado" },
-                          { value: "3", label: "Máximo" },
+                          { value: "0", label: t("common.none") },
+                          { value: "1", label: t("options.pngFastest") },
+                          { value: "2", label: t("options.pngDefault") },
+                          { value: "3", label: t("options.pngMax") },
                         ]}
                       />
                       <BoundStepperRow
                         id="set-jpeg-quality"
-                        label="Calidad JPEG"
-                        desc="Aplica a las imágenes convertidas a JPEG"
+                        label={t("options.jpegQuality.label")}
+                        desc={t("options.jpegQuality.desc")}
                         value={s.jpegQuality}
                         min={1}
                         max={100}
@@ -2530,30 +2495,30 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.file} className="ico ico-sm" />
-                      <h2>Renombrado</h2>
+                      <h2>{t("options.sectionRename")}</h2>
                     </div>
                     <div className="st-card">
                       <SelectRow
                         id="set-rename-preset"
-                        label="Estructura"
-                        desc="Atajo: rellena los patrones de abajo, que siguen siendo editables"
+                        label={t("options.renameStructure.label")}
+                        desc={t("options.renameStructure.desc")}
                         value={renamePreset}
                         onChange={applyRenamePreset}
                         options={[
-                          ...availablePresets.map((p) => ({ value: p.id, label: p.label })),
+                          ...availablePresets.map((p) => ({ value: p.id, label: renamePresetLabel(p.id) })),
                           /* "Personalizado" es un estado, no un atajo: solo se lista
                              cuando ya lo estás, para que no haya opción que no haga nada. */
                           ...(renamePreset === RENAME_PRESET_CUSTOM
-                            ? [{ value: RENAME_PRESET_CUSTOM, label: "Personalizado" }]
+                            ? [{ value: RENAME_PRESET_CUSTOM, label: t("common.custom") }]
                             : []),
                         ]}
                       />
                       {/* Junto al preset: al elegir uno, el resultado se ve sin bajar. */}
                       <div className="st-row st-row-stack">
                         <div className="st-meta">
-                          <div className="st-label">Resultado</div>
+                          <div className="st-label">{t("options.renameResult.label")}</div>
                           <div className="st-desc">
-                            Ejemplo con datos de muestra; refleja tus ajustes actuales
+                            {t("options.renameResult.desc")}
                           </div>
                         </div>
                         <div id="set-rename-preview" className="st-preview" aria-live="polite">
@@ -2562,16 +2527,16 @@ export function OptionsView() {
                       </div>
                       <SwitchRow
                         id="set-manga-folder"
-                        label="Carpeta por manga"
-                        desc="Crea una carpeta con el nombre del manga"
+                        label={t("options.mangaFolder.label")}
+                        desc={t("options.mangaFolder.desc")}
                         checked={s.mangaFolderOn}
                         onChange={(v) => update("mangaFolderOn", v)}
                       />
                       <div className="st-row st-row-stack" hidden={!s.mangaFolderOn}>
                         <div className="st-meta">
-                          <div className="st-label">Patrón de la carpeta</div>
+                          <div className="st-label">{t("options.mangaPat.label")}</div>
                           <div className="st-desc">
-                            Nombre de la carpeta del manga. No admite «\» ni «/»: se eliminan
+                            {t("options.mangaPat.desc")}
                           </div>
                         </div>
                         <div className="st-field-wrap">
@@ -2589,7 +2554,7 @@ export function OptionsView() {
                             type="button"
                             className="sites-clear"
                             hidden={!s.patManga}
-                            title="Limpiar"
+                            title={t("common.clear")}
                             onClick={() => {
                               update("patManga", "");
                               patMangaRef.current?.focus();
@@ -2608,22 +2573,22 @@ export function OptionsView() {
 
                       <SwitchRow
                         id="set-chapter-folder"
-                        label="Carpeta por capítulo"
+                        label={t("options.chapterFolder.label")}
                         desc={
                           packing
-                            ? "Al empaquetar debe estar activa: su nombre es el del archivo, y al terminar solo queda ese archivo"
-                            : "Cada capítulo en su propia subcarpeta"
+                            ? t("options.chapterFolderPack")
+                            : t("options.chapterFolder.desc")
                         }
                         checked={s.chapterFolderOn}
                         onChange={(v) => update("chapterFolderOn", v)}
                       />
                       <div className="st-row st-row-stack" hidden={!s.chapterFolderOn}>
                         <div className="st-meta">
-                          <div className="st-label">Patrón del capítulo</div>
+                          <div className="st-label">{t("options.chapterPat.label")}</div>
                           <div className="st-desc">
                             {packing
-                              ? "Nombre de la carpeta y, por tanto, del archivo empaquetado"
-                              : "Nombre de la carpeta del capítulo"}
+                              ? t("options.chapterPatPack")
+                              : t("options.chapterPat.desc")}
                           </div>
                         </div>
                         <div className="st-field-wrap">
@@ -2641,7 +2606,7 @@ export function OptionsView() {
                             type="button"
                             className="sites-clear"
                             hidden={!s.patChapter}
-                            title="Limpiar"
+                            title={t("common.clear")}
                             onClick={() => {
                               update("patChapter", "");
                               patChapterRef.current?.focus();
@@ -2660,11 +2625,11 @@ export function OptionsView() {
 
                       <div className="st-row st-row-stack">
                         <div className="st-meta">
-                          <div className="st-label">Nombre de las páginas</div>
+                          <div className="st-label">{t("options.pageName.label")}</div>
                           <div className="st-desc">
                             {packing
-                              ? "Nombre de cada imagen dentro del archivo empaquetado"
-                              : "Nombre de cada imagen descargada"}
+                              ? t("options.pageNamePack")
+                              : t("options.pageName.desc")}
                           </div>
                         </div>
                         <div className="st-field-wrap">
@@ -2682,7 +2647,7 @@ export function OptionsView() {
                             type="button"
                             className="sites-clear"
                             hidden={!s.patPage}
-                            title="Limpiar"
+                            title={t("common.clear")}
                             onClick={() => {
                               update("patPage", "");
                               patPageRef.current?.focus();
@@ -2701,23 +2666,23 @@ export function OptionsView() {
 
                       <SwitchRow
                         id="set-remove-manga-name"
-                        label="Quitar el nombre del manga del capítulo"
-                        desc="Evita repetir el título en cada capítulo"
+                        label={t("options.removeManga.label")}
+                        desc={t("options.removeManga.desc")}
                         checked={s.removeMangaFromChapter}
                         onChange={(v) => update("removeMangaFromChapter", v)}
                       />
 
                       <SwitchRow
                         id="set-vol-pad"
-                        label="Rellenar el volumen con ceros"
-                        desc="Vol.2 se convierte en Vol.02, solo si el título trae «Vol»"
+                        label={t("options.volPad.label")}
+                        desc={t("options.volPad.desc")}
                         checked={s.volPadOn}
                         onChange={(v) => update("volPadOn", v)}
                       />
                       <div className="st-nest" hidden={!s.volPadOn}>
                         <div className="st-nest-inner">
                           <div className="st-nest-row">
-                            <label htmlFor="set-vol-digits">Dígitos</label>
+                            <label htmlFor="set-vol-digits">{t("options.digits")}</label>
                             <Stepper id="set-vol-digits" value={s.volDigits} min={1} max={4} onChange={(v) => update("volDigits", v)} />
                           </div>
                         </div>
@@ -2725,15 +2690,15 @@ export function OptionsView() {
 
                       <SwitchRow
                         id="set-chap-pad"
-                        label="Rellenar el capítulo con ceros"
-                        desc="3 se convierte en 003; también fija los dígitos de %NUMBERING%"
+                        label={t("options.chapPad.label")}
+                        desc={t("options.chapPad.desc")}
                         checked={s.chapPadOn}
                         onChange={(v) => update("chapPadOn", v)}
                       />
                       <div className="st-nest" hidden={!s.chapPadOn}>
                         <div className="st-nest-inner">
                           <div className="st-nest-row">
-                            <label htmlFor="set-chap-digits">Dígitos</label>
+                            <label htmlFor="set-chap-digits">{t("options.digits")}</label>
                             <Stepper id="set-chap-digits" value={s.chapDigits} min={1} max={5} onChange={(v) => update("chapDigits", v)} />
                           </div>
                         </div>
@@ -2741,15 +2706,15 @@ export function OptionsView() {
 
                       <SwitchRow
                         id="set-replace-ascii"
-                        label="Reemplazar caracteres no ASCII"
-                        desc="Solo en los nombres generados; la carpeta de «Guardar en» no se toca"
+                        label={t("options.ascii.label")}
+                        desc={t("options.ascii.desc")}
                         checked={s.asciiOn}
                         onChange={(v) => update("asciiOn", v)}
                       />
                       <div className="st-nest" hidden={!s.asciiOn}>
                         <div className="st-nest-inner">
                           <div className="st-nest-row st-nest-row-compact">
-                            <label htmlFor="set-replace-ascii-char">Reemplazar por</label>
+                            <label htmlFor="set-replace-ascii-char">{t("options.asciiBy")}</label>
                             <input
                               id="set-replace-ascii-char"
                               className="st-field st-char"
@@ -2767,8 +2732,8 @@ export function OptionsView() {
 
                       <SwitchRow
                         id="opt-long-paths"
-                        label="Rutas de nombre largo"
-                        desc="Conserva títulos y carpetas completos aunque sean muy largos. Si está apagado, se acortan para que la descarga no falle."
+                        label={t("options.longPaths.label")}
+                        desc={t("options.longPaths.desc")}
                         checked={s.longPaths}
                         onChange={(v) => update("longPaths", v)}
                       />
@@ -2785,24 +2750,24 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.refresh} className="ico ico-sm" />
-                      <h2>Actualizaciones</h2>
+                      <h2>{t("options.sectionUpdates")}</h2>
                     </div>
                     <div className="st-card">
                       <SwitchRow
-                        label="Comprobar versión al iniciar"
-                        desc="Busca actualizaciones de la app"
+                        label={t("options.checkUpdate.label")}
+                        desc={t("options.checkUpdate.desc")}
                         checked={s.checkUpdateStart}
                         onChange={(v) => update("checkUpdateStart", v)}
                       />
                       <SwitchRow
-                        label="No cargar info al actualizar lista"
-                        desc="Más rápido; el filtro avanzado no funcionará"
+                        label={t("options.updateNoInfo.label")}
+                        desc={t("options.updateNoInfo.desc")}
                         checked={s.updateListNoInfo}
                         onChange={(v) => update("updateListNoInfo", v)}
                       />
                       <SwitchRow
-                        label="Escanear directorio completo"
-                        desc="Recorre todas las páginas, no solo las más recientes"
+                        label={t("options.fullScan.label")}
+                        desc={t("options.fullScan.desc")}
                         checked={s.updateListFullScan}
                         onChange={(v) => {
                           if (!v) {
@@ -2811,19 +2776,18 @@ export function OptionsView() {
                           }
                           void (async () => {
                             const ok = await appConfirm({
-                              title: "Escanear directorio completo",
-                              message:
-                                "Al actualizar la lista se recorrerán todas las páginas del sitio, no solo las más recientes.\n\nEso suele tardar bastante más y, en la mayoría de los casos, no hace falta: el modo normal ya encuentra los títulos nuevos.\n\nÚsalo solo si sospechas huecos en el catálogo o quieres un barrido a fondo.\n\n¿Activar el escaneo completo?",
-                              okLabel: "Activar",
-                              cancelLabel: "Cancelar",
+                              title: t("options.fullScan.title"),
+                              message: t("options.fullScan.message"),
+                              okLabel: t("common.activate"),
+                              cancelLabel: t("common.cancel"),
                             });
                             if (ok) update("updateListFullScan", true);
                           })();
                         }}
                       />
                       <BoundStepperRow
-                        label="Hilos de actualizar lista"
-                        desc="Paralelismo al actualizar el catálogo"
+                        label={t("options.updateThreads.label")}
+                        desc={t("options.updateThreads.desc")}
                         value={s.updateListThreads}
                         min={1}
                         max={32}
@@ -2834,26 +2798,26 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.heart} className="ico ico-sm" />
-                      <h2>Favoritos</h2>
+                      <h2>{t("options.sectionFav")}</h2>
                     </div>
                     <div className="st-card">
                       <SwitchRow
-                        label="Comprobar al iniciar"
-                        desc="Busca capítulos nuevos al arrancar"
+                        label={t("options.favCheckStart.label")}
+                        desc={t("options.favCheckStart.desc")}
                         checked={s.favCheckOnStart}
                         onChange={(v) => update("favCheckOnStart", v)}
                       />
                       <SwitchRow
                         id="set-fav-interval"
-                        label="Comprobar en intervalo"
-                        desc="Revisa favoritos periódicamente"
+                        label={t("options.favInterval.label")}
+                        desc={t("options.favInterval.desc")}
                         checked={s.favIntervalOn}
                         onChange={(v) => update("favIntervalOn", v)}
                       />
                       <div className="st-nest" hidden={!s.favIntervalOn}>
                         <div className="st-nest-inner">
                           <div className="st-nest-row">
-                            <label htmlFor="set-fav-interval-min">Intervalo</label>
+                            <label htmlFor="set-fav-interval-min">{t("options.favIntervalMin")}</label>
                             <div className="st-inline-end">
                               <Stepper
                                 id="set-fav-interval-min"
@@ -2869,14 +2833,14 @@ export function OptionsView() {
                         </div>
                       </div>
                       <SwitchRow
-                        label="Descargar tras comprobar"
-                        desc="Encola capítulos nuevos automáticamente"
+                        label={t("options.favDownload.label")}
+                        desc={t("options.favDownload.desc")}
                         checked={s.favDownloadAfter}
                         onChange={(v) => update("favDownloadAfter", v)}
                       />
                       <BoundStepperRow
-                        label="Hilos de favoritos"
-                        desc="Comprobaciones de favoritos a la vez"
+                        label={t("options.favThreads.label")}
+                        desc={t("options.favThreads.desc")}
                         value={s.favThreads}
                         min={1}
                         max={32}
@@ -2895,7 +2859,7 @@ export function OptionsView() {
                   <section className="st-section">
                     <div className="st-section-head">
                       <Icon ico={ICO.trash} className="ico ico-sm" />
-                      <h2>Quitados de la lista</h2>
+                      <h2>{t("options.sectionTrash")}</h2>
                     </div>
                     <div className="st-card">
                       <div className="trash-toolbar">
@@ -2905,7 +2869,7 @@ export function OptionsView() {
                             id="trash-q"
                             className="st-field"
                             type="text"
-                            placeholder="Buscar título..."
+                            placeholder={t("options.trashSearch")}
                             autoComplete="off"
                             spellCheck={false}
                             value={hiddenQuery}
@@ -2915,7 +2879,7 @@ export function OptionsView() {
                             type="button"
                             className="sites-clear"
                             hidden={!hiddenQuery.trim()}
-                            title="Limpiar"
+                            title={t("common.clear")}
                             onClick={() => setHiddenQuery("")}
                           >
                             <Icon ico={ICO.x} className="ico ico-sm" />
@@ -2930,7 +2894,7 @@ export function OptionsView() {
                             onClick={() => void loadHidden(hiddenApplied)}
                           >
                             <Icon ico={ICO.refresh} className="ico ico-sm" />
-                            Recargar
+                            {t("options.reload")}
                           </button>
                           <button
                             type="button"
@@ -2939,24 +2903,24 @@ export function OptionsView() {
                             onClick={() => void restoreAllHidden()}
                           >
                             <Icon ico={ICO.retry} className="ico ico-sm" />
-                            Restaurar todo ({hiddenTotal})
+                            {t("options.restoreAll", { n: hiddenTotal })}
                           </button>
                         </div>
                       </div>
 
                       {hiddenLoading && !hiddenTotal ? (
                         <div className="sites-tree-empty">
-                          <div className="sites-empty-title">Cargando…</div>
+                          <div className="sites-empty-title">{t("common.loading")}</div>
                         </div>
                       ) : !hiddenTotal ? (
                         <div className="sites-tree-empty">
                           <div className="sites-empty-title">
-                            {hiddenApplied ? "Sin coincidencias" : "Papelera vacía"}
+                            {hiddenApplied ? t("options.noMatches") : t("options.trashEmpty")}
                           </div>
                           <div className="sites-empty-desc">
                             {hiddenApplied
-                              ? `Ningún título coincide con "${hiddenApplied}".`
-                              : "Los títulos que quites de la lista (Supr en el catálogo) aparecerán aquí y podrás devolverlos cuando quieras."}
+                              ? t("options.noTitleMatch", { q: hiddenApplied })
+                              : t("options.trashEmptyDesc")}
                           </div>
                         </div>
                       ) : (
@@ -2983,7 +2947,7 @@ export function OptionsView() {
                                     {row.hidden_at
                                       ? ` · ${row.hidden_at.slice(0, 16).replace("T", " ")}`
                                       : ""}
-                                    {row.has_snapshot ? "" : " · sin metadatos"}
+                                    {row.has_snapshot ? "" : t("options.noMeta")}
                                   </span>
                                 </div>
                                 <button
@@ -2993,7 +2957,7 @@ export function OptionsView() {
                                   onClick={() => void restoreHidden([row])}
                                 >
                                   <Icon ico={ICO.retry} className="ico ico-sm" />
-                                  Restaurar
+                                  {t("common.restore")}
                                 </button>
                               </div>
                             );
@@ -3008,7 +2972,7 @@ export function OptionsView() {
 
             {/* ---- Sitios Web ---- */}
             <div className={`options-panel${optTab === "websites" ? " active" : ""}`} role="tabpanel" hidden={optTab !== "websites"}>
-              <div className="sites-tabs" role="tablist" aria-label="Sitios Web">
+              <div className="sites-tabs" role="tablist" aria-label={t("options.sitesTab")}>
                 <button
                   type="button"
                   className={`sites-tab${sitesTab === "list" ? " on" : ""}`}
@@ -3016,7 +2980,7 @@ export function OptionsView() {
                   aria-selected={sitesTab === "list"}
                   onClick={() => setSitesTab("list")}
                 >
-                  Sitios Web
+                  {t("options.sitesTab")}
                 </button>
                 <button
                   type="button"
@@ -3025,7 +2989,7 @@ export function OptionsView() {
                   aria-selected={sitesTab === "mods"}
                   onClick={() => setSitesTab("mods")}
                 >
-                  Módulos
+                  {t("options.modsTab")}
                   {modulesPendingCount ? (
                     <span className="sites-tab-badge mono">{modulesPendingCount}</span>
                   ) : null}
@@ -3040,7 +3004,7 @@ export function OptionsView() {
                       id="sites-q"
                       className="st-field"
                       type="text"
-                      placeholder="Buscar sitio web..."
+                      placeholder={t("options.sitesSearch")}
                       autoComplete="off"
                       spellCheck={false}
                       value={sitesQuery}
@@ -3050,7 +3014,7 @@ export function OptionsView() {
                       type="button"
                       className="sites-clear"
                       hidden={!sitesQuery.trim()}
-                      title="Limpiar"
+                      title={t("common.clear")}
                       onClick={() => setSitesQuery("")}
                     >
                       <Icon ico={ICO.x} className="ico ico-sm" />
@@ -3060,19 +3024,19 @@ export function OptionsView() {
                   <div className="sites-toolbar-actions">
                     <button type="button" className="sites-tbtn" onClick={() => setSitesOn(allSiteIds, true)}>
                       <Icon ico={ICO.check} className="ico ico-sm" />
-                      Seleccionar todo
+                      {t("options.selectAll")}
                     </button>
                     <button type="button" className="sites-tbtn" onClick={() => setSitesOn(allSiteIds, false)}>
                       <Icon ico={ICO.x} className="ico ico-sm" />
-                      Deseleccionar todo
+                      {t("options.deselectAll")}
                     </button>
                     <button type="button" className="sites-tbtn" onClick={handleSitesExpandAll}>
                       <Icon ico={ICO.plus} className="ico ico-sm" />
-                      Expandir todo
+                      {t("options.expandAll")}
                     </button>
                     <button type="button" className="sites-tbtn" onClick={handleSitesCollapseAll}>
                       <Icon ico={ICO.minus} className="ico ico-sm" />
-                      Contraer todo
+                      {t("options.collapseAll")}
                     </button>
                   </div>
                 </div>
@@ -3080,15 +3044,15 @@ export function OptionsView() {
                 <div className="sites-tree" id="sites-tree" role="tree" ref={sitesTreeRef} onScroll={onSitesScroll}>
                   {modules.length === 0 ? (
                     <div className="sites-tree-empty">
-                      <div className="sites-empty-title">Sin módulos</div>
+                      <div className="sites-empty-title">{t("options.noModules")}</div>
                       <div className="sites-empty-desc">
-                        Aún no se cargaron módulos de <code>lua/modules</code>.
+                        {t("options.noModulesDesc")}
                       </div>
                     </div>
                   ) : sitesFlat.length === 0 ? (
                     <div className="sites-tree-empty">
-                      <div className="sites-empty-title">Sin coincidencias</div>
-                      <div className="sites-empty-desc">Ningún sitio coincide con "{sitesQuery}".</div>
+                      <div className="sites-empty-title">{t("options.noMatches")}</div>
+                      <div className="sites-empty-desc">{t("options.noSiteMatch", { q: sitesQuery })}</div>
                     </div>
                   ) : (
                     <div className="sites-virtual" style={{ height: sitesFlat.length * SITE_ROW_H }}>
@@ -3099,10 +3063,10 @@ export function OptionsView() {
                           const cbCls = row.onCount === 0 ? "" : row.onCount === row.total ? "on" : "some";
                           const summary =
                             row.onCount === row.total
-                              ? "Todos activos"
+                              ? t("options.allActive")
                               : row.onCount === 0
-                                ? "Ninguno"
-                                : `${row.onCount} de ${row.total} activos`;
+                                ? t("options.noneActive")
+                                : t("options.someActive", { on: row.onCount, total: row.total });
                           return (
                             <div
                               key={row.key}
@@ -3113,7 +3077,7 @@ export function OptionsView() {
                               <button
                                 type="button"
                                 className="sites-tw"
-                                aria-label="Expandir o contraer"
+                                aria-label={t("options.expandGroup")}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   toggleGroupExpand(row.groupId);
@@ -3129,7 +3093,7 @@ export function OptionsView() {
                                 type="button"
                                 className={`sites-cb${cbCls ? ` ${cbCls}` : ""}`}
                                 style={{ ["--ico" as string]: cbCls === "some" ? ICO.dash : ICO.check }}
-                                aria-label="Activar grupo"
+                                aria-label={t("options.enableGroup")}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   const g = siteGroups.find((x) => x.id === row.groupId);
@@ -3167,7 +3131,7 @@ export function OptionsView() {
                               type="button"
                               className={`sites-cb${row.on ? " on" : ""}`}
                               style={{ ["--ico" as string]: ICO.check }}
-                              aria-label="Activar sitio"
+                              aria-label={t("options.enableSite")}
                               tabIndex={-1}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -3189,11 +3153,11 @@ export function OptionsView() {
                 <div className="sites-footer">
                   <Icon ico={ICO.globe} className="ico ico-sm" />
                   <span id="sites-active-label">
-                    {sitesTotalOn} de {sitesTotal} sitios activos
+                    {t("options.sitesFooter", { on: sitesTotalOn, total: sitesTotal })}
                   </span>
                   <div className="sites-footer-spacer" />
                   <button type="button" className="lnk" onClick={() => setSitesOnlyActive((v) => !v)}>
-                    {sitesOnlyActive ? "Mostrar todos" : "Mostrar solo activos"}
+                    {sitesOnlyActive ? t("options.showAll") : t("options.showActive")}
                   </button>
                 </div>
               </div>
@@ -3206,7 +3170,7 @@ export function OptionsView() {
                       className="ico ico-sm"
                       style={{ transform: modsChecking ? "rotate(180deg)" : "none" }}
                     />
-                    <span>{modsChecking ? "Revisando..." : "Revisar actualización"}</span>
+                    <span>{modsChecking ? t("options.checking") : t("options.checkUpdateBtn")}</span>
                   </button>
                   <div className="mods-checks">
                     <button
@@ -3221,7 +3185,7 @@ export function OptionsView() {
                       <span className={`sites-cb${modsWarn ? " on" : ""}`} style={{ ["--ico" as string]: ICO.check }}>
                         <span className="sites-cb-mk" />
                       </span>
-                      Mostrar advertencia de actualización
+                      {t("options.showWarn")}
                     </button>
                     <button
                       type="button"
@@ -3235,17 +3199,17 @@ export function OptionsView() {
                       <span className={`sites-cb${modsPreferLocal ? " on" : ""}`} style={{ ["--ico" as string]: ICO.check }}>
                         <span className="sites-cb-mk" />
                       </span>
-                      Preferir mi .lua si es más reciente
+                      {t("options.preferLocal")}
                     </button>
                   </div>
                   <button
                     type="button"
                     className="mods-chk"
                     onClick={() => void undoModulesUpdate()}
-                    title="Restaura la versión anterior de los archivos que cambió la última actualización"
+                    title={t("options.undoLastTitle")}
                   >
                     <Icon ico={ICO.refresh} className="ico ico-sm" />
-                    Deshacer última
+                    {t("options.undoLast")}
                   </button>
                   <div className="sites-toolbar-spacer" />
                   <div className="sites-search-wrap mods-search-wrap">
@@ -3254,7 +3218,7 @@ export function OptionsView() {
                       id="mods-q"
                       className="st-field"
                       type="text"
-                      placeholder="Buscar módulo..."
+                      placeholder={t("options.modsSearch")}
                       autoComplete="off"
                       spellCheck={false}
                       value={modsQuery}
@@ -3264,7 +3228,7 @@ export function OptionsView() {
                       type="button"
                       className="sites-clear"
                       hidden={!modsQuery.trim()}
-                      title="Limpiar"
+                      title={t("common.clear")}
                       onClick={() => setModsQuery("")}
                     >
                       <Icon ico={ICO.x} className="ico ico-sm" />
@@ -3284,25 +3248,25 @@ export function OptionsView() {
                       className="ico ico-sm"
                       style={{ transform: modsSourceOpen ? "none" : "rotate(-90deg)" }}
                     />
-                    <span>Origen y copias de seguridad</span>
+                    <span>{t("options.sourceBackup")}</span>
                     <span className="mods-source-current ell">
                       {modsPinnedCount
-                        ? `GitHub FMD2 · ${modsPinnedCount} con mi versión`
-                        : "GitHub FMD2"}
+                        ? t("options.githubPinned", { n: modsPinnedCount })
+                        : t("options.githubPlain")}
                     </span>
                   </button>
                   {modsSourceOpen ? (
                     <div className="st-nest-inner mods-source-body">
                       <OptRow
-                        label="Oficial"
-                        desc="Todos los módulos vienen de aquí. Para uno concreto puedes usar tu propia versión con «Usar mi versión» en su fila de la lista."
+                        label={t("options.official.label")}
+                        desc={t("options.official.desc")}
                       >
                         <span className="st-static mono">GitHub · dazedcat19/FMD2</span>
                       </OptRow>
                       <SwitchRow
                         id="opt-mods-prefer-local"
-                        label="Si mi archivo es más reciente, conservarlo"
-                        desc="Si editas un módulo y su fecha es posterior al commit oficial, no se sobrescribe. Para que no se actualice nunca, usa «Usar mi versión» en la fila."
+                        label={t("options.preferIfNewer.label")}
+                        desc={t("options.preferIfNewer.desc")}
                         checked={modsPreferLocal}
                         onChange={(v) => {
                           setModsPreferLocal(v);
@@ -3311,8 +3275,8 @@ export function OptionsView() {
                       />
                       <SwitchRow
                         id="opt-mods-meta"
-                        label="Traer fecha y mensaje de cada cambio"
-                        desc="Rellena las dos últimas columnas."
+                        label={t("options.fetchMeta.label")}
+                        desc={t("options.fetchMeta.desc")}
                         checked={modsFetchMeta}
                         onChange={(v) => {
                           setModsFetchMeta(v);
@@ -3321,8 +3285,8 @@ export function OptionsView() {
                       />
                       <BoundStepperRow
                         id="opt-mods-gens"
-                        label="Puntos de restauración"
-                        desc="Cuántas actualizaciones puedes deshacer. Los puntos más antiguos se eliminan solos."
+                        label={t("options.backupGens.label")}
+                        desc={t("options.backupGens.desc")}
                         value={modsBackupGens}
                         min={1}
                         max={50}
@@ -3333,8 +3297,8 @@ export function OptionsView() {
                       />
                       <BoundStepperRow
                         id="opt-mods-mb"
-                        label="Espacio máximo para las copias"
-                        desc={`Suma de todas las copias juntas. Al superarlo se descartan las más antiguas, salvo la última. Ahora ocupan ${formatMb(modsBackupBytes)}.`}
+                        label={t("options.backupMb.label")}
+                        desc={t("options.backupMb.desc", { size: formatMb(modsBackupBytes) })}
                         value={modsBackupMb}
                         min={8}
                         max={2048}
@@ -3345,8 +3309,8 @@ export function OptionsView() {
                         }}
                       />
                       <OptRow
-                        label="Vaciar copias de seguridad"
-                        desc="Borra todos los puntos de restauración. No toca los módulos; solo pierdes la posibilidad de deshacer."
+                        label={t("options.clearBackups.label")}
+                        desc={t("options.clearBackups.desc")}
                       >
                         <button
                           type="button"
@@ -3355,12 +3319,12 @@ export function OptionsView() {
                           onClick={() => void clearModulesBackups()}
                         >
                           {modsBackupFlash === "working"
-                            ? "Borrando…"
+                            ? t("options.logClearing")
                             : modsBackupFlash === "done"
-                              ? "Listo"
+                              ? t("common.ready")
                               : modsBackupFlash === "error"
-                                ? "Error"
-                                : "Vaciar"}
+                                ? t("common.error")
+                                : t("options.clearBackups.button")}
                         </button>
                       </OptRow>
                     </div>
@@ -3371,42 +3335,43 @@ export function OptionsView() {
                   <div className="mods-banner" role="status">
                     <Icon ico={ICO.info} className="ico ico-sm" />
                     <span className="ell">
-                      Hay actualizaciones pendientes:{" "}
-                      {modulesPending ? summarizeCheck(modulesPending) : modsPending.summary}
+                      {t("options.pendingBanner", {
+                        summary: modulesPending ? summarizeCheck(modulesPending) : modsPending.summary,
+                      })}
                     </span>
                     <div className="sites-footer-spacer" />
                     <button type="button" className="lnk" onClick={() => void runModulesCheck()}>
-                      Actualizar ahora
+                      {t("options.updateNow")}
                     </button>
                     <button
                       type="button"
                       className="lnk"
                       onClick={() => setModsBannerHidden(true)}
                     >
-                      Ocultar
+                      {t("common.hide")}
                     </button>
                   </div>
                 ) : null}
 
                 <div className="mods-list-wrap">
                   <div className="mods-head">
-                    <span>Nombre del archivo</span>
-                    <span>Última modificación</span>
-                    <span>Último mensaje</span>
+                    <span>{t("options.colFile")}</span>
+                    <span>{t("options.colWhen")}</span>
+                    <span>{t("options.colMsg")}</span>
                     <span />
                   </div>
                   <div className="mods-list" id="mods-list" ref={modsListRef} onScroll={onModsScroll}>
                     {modRows.length === 0 ? (
                       <div className="sites-tree-empty">
-                        <div className="sites-empty-title">Sin módulos</div>
+                        <div className="sites-empty-title">{t("options.noModules")}</div>
                         <div className="sites-empty-desc">
-                          No hay archivos en el repositorio Lua. Pulsa «Revisar actualización».
+                          {t("options.noLuaRepo")}
                         </div>
                       </div>
                     ) : modsFlat.length === 0 ? (
                       <div className="sites-tree-empty">
-                        <div className="sites-empty-title">Sin coincidencias</div>
-                        <div className="sites-empty-desc">Ningún módulo coincide con la búsqueda.</div>
+                        <div className="sites-empty-title">{t("options.noMatches")}</div>
+                        <div className="sites-empty-desc">{t("options.noModMatch")}</div>
                       </div>
                     ) : (
                       <div className="mods-virtual" style={{ height: modsFlat.length * MOD_ROW_H }}>
@@ -3440,28 +3405,28 @@ export function OptionsView() {
                                   <button
                                     type="button"
                                     className="sites-tbtn"
-                                    title="Volver a actualizarlo desde FMD2"
+                                    title={t("options.unpinTitle")}
                                     onClick={() => void unpinModuleFile(row.file)}
                                   >
-                                    Volver al oficial
+                                    {t("options.unpin")}
                                   </button>
                                 ) : (
                                   <>
                                     <button
                                       type="button"
                                       className="sites-tbtn"
-                                      title="Conserva este .lua y deja de actualizarlo desde FMD2"
+                                      title={t("options.pinTitle")}
                                       onClick={() => void pinModuleFile(row.file)}
                                     >
-                                      Usar mi versión
+                                      {t("options.pin")}
                                     </button>
                                     <button
                                       type="button"
                                       className="sites-tbtn"
-                                      title="Revertir a una versión guardada"
+                                      title={t("options.revertTitle")}
                                       onClick={() => void revertModuleFile(row.file)}
                                     >
-                                      Revertir
+                                      {t("options.revert")}
                                     </button>
                                   </>
                                 )}
@@ -3477,23 +3442,23 @@ export function OptionsView() {
                 <div className="sites-footer">
                   <Icon ico={ICO.terminal} className="ico ico-sm" />
                   <span id="mods-summary">
-                    {modRows.length - modsSupportCount} módulos
-                    {modsShowSupport ? ` · ${modsSupportCount} archivos de soporte` : ""}
-                    {modsUpdatedCount ? ` · ${modsUpdatedCount} con cambios` : ""}
+                    {t("options.modsFooter", { n: modRows.length - modsSupportCount })}
+                    {modsShowSupport ? t("options.supportCount", { n: modsSupportCount }) : ""}
+                    {modsUpdatedCount ? t("options.changedCount", { n: modsUpdatedCount }) : ""}
                   </span>
                   <div className="sites-footer-spacer" />
                   <button
                     type="button"
                     className="lnk"
                     onClick={() => setModsShowSupport((v) => !v)}
-                    title="Plantillas, imágenes y scripts que los módulos necesitan"
+                    title={t("options.supportTitle")}
                   >
                     {modsShowSupport
-                      ? "Ocultar archivos de soporte"
-                      : `Mostrar archivos de soporte (${modsSupportCount})`}
+                      ? t("options.hideSupport")
+                      : t("options.showSupport", { n: modsSupportCount })}
                   </button>
                   <button type="button" className="lnk" onClick={() => setModsOnlyUpdated((v) => !v)}>
-                    {modsOnlyUpdated ? "Mostrar todos" : "Mostrar solo actualizados"}
+                    {modsOnlyUpdated ? t("options.showAll") : t("options.showUpdated")}
                   </button>
                 </div>
               </div>
@@ -3505,15 +3470,15 @@ export function OptionsView() {
           {saveFlash === "saved" ? (
             <span className="options-saved" id="opt-saved" role="status">
               <Icon ico={ICO.check} className="ico ico-sm" />
-              Guardado
+              {t("common.saved")}
             </span>
           ) : saveFlash === "error" ? (
             <span className="options-save-err" id="opt-save-err" role="status">
-              Error al guardar
+              {t("options.saveError")}
             </span>
           ) : dirty ? (
             <span className="options-dirty" id="opt-dirty">
-              Cambios sin guardar
+              {t("options.dirty")}
             </span>
           ) : (
             <span className="options-dirty" id="opt-dirty" hidden />
@@ -3529,7 +3494,7 @@ export function OptionsView() {
               void loadSettings();
             }}
           >
-            Cancelar
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -3538,7 +3503,7 @@ export function OptionsView() {
             disabled={saveFlash === "saving"}
             onClick={() => void handleSave()}
           >
-            {saveFlash === "saving" ? "Guardando…" : saveFlash === "saved" ? "Guardado" : "Aplicar"}
+            {saveFlash === "saving" ? t("common.saving") : saveFlash === "saved" ? t("common.saved") : t("common.apply")}
           </button>
         </footer>
       </div>

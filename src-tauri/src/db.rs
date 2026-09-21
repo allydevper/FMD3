@@ -646,6 +646,9 @@ pub fn settings_set_direct(key: &str, value: &str) -> Result<(), String> {
         params![key, value],
     )
     .map_err(|e| e.to_string())?;
+    if key == crate::settings_keys::APP_LANGUAGE {
+        crate::i18n::refresh();
+    }
     Ok(())
 }
 
@@ -657,6 +660,10 @@ pub fn settings_set(db: &Db, key: &str, value: &str) -> Result<(), String> {
         params![key, value],
     )
     .map_err(|e| e.to_string())?;
+    drop(conn);
+    if key == crate::settings_keys::APP_LANGUAGE {
+        crate::i18n::refresh();
+    }
     Ok(())
 }
 

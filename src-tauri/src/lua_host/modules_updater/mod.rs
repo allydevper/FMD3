@@ -36,7 +36,7 @@ static UPDATE_LOCK: Mutex<()> = Mutex::new(());
 fn lock() -> Result<parking_lot::MutexGuard<'static, ()>, String> {
     UPDATE_LOCK
         .try_lock()
-        .ok_or_else(|| "Ya hay una revisión de módulos en curso".to_string())
+        .ok_or_else(|| crate::i18n::t("Ya hay una revisión de módulos en curso", "A module check is already running").to_string())
 }
 
 /// Probe the source and build a plan, spending as little network as possible.
@@ -144,7 +144,10 @@ pub fn apply(
     // source, open the database or touch the network.
     let Some(plan) = session::take(token.as_deref()) else {
         return Err(
-            "La actualización caducó o no fue confirmada; vuelve a pulsar «Revisar actualización»."
+            crate::i18n::t(
+                "La actualización caducó o no fue confirmada; vuelve a pulsar «Revisar actualización».",
+                "The update expired or was not confirmed; press “Check for updates” again.",
+            )
                 .into(),
         );
     };
@@ -152,19 +155,19 @@ pub fn apply(
     let emitter = progress::Emitter::new(sink);
     let source = source::resolve()?;
 
-    emitter.phase("probe", "Preparando actualización…");
+    emitter.phase("probe", crate::i18n::t("Preparando actualización…", "Preparing update…"));
     let mut st = load_state();
     session::clear();
 
     if plan.is_empty() {
         save_state(&st)?;
-        emitter.phase("done", "Sin cambios");
+        emitter.phase("done", crate::i18n::t("Sin cambios", "No changes"));
         return Ok(ModulesUpdateReport::default());
     }
 
     let outcome = apply::execute(source.as_ref(), &plan, &mut st, &emitter);
 
-    emitter.phase("registry", "Recargando módulos…");
+    emitter.phase("registry", crate::i18n::t("Recargando módulos…", "Reloading modules…"));
     let refreshed = registry::refresh();
 
     let report = ModulesUpdateReport {
@@ -184,9 +187,13 @@ pub fn apply(
         files_total: report.downloaded + report.failed,
         failed: report.failed,
         message: if report.cancelled {
-            "Actualización cancelada".into()
+            crate::i18n::t("Actualización cancelada", "Update cancelled").into()
         } else {
-            format!("{} archivos actualizados", report.downloaded)
+            format!(
+                "{} {}",
+                report.downloaded,
+                crate::i18n::t("archivos actualizados", "files updated")
+            )
         },
         ..Default::default()
     });

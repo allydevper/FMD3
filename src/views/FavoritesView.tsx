@@ -18,6 +18,7 @@ import {
   useListSelection,
 } from "../hooks/useListSelection";
 import { settingBool } from "../utils/settings";
+import { localeTag, t, tPlural, useLanguage } from "../i18n";
 
 function pendingLinkCount(text: string | undefined): number {
   if (!text) return 0;
@@ -38,25 +39,25 @@ function favoriteSnapshot(fav: Favorite): FavoriteAddRequest {
 
 function seriesStatusLabel(status: string | undefined): string {
   const s = (status || "").trim();
-  if (!s) return "—";
+  if (!s) return t("common.dash");
   const low = s.toLowerCase();
-  if (low === "0" || low.includes("complet") || low.includes("finished")) return "Completado";
-  if (low === "1" || low.includes("ongo") || low.includes("en curso")) return "En curso";
-  if (low === "2" || low.includes("hiatus")) return "Hiatus";
-  if (low === "3" || low.includes("cancel")) return "Cancelado";
+  if (low === "0" || low.includes("complet") || low.includes("finished")) return t("mangaStatus.completed");
+  if (low === "1" || low.includes("ongo") || low.includes("en curso")) return t("mangaStatus.ongoing");
+  if (low === "2" || low.includes("hiatus")) return t("mangaStatus.hiatus");
+  if (low === "3" || low.includes("cancel")) return t("mangaStatus.cancelled");
   return s;
 }
 
 type FavFilter = "Todo" | "Habilitado" | "Deshabilitado";
 type SortKey = "new" | "title" | "cur" | "status" | "added" | "checked";
 
-const SORT_COLS: { key: SortKey; label: string }[] = [
-  { key: "new", label: "#" },
-  { key: "title", label: "Título" },
-  { key: "cur", label: "Capítulo actual" },
-  { key: "status", label: "Estado" },
-  { key: "added", label: "Agregado" },
-  { key: "checked", label: "Última rev." },
+const SORT_COLS: { key: SortKey; labelKey?: string }[] = [
+  { key: "new", labelKey: undefined },
+  { key: "title", labelKey: "favorites.colTitle" },
+  { key: "cur", labelKey: "favorites.colChapter" },
+  { key: "status", labelKey: "favorites.colStatus" },
+  { key: "added", labelKey: "favorites.colAdded" },
+  { key: "checked", labelKey: "favorites.colChecked" },
 ];
 
 function pruneMap<T>(map: Map<number, T>, ids: Set<number>): Map<number, T> {
@@ -75,15 +76,16 @@ function favAgeHours(iso: string | undefined, fallbackMs?: number): number {
 
 function favFmtAgo(iso: string | undefined, checkedMs?: number): string {
   const h = favAgeHours(iso, checkedMs);
-  if (!iso && checkedMs == null) return "—";
-  if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
-  if (h < 24) return `${Math.round(h)} h`;
-  if (h < 24 * 30) return `${Math.round(h / 24)} d`;
-  if (h < 24 * 365) return `${Math.round(h / 730)} mes`;
-  return `${(h / 8760).toFixed(1)} a`;
+  if (!iso && checkedMs == null) return t("common.dash");
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))} ${t("units.min")}`;
+  if (h < 24) return `${Math.round(h)} ${t("units.hourAbbr")}`;
+  if (h < 24 * 30) return `${Math.round(h / 24)} ${t("units.dayAbbr")}`;
+  if (h < 24 * 365) return `${Math.round(h / 730)} ${t("units.monthAbbr")}`;
+  return `${(h / 8760).toFixed(1)} ${t("units.yearAbbr")}`;
 }
 
 export function FavoritesView() {
+  const lang = useLanguage();
   const {
     activeNav,
     log,
@@ -237,14 +239,14 @@ export function FavoritesView() {
       );
       await refreshFavorites();
       appToastUndo({
-        message: "Se quitó de favoritos",
+        message: tPlural("favorites.removed", 1),
         durationMs: 6000,
         onUndo: async () => {
           try {
             const fav = await api.favoritesAdd(snapshot);
             favoritesCacheUpsert(fav);
             await refreshFavorites();
-            log(`Favorito restaurado: ${snapshot.title}`, "ok");
+            log(t("favorites.restored", { title: snapshot.title }), "ok");
           } catch (e) {
             log(String(e), "err");
           }
@@ -258,13 +260,13 @@ export function FavoritesView() {
     async (ids: number[], enqueue: boolean) => {
       if (!ids.length || favScanning) return;
       if (catalogJob) {
-        log("Ya hay una tarea en curso.", "err");
+        log(t("ctx.jobRunning"), "err");
         return;
       }
       if (enqueue) {
         const dir = await ensureOutputDir();
         if (!dir) {
-          log("Elige carpeta de salida primero.", "err");
+          log(t("favorites.pickOutput"), "err");
           return;
         }
       }
@@ -279,7 +281,7 @@ export function FavoritesView() {
           }
           const id = ids[i];
           const fav = favorites.find((f) => f.id === id);
-          const title = fav?.title || `Favorito #${id}`;
+          const title = fav?.title || t("favorites.favN", { id });
           const site = fav ? fav.module_name || fav.module_id : "";
           setAppJob({
             mode: "favorites",
@@ -313,14 +315,14 @@ export function FavoritesView() {
         if (cancelled) {
           log(
             enqueue
-              ? `Revisión cancelada · ${enq} capítulos encolados`
-              : `Revisión cancelada · ${news} capítulos nuevos en ${results.length} favoritos`,
+              ? t("favorites.checkCancelledEnq", { n: enq })
+              : t("favorites.checkCancelledNew", { news, favs: results.length }),
             "",
           );
         } else if (enqueue) {
-          log(`Encolados ${enq} capítulos nuevos`, "ok");
+          log(t("favorites.checkEnqueued", { n: enq }), "ok");
         } else {
-          log(`Revisión: ${news} capítulos nuevos en ${results.length} favoritos`, "ok");
+          log(t("favorites.checkNews", { news, favs: results.length }), "ok");
         }
         await refreshFavorites();
       } finally {
@@ -346,12 +348,12 @@ export function FavoritesView() {
     async (ids: number[]) => {
       if (!ids.length || favScanning) return;
       if (catalogJob) {
-        log("Ya hay una tarea en curso.", "err");
+        log(t("ctx.jobRunning"), "err");
         return;
       }
       const dir = await ensureOutputDir();
       if (!dir) {
-        log("Elige carpeta de salida primero.", "err");
+        log(t("favorites.pickOutput"), "err");
         return;
       }
       clearAppJobCancel();
@@ -365,7 +367,7 @@ export function FavoritesView() {
           }
           const id = ids[i];
           const fav = favorites.find((f) => f.id === id);
-          const title = fav?.title || `Favorito #${id}`;
+          const title = fav?.title || t("favorites.favN", { id });
           const site = fav ? fav.module_name || fav.module_id : "";
           setAppJob({
             mode: "favorites",
@@ -394,8 +396,8 @@ export function FavoritesView() {
         const enq = results.reduce((a, r) => a + r.enqueued, 0);
         log(
           cancelled
-            ? `Encolado cancelado · ${enq} capítulos encolados`
-            : `Encolados ${enq} capítulos nuevos`,
+            ? t("favorites.enqueueCancelled", { n: enq })
+            : t("favorites.checkEnqueued", { n: enq }),
           cancelled ? "" : "ok",
         );
         await refreshFavorites();
@@ -432,12 +434,12 @@ export function FavoritesView() {
     async (ids: number[]) => {
       if (!ids.length || favScanning) return;
       if (catalogJob) {
-        log("Ya hay una tarea en curso.", "err");
+        log(t("ctx.jobRunning"), "err");
         return;
       }
       const dir = await ensureOutputDir();
       if (!dir) {
-        log("Elige carpeta de salida primero.", "err");
+        log(t("favorites.pickOutput"), "err");
         return;
       }
       clearAppJobCancel();
@@ -451,7 +453,7 @@ export function FavoritesView() {
           }
           const id = ids[i];
           const fav = favorites.find((f) => f.id === id);
-          const title = fav?.title || `Favorito #${id}`;
+          const title = fav?.title || t("favorites.favN", { id });
           const site = fav ? fav.module_name || fav.module_id : "";
           setAppJob({
             mode: "favorites",
@@ -479,8 +481,8 @@ export function FavoritesView() {
         }
         log(
           cancelled
-            ? `Descarga cancelada · ${enqTotal} capítulos encolados`
-            : `Encolados ${enqTotal} capítulos`,
+            ? t("favorites.downloadCancelled", { n: enqTotal })
+            : t("favorites.downloadEnqueued", { n: enqTotal }),
           cancelled ? "" : "ok",
         );
         await refreshFavorites();
@@ -560,7 +562,7 @@ export function FavoritesView() {
   const ctxSingle = ctxFavs.length === 1 ? ctxFavs[0] : null;
   const ctxPendingSum = ctxFavs.reduce((a, f) => a + favNewOf(f.id), 0);
   const ctxAllDisabled = ctxFavs.length > 0 && ctxFavs.every((f) => !favIsEnabled(f.id));
-  const ctxEnableLabel = ctxAllDisabled ? "Habilitar" : "Deshabilitar";
+  const ctxEnableLabel = ctxAllDisabled ? t("favorites.enable") : t("favorites.disable");
   const ctxCanStop = favScanning && !!catalogJob;
 
   const list = useMemo(() => {
@@ -612,7 +614,7 @@ export function FavoritesView() {
   const treeEntries = useMemo(() => {
     const countBy = (fn: (i: Favorite) => boolean) => favorites.filter(fn).length;
     const sites = [...new Set(favorites.map((i) => i.module_name || i.module_id))].sort((a, b) =>
-      a.localeCompare(b),
+      a.localeCompare(b, localeTag(lang)),
     );
     type TreeEntry = {
       id: string;
@@ -623,25 +625,25 @@ export function FavoritesView() {
       icon?: string;
     };
     const entries: TreeEntry[] = [
-      { id: "all", label: "Todos los favoritos", count: favorites.length, group: true, icon: ICO.heart },
-      { id: "new", label: "Con capítulos nuevos", count: countBy((i) => favNewOf(i.id) > 0), color: "var(--accent)" },
+      { id: "all", label: t("favorites.all"), count: favorites.length, group: true, icon: ICO.heart },
+      { id: "new", label: t("favorites.treeWithNew"), count: countBy((i) => favNewOf(i.id) > 0), color: "var(--accent)" },
       {
         id: "upto",
-        label: "Al día",
+        label: t("favorites.upToDate"),
         count: countBy((i) => favNewOf(i.id) === 0 && favIsEnabled(i.id)),
         color: "var(--ok)",
       },
       {
         id: "stale",
-        label: "Sin revisar (7 d+)",
+        label: t("favorites.stale"),
         count: countBy((i) => {
           const checkedMs = checkedAt.get(i.id) ?? (Date.parse(i.last_checked_at || "") || 0);
           return favAgeHours(i.last_checked_at, checkedMs) > 168;
         }),
         color: "var(--warn)",
       },
-      { id: "off", label: "Deshabilitados", count: countBy((i) => !favIsEnabled(i.id)), color: "var(--border-2)" },
-      { id: "sites", label: "Sitios web", count: sites.length, group: true, icon: ICO.globe },
+      { id: "off", label: t("favorites.disabled"), count: countBy((i) => !favIsEnabled(i.id)), color: "var(--border-2)" },
+      { id: "sites", label: t("favorites.sitesWeb"), count: sites.length, group: true, icon: ICO.globe },
       ...sites.map((s) => ({
         id: `site:${s}`,
         label: s,
@@ -649,7 +651,7 @@ export function FavoritesView() {
       })),
     ];
     return entries;
-  }, [favorites, favNewOf, favIsEnabled, checkedAt]);
+  }, [favorites, favNewOf, favIsEnabled, checkedAt, lang]);
 
   const stats = useMemo(() => {
     const newSum = favorites.reduce((a, i) => a + favNewOf(i.id), 0);
@@ -661,7 +663,7 @@ export function FavoritesView() {
       if (t > latestChecked) latestChecked = t;
     }
     return { newSum, enabledN, disabledN, latestChecked };
-  }, [favorites, favNewOf, favIsEnabled, checkedAt]);
+  }, [favorites, favNewOf, favIsEnabled, checkedAt, lang]);
 
   const favKeys = useMemo(() => list.map((it) => it.id), [list]);
   const favScrollRef = useRef<HTMLDivElement | null>(null);
@@ -731,19 +733,21 @@ export function FavoritesView() {
         const picked = await open(
           mode === "dir"
             ? { directory: true, multiple: false }
-            : { multiple: false, filters: [{ name: "Base de datos", extensions: ["db"] }] },
+            : { multiple: false, filters: [{ name: t("favorites.dbFilter"), extensions: ["db"] }] },
         );
         if (!picked || Array.isArray(picked)) return;
         const r = await api.favoritesImportDb(picked);
         log(
-          `${r.sources.join(" + ") || "Importado"}: ${r.favorites_added} favoritos, ` +
-            `${r.marks_added} capítulos marcados` +
-            (r.favorites_skipped ? ` (${r.favorites_skipped} omitidos)` : ""),
+          t("favorites.imported", {
+            sources: r.sources.join(" + ") || t("favorites.importedFallback"),
+            favs: r.favorites_added,
+            marks: r.marks_added,
+          }) + (r.favorites_skipped ? t("favorites.importedSkipped", { n: r.favorites_skipped }) : ""),
           "ok",
         );
         if (r.unknown_modules.length) {
           log(
-            `Módulos no instalados, favoritos omitidos: ${r.unknown_modules.join(", ")}`,
+            t("favorites.importedUnknown", { list: r.unknown_modules.join(", ") }),
             "err",
           );
         }
@@ -769,7 +773,7 @@ export function FavoritesView() {
         if (!dest || Array.isArray(dest)) return;
         const r = await api.favoritesExportDb(dest);
         log(
-          `Exportado a ${r.dir}: ${r.favorites} favoritos, ${r.marks} capítulos marcados`,
+          t("favorites.exported", { dir: r.dir, favs: r.favorites, marks: r.marks }),
           "ok",
         );
       } catch (e) {
@@ -799,7 +803,7 @@ export function FavoritesView() {
     await refreshFavorites();
     const n = snapshots.length;
     appToastUndo({
-      message: n === 1 ? "Se quitó de favoritos" : `Se quitaron ${n} favoritos`,
+      message: tPlural("favorites.removed", n),
       durationMs: 6000,
       onUndo: async () => {
         try {
@@ -810,8 +814,8 @@ export function FavoritesView() {
           await refreshFavorites();
           log(
             n === 1
-              ? `Favorito restaurado: ${snapshots[0].title}`
-              : `Restaurados ${n} favoritos`,
+              ? t("favorites.restored", { title: snapshots[0].title })
+              : t("favorites.restoredMany", { n }),
             "ok",
           );
         } catch (e) {
@@ -824,39 +828,39 @@ export function FavoritesView() {
   const handleQueueAll = () => {
     const ids = favorites.filter((f) => favNewOf(f.id) > 0 && favIsEnabled(f.id)).map((f) => f.id);
     if (!ids.length) {
-      log("No hay capítulos nuevos para encolar", "ok");
+      log(t("favorites.noNewToQueue"), "ok");
       return;
     }
     void runFavEnqueuePending(ids);
   };
 
   const selLabel = hasSel
-    ? `${selectedIds.length} ${selectedIds.length === 1 ? "obra seleccionada" : "obras seleccionadas"}`
-    : `${list.length} ${list.length === 1 ? "obra" : "obras"}`;
+    ? tPlural("favorites.selWorks", selectedIds.length)
+    : tPlural("favorites.works", list.length);
 
   const newLabel = stats.newSum
-    ? `${stats.newSum} ${stats.newSum === 1 ? "capítulo nuevo" : "capítulos nuevos"}`
-    : "Todo al día";
+    ? tPlural("favorites.newChaptersCount", stats.newSum)
+    : t("favorites.allCaughtUp");
 
   const lastScanLabel = favAutoChecking
     ? favAutoCheckSource === "inicio"
-      ? "Revisando al iniciar…"
-      : "Revisión periódica…"
+      ? t("favorites.checkingOnStart")
+      : t("favorites.checkingPeriodic")
     : stats.latestChecked
-      ? `Última revisión hace ${favFmtAgo(undefined, stats.latestChecked)}`
-      : "Última revisión —";
+      ? t("favorites.lastCheckAgo", { ago: favFmtAgo(undefined, stats.latestChecked) })
+      : t("favorites.lastCheckDash");
   return (
     <section id="view-favorites" className="view" hidden={activeNav !== "favorites"}>
       <div className="fav-shell">
         <header className="fav-header">
           <div>
-            <div className="fav-eyebrow">Biblioteca seguida</div>
-            <h1 className="fav-title">Favoritos</h1>
+            <div className="fav-eyebrow">{t("favorites.eyebrow")}</div>
+            <h1 className="fav-title">{t("favorites.title")}</h1>
           </div>
           <div className="fav-header-actions">
             <div className="fav-stat-block">
               <div className="fav-stat-value mono">{stats.newSum}</div>
-              <div className="fav-stat-label">Capítulos nuevos</div>
+              <div className="fav-stat-label">{t("favorites.newChapters")}</div>
             </div>
             <div className="fav-header-sep" />
             <button
@@ -870,12 +874,12 @@ export function FavoritesView() {
                 className="ico ico-sm"
                 style={{ animation: checkBusy ? "spin 1s linear infinite" : "none" }}
               />
-              <span>{checkBusy ? "Revisando…" : "Revisar capítulos nuevos"}</span>
+              <span>{checkBusy ? t("favorites.checking") : t("favorites.checkNew")}</span>
             </button>
             <button
               type="button"
               className="fav-btn-ghost"
-              title="Importar favoritos y capítulos descargados desde FMD2 o FMD3"
+              title={t("favorites.importTitle")}
               disabled={importBusy}
               aria-haspopup="menu"
               aria-expanded={!!importMenu}
@@ -887,17 +891,17 @@ export function FavoritesView() {
               }}
             >
               <Icon name="import" className="ico ico-sm" />
-              {importBusy ? "Importando…" : "Importar"}
+              {importBusy ? t("favorites.importing") : t("favorites.import")}
             </button>
             <button
               type="button"
               className="fav-btn-ghost"
-              title="Exportar favoritos y capítulos descargados como .db"
+              title={t("favorites.exportTitle")}
               disabled={exportBusy}
               onClick={handleExportDb}
             >
               <Icon name="download" className="ico ico-sm" />
-              {exportBusy ? "Exportando…" : "Exportar"}
+              {exportBusy ? t("favorites.exporting") : t("favorites.export")}
             </button>
           </div>
         </header>
@@ -905,12 +909,12 @@ export function FavoritesView() {
         <div className="fav-body">
           <aside
             className={`fav-tree${treeCollapsed ? " is-collapsed" : ""}`}
-            aria-label="Filtros de favoritos"
+            aria-label={t("favorites.filtersAria")}
           >
             <button
               type="button"
               className="fav-tree-notch"
-              title={treeCollapsed ? "Mostrar filtros" : "Ocultar filtros"}
+              title={treeCollapsed ? t("favorites.showFilters") : t("favorites.hideFilters")}
               aria-expanded={!treeCollapsed}
               onClick={toggleTreeCollapsed}
             >
@@ -963,7 +967,7 @@ export function FavoritesView() {
                   ref={queryInputRef}
                   className="st-field"
                   type="text"
-                  placeholder="Buscar favoritos..."
+                  placeholder={t("favorites.search")}
                   autoComplete="off"
                   spellCheck={false}
                   value={query}
@@ -973,13 +977,13 @@ export function FavoritesView() {
                   type="button"
                   className="sites-clear"
                   hidden={!query.trim()}
-                  title="Limpiar"
+                  title={t("common.clear")}
                   onClick={handleClearQuery}
                 >
                   <Icon name="x" className="ico ico-sm" />
                 </button>
               </div>
-              <div className="fav-seg" role="group" aria-label="Filtro de estado">
+              <div className="fav-seg" role="group" aria-label={t("favorites.statusFilter")}>
                 {(["Todo", "Habilitado", "Deshabilitado"] as const).map((f) => (
                   <button
                     key={f}
@@ -987,7 +991,11 @@ export function FavoritesView() {
                     className={filter === f ? "on" : ""}
                     onClick={() => setFilter(f)}
                   >
-                    {f}
+                    {f === "Todo"
+                      ? t("favorites.filterAll")
+                      : f === "Habilitado"
+                        ? t("favorites.filterEnabled")
+                        : t("favorites.filterDisabled")}
                   </button>
                 ))}
               </div>
@@ -1000,7 +1008,7 @@ export function FavoritesView() {
                   onClick={() => void runFavChecks(selectedIds, false)}
                 >
                   <Icon name="refresh" className="ico ico-sm" />
-                  Revisar
+                  {t("favorites.check")}
                 </button>
                 <button
                   type="button"
@@ -1009,7 +1017,7 @@ export function FavoritesView() {
                   onClick={() => void runFavEnqueuePending(selectedIds)}
                 >
                   <Icon name="download" className="ico ico-sm" />
-                  Descargar nuevos
+                  {t("favorites.downloadNew")}
                 </button>
                 <button
                   type="button"
@@ -1018,7 +1026,7 @@ export function FavoritesView() {
                   onClick={handleToggleSelected}
                 >
                   <Icon name="power" className="ico ico-sm" />
-                  Habilitar / deshabilitar
+                  {t("favorites.enableDisable")}
                 </button>
                 <button
                   type="button"
@@ -1027,7 +1035,7 @@ export function FavoritesView() {
                   onClick={() => void handleDeleteSelected()}
                 >
                   <Icon name="trash" className="ico ico-sm" />
-                  Quitar
+                  {t("favorites.removeShort")}
                 </button>
               </div>
               <div className="fav-toolbar-spacer" />
@@ -1040,7 +1048,7 @@ export function FavoritesView() {
               tabIndex={0}
               role="listbox"
               aria-multiselectable
-              aria-label="Favoritos"
+              aria-label={t("favorites.listAria")}
               onKeyDown={favSel.handleKeyDown}
             >
               <div className="fav-grid fav-head" role="presentation">
@@ -1048,7 +1056,7 @@ export function FavoritesView() {
                   type="button"
                   className={`sites-cb${allOn ? " on" : ""}${someOn && !allOn ? " some" : ""}`}
                   style={{ ["--ico" as string]: selectAllIco }}
-                  aria-label="Seleccionar todo"
+                  aria-label={t("favorites.selectAll")}
                   onClick={handleSelectAll}
                 >
                   <span className="sites-cb-mk" />
@@ -1062,7 +1070,7 @@ export function FavoritesView() {
                       className={`fav-hc${on ? " on" : ""}`}
                       onClick={() => handleSort(c.key)}
                     >
-                      {c.label}
+                      {c.labelKey ? t(c.labelKey) : "#"}
                       <Icon
                         name="chevron"
                         className="ico fav-sort-ico"
@@ -1082,12 +1090,12 @@ export function FavoritesView() {
                     style={{ width: "26px", height: "26px", color: "var(--muted)", opacity: 0.55 }}
                   />
                   <div className="fav-empty-title">
-                    {query.trim() ? "Sin coincidencias" : "Nada por aquí"}
+                    {query.trim() ? t("favorites.emptyFilter") : t("favorites.emptyHere")}
                   </div>
                   <div className="fav-empty-desc">
                     {query.trim()
-                      ? `Ningún favorito coincide con “${query.trim()}”.`
-                      : "Esta vista no tiene favoritos en este momento."}
+                      ? t("favorites.emptyQuery", { q: query.trim() })
+                      : t("favorites.emptyView")}
                   </div>
                 </div>
               ) : (
@@ -1097,17 +1105,17 @@ export function FavoritesView() {
                     const on = favSel.isSelected(it.id);
                     const enabled = favIsEnabled(it.id);
                     const st = !enabled
-                      ? { label: "Deshabilitado", color: "var(--muted)", bg: "var(--nest)" }
+                      ? { label: t("favorites.disabledBadge"), color: "var(--muted)", bg: "var(--nest)" }
                       : n
-                        ? { label: "Nuevo", color: "var(--warn)", bg: "var(--warn-bg)" }
-                        : { label: "Al día", color: "var(--ok)", bg: "var(--ok-bg)" };
+                        ? { label: t("favorites.newBadge"), color: "var(--warn)", bg: "var(--warn-bg)" }
+                        : { label: t("favorites.upToDate"), color: "var(--ok)", bg: "var(--ok-bg)" };
                     const current = it.last_chapter_name || "—";
                     const latest =
                       it.id === scanningFavId
-                        ? "revisando…"
+                        ? t("favorites.scanning")
                         : n
-                          ? `+${n} nuevos`
-                          : "sin novedades";
+                          ? t("favorites.plusNew", { n })
+                          : t("favorites.noNews");
                     const checkedMs = checkedAt.get(it.id);
                     return (
                       <div
@@ -1133,7 +1141,7 @@ export function FavoritesView() {
                           type="button"
                           className={`sites-cb${on ? " on" : ""}`}
                           style={{ ["--ico" as string]: ICO.check }}
-                          aria-label="Seleccionar"
+                          aria-label={t("favorites.select")}
                           tabIndex={-1}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1149,7 +1157,7 @@ export function FavoritesView() {
                               type="button"
                               className="ell fav-manga fav-manga-link"
                               style={{ color: enabled ? "var(--text)" : "var(--muted)" }}
-                              title="Abrir en Explorar"
+                              title={t("favorites.openExplore")}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 openFavoriteInInfo(it);
@@ -1161,7 +1169,7 @@ export function FavoritesView() {
                               {it.module_name || it.module_id}
                               {it.status ? ` · ${seriesStatusLabel(it.status)}` : ""}
                               {!modules.some((m) => m.id === it.module_id)
-                                ? " · módulo ausente"
+                                ? t("favorites.missingModule")
                                 : ""}
                             </span>
                           </div>
@@ -1187,7 +1195,7 @@ export function FavoritesView() {
                           <button
                             type="button"
                             className={`fav-ibtn${n ? "" : " off"}`}
-                            title="Descargar nuevos"
+                            title={t("favorites.downloadNew")}
                             disabled={!n}
                             style={{ borderColor: "transparent", width: "24px", height: "24px" }}
                             onClick={(e) => {
@@ -1200,7 +1208,7 @@ export function FavoritesView() {
                           <button
                             type="button"
                             className="fav-ibtn"
-                            title="Quitar de favoritos"
+                            title={t("favorites.remove")}
                             style={{ borderColor: "transparent", width: "24px", height: "24px" }}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1254,21 +1262,21 @@ export function FavoritesView() {
               type="button"
               role="menuitem"
               className="dl-ctx-item"
-              title="Importa favoritos y capítulos descargados de una vez"
+              title={t("favorites.importBoth")}
               onClick={() => handleImportDb("dir")}
             >
               <Icon ico={ICO.folder} className="ico ico-sm" />
-              <span>Favoritos y descargas (carpeta userdata)</span>
+              <span>{t("favorites.importFolder")}</span>
             </button>
             <button
               type="button"
               role="menuitem"
               className="dl-ctx-item"
-              title="Importa solo lo que contenga el archivo que elijas"
+              title={t("favorites.importFile")}
               onClick={() => handleImportDb("file")}
             >
               <Icon name="import" className="ico ico-sm" />
-              <span>Un solo .db (favoritos o descargas)</span>
+              <span>{t("favorites.importDbOnly")}</span>
             </button>
           </div>
         </div>
@@ -1301,7 +1309,7 @@ export function FavoritesView() {
               }}
             >
               <Icon ico={ICO.info} className="ico ico-sm" />
-              <span>Ver información</span>
+              <span>{t("favorites.viewInfo")}</span>
             </button>
             <button
               type="button"
@@ -1315,7 +1323,7 @@ export function FavoritesView() {
               }}
             >
               <Icon ico={ICO.refresh} className="ico ico-sm" />
-              <span>Revisar capítulos nuevos</span>
+              <span>{t("favorites.checkNew")}</span>
             </button>
             <button
               type="button"
@@ -1329,7 +1337,7 @@ export function FavoritesView() {
               }}
             >
               <Icon ico={ICO.download} className="ico ico-sm" />
-              <span>Descargar nuevos</span>
+              <span>{t("favorites.downloadNew")}</span>
             </button>
             <button
               type="button"
@@ -1343,7 +1351,7 @@ export function FavoritesView() {
               }}
             >
               <Icon ico={ICO.layers} className="ico ico-sm" />
-              <span>Descargar todos</span>
+              <span>{t("favorites.downloadAll")}</span>
             </button>
             {ctxCanStop ? (
               <button
@@ -1356,7 +1364,7 @@ export function FavoritesView() {
                 }}
               >
                 <Icon ico={ICO.x} className="ico ico-sm" />
-                <span>Detener revisión</span>
+                <span>{t("favorites.stopCheck")}</span>
               </button>
             ) : null}
             <button
@@ -1398,7 +1406,7 @@ export function FavoritesView() {
               }}
             >
               <Icon ico={ICO.external} className="ico ico-sm" />
-              <span>Abrir en el navegador</span>
+              <span>{t("favorites.openBrowser")}</span>
             </button>
             <button
               type="button"
@@ -1411,13 +1419,13 @@ export function FavoritesView() {
                 if (!fav) return;
                 const url = maybeFillHost(fav.root_url, fav.manga_url);
                 void navigator.clipboard.writeText(url).then(
-                  () => log("URL copiada", "ok"),
+                  () => log(t("favorites.copiedUrl"), "ok"),
                   (e) => log(String(e), "err"),
                 );
               }}
             >
               <Icon ico={ICO.link} className="ico ico-sm" />
-              <span>Copiar URL</span>
+              <span>{t("favorites.copyUrl")}</span>
             </button>
             <button
               type="button"
@@ -1428,13 +1436,13 @@ export function FavoritesView() {
                 const titles = ctxFavs.map((f) => f.title).join("\n");
                 setFavCtxMenu(null);
                 void navigator.clipboard.writeText(titles).then(
-                  () => log(ctxFavs.length === 1 ? "Título copiado" : "Títulos copiados", "ok"),
+                  () => log(ctxFavs.length === 1 ? t("favorites.copiedTitle") : t("favorites.copiedTitles"), "ok"),
                   (e) => log(String(e), "err"),
                 );
               }}
             >
               <Icon ico={ICO.copy} className="ico ico-sm" />
-              <span>Copiar título</span>
+              <span>{t("favorites.copyTitle")}</span>
             </button>
             <button
               type="button"
@@ -1447,7 +1455,7 @@ export function FavoritesView() {
               }}
             >
               <Icon ico={ICO.trash} className="ico ico-sm" />
-              <span>Quitar de favoritos</span>
+              <span>{t("favorites.remove")}</span>
             </button>
           </div>
         </div>

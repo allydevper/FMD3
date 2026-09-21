@@ -80,6 +80,7 @@ pub const UI_NEW_DAYS: &str = "ui.new_days";
 pub const UI_SELECTED_MODULE: &str = "ui.selected_module";
 
 pub const APP_THEME: &str = "app.theme";
+pub const APP_LANGUAGE: &str = "app.language";
 pub const AFTER_FINISH: &str = "app.after_finish";
 
 pub const LOG_ENABLED: &str = "log.enabled";

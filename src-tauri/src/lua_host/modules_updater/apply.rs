@@ -113,7 +113,14 @@ pub fn execute(
         .filter(|i| i.kind == ChangeKind::Delete)
         .collect();
     if !deletes.is_empty() {
-        emitter.phase("delete", &format!("Eliminando {} archivos…", deletes.len()));
+        emitter.phase(
+            "delete",
+            &format!(
+                "{} {}…",
+                crate::i18n::t("Eliminando", "Deleting"),
+                deletes.len()
+            ),
+        );
     }
     let mut removed_paths: Vec<String> = Vec::new();
     for item in deletes {
@@ -184,7 +191,11 @@ pub fn execute(
             phase: "archive".into(),
             transport: "zip".into(),
             files_total: total,
-            message: format!("Descargando paquete con {total} archivos…"),
+            message: format!(
+                "{} {total} {}…",
+                crate::i18n::t("Descargando paquete con", "Downloading pack with"),
+                crate::i18n::t("archivos", "files")
+            ),
             ..Default::default()
         });
         let wanted: HashSet<String> = downloads.iter().map(|i| i.path.clone()).collect();
@@ -195,13 +206,16 @@ pub fn execute(
                 files_total: total,
                 bytes_done,
                 bytes_total,
-                message: "Descargando paquete…".into(),
+                message: crate::i18n::t("Descargando paquete…", "Downloading pack…").into(),
                 ..Default::default()
             });
         };
         match source.fetch_bulk(&plan.revision, &wanted, &mut on_bytes, &is_cancelled) {
             Ok(map) => {
-                emitter.phase("download", "Escribiendo archivos del paquete…");
+                emitter.phase(
+                    "download",
+                    crate::i18n::t("Escribiendo archivos del paquete…", "Writing pack files…"),
+                );
                 let mut leftovers = Vec::new();
                 for item in &downloads {
                     if is_cancelled() {
@@ -316,7 +330,7 @@ pub fn execute(
     let state = shared.into_inner();
     if !out.cancelled && settings_keys::bool_setting(settings_keys::MODULES_FETCH_METADATA, true) {
         let paths: Vec<String> = downloads.iter().map(|i| i.path.clone()).collect();
-        emitter.phase("metadata", "Consultando información de los cambios…");
+        emitter.phase("metadata", crate::i18n::t("Consultando información de los cambios…", "Fetching change details…"));
         match source.metadata(&plan.revision, &paths) {
             Ok(map) if !map.is_empty() => enrich(state, &map),
             Ok(_) => {}
@@ -324,7 +338,7 @@ pub fn execute(
         }
     }
 
-    emitter.phase("persist", "Guardando estado…");
+    emitter.phase("persist", crate::i18n::t("Guardando estado…", "Saving state…"));
     if let Err(e) = save_state(state) {
         out.status_lines.push(e);
     }

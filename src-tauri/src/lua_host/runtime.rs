@@ -2608,13 +2608,14 @@ pub fn update_list(
             0,
             0,
             &format!(
-                "Preparando · {} · no_info={}",
+                "{} · {} · no_info={}",
+                crate::i18n::t("Preparando", "Preparing"),
                 if full_scan {
-                    "escaneo completo"
+                    crate::i18n::t("escaneo completo", "full scan")
                 } else if module_sorted {
-                    "solo lo más reciente"
+                    crate::i18n::t("solo lo más reciente", "newest only")
                 } else {
-                    "todas las páginas"
+                    crate::i18n::t("todas las páginas", "all pages")
                 },
                 no_info
             ),
@@ -2666,7 +2667,12 @@ pub fn update_list(
             let msg = status(
                 1,
                 1,
-                &format!("Obteniendo directorio · {} páginas", page_total),
+                &format!(
+                    "{} · {} {}",
+                    crate::i18n::t("Obteniendo directorio", "Fetching directory"),
+                    page_total,
+                    crate::i18n::t("páginas", "pages")
+                ),
             );
             emit(UpdateListProgress {
                 module_id: meta.id.clone(),
@@ -2743,7 +2749,8 @@ pub fn update_list(
             pages_fetched += 1;
 
             let note = format!(
-                "Buscando títulos nuevos · dir {}/{} · +{} (acum {})",
+                "{} · dir {}/{} · +{} (acum {})",
+                crate::i18n::t("Buscando títulos nuevos", "Looking for new titles"),
                 dir_idx + 1,
                 total_dirs,
                 batch_new,
@@ -2783,7 +2790,12 @@ pub fn update_list(
         let msg = status(
             pending.len() as i64,
             pending.len() as i64,
-            &format!("Insertando {} sin GetInfo", pending.len()),
+            &format!(
+                "{} {} {}",
+                crate::i18n::t("Insertando", "Inserting"),
+                pending.len(),
+                crate::i18n::t("sin GetInfo", "without GetInfo")
+            ),
         );
         emit(UpdateListProgress {
             module_id: meta.id.clone(),
@@ -2806,7 +2818,11 @@ pub fn update_list(
             let msg = status(
                 0,
                 total as i64,
-                &format!("Obteniendo info · {total} nuevos"),
+                &format!(
+                    "{} · {total} {}",
+                    crate::i18n::t("Obteniendo info", "Getting info"),
+                    crate::i18n::t("nuevos", "new")
+                ),
             );
             emit(UpdateListProgress {
                 module_id: meta.id.clone(),
@@ -2900,7 +2916,11 @@ pub fn update_list(
                                 if crate::catalog::title_is_na(title) {
                                     skipped_a.fetch_add(1, Ordering::Relaxed);
                                     emit_progress(
-                                        format!("Obteniendo info · omitido \"{short}\""),
+                                        format!(
+                                            "{} · {} \"{short}\"",
+                                            crate::i18n::t("Obteniendo info", "Getting info"),
+                                            crate::i18n::t("omitido", "skipped")
+                                        ),
                                         inserted_a.load(Ordering::Relaxed),
                                     );
                                     continue;
@@ -2955,7 +2975,8 @@ pub fn update_list(
                                         let n = inserted_a.fetch_add(1, Ordering::Relaxed) + 1;
                                         emit_progress(
                                             format!(
-                                                "Obteniendo info · \"{short}\" · caps={numchapter}"
+                                                "{} · \"{short}\" · caps={numchapter}",
+                                                crate::i18n::t("Obteniendo info", "Getting info")
                                             ),
                                             n,
                                         );
@@ -2963,7 +2984,8 @@ pub fn update_list(
                                     Ok(false) => {
                                         emit_progress(
                                             format!(
-                                                "Obteniendo info · \"{short}\" · caps={numchapter}"
+                                                "{} · \"{short}\" · caps={numchapter}",
+                                                crate::i18n::t("Obteniendo info", "Getting info")
                                             ),
                                             inserted_a.load(Ordering::Relaxed),
                                         );
@@ -2972,7 +2994,9 @@ pub fn update_list(
                                         skipped_a.fetch_add(1, Ordering::Relaxed);
                                         emit_progress(
                                             format!(
-                                                "Obteniendo info · falló \"{short}\": {err}"
+                                                "{} · {} \"{short}\": {err}",
+                                                crate::i18n::t("Obteniendo info", "Getting info"),
+                                                crate::i18n::t("falló", "failed")
                                             ),
                                             inserted_a.load(Ordering::Relaxed),
                                         );
@@ -2982,7 +3006,11 @@ pub fn update_list(
                             Err(err) => {
                                 skipped_a.fetch_add(1, Ordering::Relaxed);
                                 emit_progress(
-                                    format!("Obteniendo info · falló \"{short}\": {err}"),
+                                    format!(
+                                        "{} · {} \"{short}\": {err}",
+                                        crate::i18n::t("Obteniendo info", "Getting info"),
+                                        crate::i18n::t("falló", "failed")
+                                    ),
                                     inserted_a.load(Ordering::Relaxed),
                                 );
                             }
@@ -3000,12 +3028,19 @@ pub fn update_list(
 
     let st = crate::catalog::stats(&meta.id)?;
     let summary = format!(
-        "Actualizando lista {} | fin · páginas={} · nuevos={} · insertados={} · omitidos={} · cancelado={}",
+        "{} {} | {} · {}={} · {}={} · {}={} · {}={} · {}={}",
+        crate::i18n::t("Actualizando lista", "Updating list"),
         meta.name,
+        crate::i18n::t("fin", "done"),
+        crate::i18n::t("páginas", "pages"),
         pages_fetched,
+        crate::i18n::t("nuevos", "new"),
         pending.len(),
+        crate::i18n::t("insertados", "inserted"),
         inserted_total,
+        crate::i18n::t("omitidos", "skipped"),
         skipped,
+        crate::i18n::t("cancelado", "cancelled"),
         cancelled
     );
     emit(UpdateListProgress {
@@ -3019,7 +3054,10 @@ pub fn update_list(
         pending_total: pending.len(),
         getinfo_index: inserted_total,
         getinfo_total: pending.len(),
-        message: format!("[T:{threads}] · listo · +{inserted_total}"),
+        message: format!(
+            "[T:{threads}] · {} · +{inserted_total}",
+            crate::i18n::t("listo", "done")
+        ),
         log: summary,
     });
 

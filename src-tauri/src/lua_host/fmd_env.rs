@@ -7,7 +7,7 @@ pub fn register_fmd_env(lua: &Lua) -> mlua::Result<()> {
     let loaded: Table = package.get("loaded")?;
     let env = lua.create_table()?;
     // FMD2 SimpleTranslator.LastSelected — UI language code
-    env.set("SelectedLanguage", "en")?;
+    env.set("SelectedLanguage", crate::i18n::code())?;
     env.set("Directory", "")?;
     env.set("ExeName", "FMD3")?;
     env.set("Version", "0.1.0")?;

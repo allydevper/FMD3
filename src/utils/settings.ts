@@ -1,6 +1,7 @@
 import { appConfirm } from "../components/AppConfirm";
 import { SK } from "../constants";
 import * as api from "../api/tauri";
+import { t } from "../i18n";
 
 export function parseSettingBool(raw: string | null | undefined, def = false): boolean {
   if (raw == null || raw === "") return def;
@@ -21,11 +22,11 @@ export async function confirmIfEnabled(
   key: string,
   message: string,
   defEnabled = true,
-  title = "Confirmar",
+  title = t("confirm.defaultTitle"),
 ): Promise<boolean> {
   const on = await settingBool(key, defEnabled);
   if (!on) return true;
-  return appConfirm({ title, message, okLabel: "Continuar", cancelLabel: "Cancelar" });
+  return appConfirm({ title, message, okLabel: t("common.continue"), cancelLabel: t("common.cancel") });
 }
 
 export { SK };

@@ -87,7 +87,13 @@ pub fn fetch_from_server(
 ) -> Result<catalog::CatalogStats, String> {
     check_cancel()?;
     if settings_keys::module_disabled(module_id) {
-        return Err("Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.".into());
+        return Err(
+            crate::i18n::t(
+                "Módulo no activado. Ve a Ajustes → Sitios Web, márcalo y guarda.",
+                "Module is off. Go to Settings → Websites, enable it and save.",
+            )
+            .into(),
+        );
     }
 
     let url = resolve_db_url(module_id);
@@ -103,7 +109,12 @@ pub fn fetch_from_server(
         }
     };
 
-    emit("download", 0, 0, &format!("Descargando {module_id}…"));
+    emit(
+        "download",
+        0,
+        0,
+        &format!("{} {module_id}…", crate::i18n::t("Descargando", "Downloading")),
+    );
 
     let client = reqwest::blocking::Client::builder()
         .user_agent(
@@ -142,7 +153,8 @@ pub fn fetch_from_server(
             buf.len() as u64,
             total,
             &format!(
-                "Descargando {module_id}… {:.1}/{:.1} MB",
+                "{} {module_id}… {:.1}/{:.1} MB",
+                crate::i18n::t("Descargando", "Downloading"),
                 buf.len() as f64 / 1_048_576.0,
                 (if total > 0 { total } else { buf.len() as u64 }) as f64 / 1_048_576.0
             ),
@@ -164,7 +176,12 @@ pub fn fetch_from_server(
         dest
     } else {
         // Assume .7z (FMD2 default)
-        emit("extract", buf.len() as u64, buf.len() as u64, &format!("Extrayendo {module_id}…"));
+        emit(
+            "extract",
+            buf.len() as u64,
+            buf.len() as u64,
+            &format!("{} {module_id}…", crate::i18n::t("Extrayendo", "Extracting")),
+        );
         check_cancel()?;
         let archive = work.join(format!("{module_id}.7z"));
         std::fs::write(&archive, &buf).map_err(|e| e.to_string())?;
@@ -175,14 +192,23 @@ pub fn fetch_from_server(
         find_db_in_dir(&out)?
     };
 
-    emit("import", 0, 0, &format!("Importando {module_id}…"));
+    emit(
+        "import",
+        0,
+        0,
+        &format!("{} {module_id}…", crate::i18n::t("Importando", "Importing")),
+    );
     check_cancel()?;
     let st = catalog::import_file(module_id, &db_path)?;
     emit(
         "done",
         0,
         0,
-        &format!("OK {module_id}: {} títulos", st.count),
+        &format!(
+            "OK {module_id}: {} {}",
+            st.count,
+            crate::i18n::t("títulos", "titles")
+        ),
     );
 
     let _ = std::fs::remove_dir_all(&work);
