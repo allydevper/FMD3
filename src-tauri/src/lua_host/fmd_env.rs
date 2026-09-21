@@ -10,7 +10,7 @@ pub fn register_fmd_env(lua: &Lua) -> mlua::Result<()> {
     env.set("SelectedLanguage", crate::i18n::code())?;
     env.set("Directory", "")?;
     env.set("ExeName", "FMD3")?;
-    env.set("Version", "0.1.0")?;
+    env.set("Version", "1.0.0")?;
     env.set("Revision", "0")?;
     env.set(
         "LuaDirectory",

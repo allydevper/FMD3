@@ -21,17 +21,12 @@
 
 ## Estado
 
-Versión `0.1.0`, en desarrollo activo. Funciona de punta a punta —catálogo,
-descargas, favoritos, empaquetado— pero **todavía no hay ninguna release
-publicada**, así que por ahora la única forma de usarlo es compilarlo.
+Versión **1.0.0**. El instalador se publica en
+[Releases](https://github.com/allydevper/FMD3/releases).
 
 > [!NOTE]
-> **Pendiente para cuando se suba la primera release:**
-> - [ ] Publicar el instalador `FMD3_<version>_x64-setup.exe` en [Releases](https://github.com/allydevper/FMD3/releases)
-> - [ ] Sección **Instalación** con enlace de descarga directa
-> - [ ] Badges de versión, descargas y build
-> - [ ] Capturas de pantalla de la app (Explorar, Descargas, Favoritos)
-> - [ ] `latest.json` firmado para el self-updater — ver [`docs/RELEASE-UPDATER.md`](docs/RELEASE-UPDATER.md)
+> Tras instalar, el primer arranque descarga los módulos Lua (hace falta red).
+> Luego ve a **Ajustes → Sitios Web**, marca los que quieras y actualiza el catálogo.
 
 ## Qué hace
 
@@ -50,9 +45,14 @@ publicada**, así que por ahora la única forma de usarlo es compilarlo.
 
 ## Instalación
 
-> [!IMPORTANT]
-> Pendiente: no hay release publicada todavía. Mientras tanto, compílalo
-> siguiendo [Desarrollo](#desarrollo).
+Windows x64: descarga `FMD3_1.0.0_x64-setup.exe` desde
+[Releases](https://github.com/allydevper/FMD3/releases/latest).
+
+El self-updater comprueba
+[`latest.json`](https://github.com/allydevper/FMD3/releases/latest/download/latest.json)
+en esa misma página. Cómo firmar y publicar: [`docs/RELEASE-UPDATER.md`](docs/RELEASE-UPDATER.md).
+
+Para compilar desde el código, sigue [Desarrollo](#desarrollo).
 
 ## Desarrollo
 
@@ -121,14 +121,37 @@ escuchando en `:8191`.
 
 ## Dónde viven los datos
 
-| Ruta | Contenido |
+**Debug (`tauri dev`):** perfil en **`%AppData%\FMD3`**. Descargas por defecto en
+`%USERPROFILE%\Downloads\FMD3` (o la ruta que tengas en *Guardar en*).
+
+**Release / portable:** perfil y descargas **junto al `.exe`**. Cada carpeta
+descomprimida es una versión aislada (no comparte AppData con debug ni con otro zip).
+
+| Ruta (portable) | Contenido |
 |---|---|
-| `%AppData%\FMD3\fmd3.db` | Ajustes, cola y caché de metadatos |
-| `%AppData%\FMD3\userdata\favorites.db` | Favoritos |
-| `%AppData%\FMD3\userdata\downloaded.db` | Marcas de capítulos descargados |
-| `%AppData%\FMD3\userdata\lua\` | Árbol de módulos sincronizado |
-| `%AppData%\FMD3\data\<module_id>.db` | Catálogo por sitio |
-| `<carpeta del ejecutable>\downloads\` | Descargas (configurable en Ajustes) |
+| `<carpeta>\fmd3.db` | Ajustes, cola y caché de metadatos |
+| `<carpeta>\userdata\favorites.db` | Favoritos |
+| `<carpeta>\userdata\downloaded.db` | Marcas de capítulos descargados |
+| `<carpeta>\userdata\lua\` | Árbol de módulos (sync al primer arranque) |
+| `<carpeta>\data\<module_id>.db` | Catálogo por sitio |
+| `<carpeta>\cover-cache\` | Portadas en disco |
+| `<carpeta>\downloads\` | Descargas por defecto |
+
+SQLite puede crear sidecars `*.db-wal` y `*.db-shm`. Cierra FMD3 antes de copiar
+el perfil; copia **toda** la carpeta, no solo el `.db`.
+
+### Pasar de debug a un portable (misma máquina)
+
+1. Cierra FMD3 (ventana y bandeja).
+2. Copia el contenido de `%AppData%\FMD3` **dentro** de la carpeta del portable
+   (junto a `FMD3.exe`).
+3. Copia tus descargas (p. ej. `src-tauri\target\debug\downloads` o
+   `%USERPROFILE%\Downloads\FMD3`) a `<portable>\downloads\`.
+4. En Ajustes, pon *Guardar en* a esa carpeta `downloads` (si la cola guardaba
+   rutas absolutas de debug, cámbialas o reescribe el ajuste).
+5. **Lua.** En debug es el `lua/` del repo. En portable el primer arranque
+   sincroniza a `userdata\lua`. No copies el `lua/` del repo salvo parches locales.
+6. TestCatalog y demás `Category=Test` no aparecen en release.
 
 ## Build
 
@@ -136,10 +159,9 @@ escuchando en `:8191`.
 npm run tauri build
 ```
 
-El instalador **no** empaqueta `lua/`. El modules-updater descarga el árbol
-completo a `%AppData%\FMD3\userdata\lua` en el primer arranque, y esa es la
-única copia que existe en una instalación — así una actualización de la app
-nunca pisa los módulos que ya sincronizaste.
+El instalador NSIS (si lo generas) **no** empaqueta `lua/`. El modules-updater
+descarga el árbol a `userdata\lua` junto al exe (portable) o, en builds antiguos
+que aún usaban AppData, a `%AppData%\FMD3\userdata\lua`.
 
 El proceso completo de firma y publicación está en
 [`docs/RELEASE-UPDATER.md`](docs/RELEASE-UPDATER.md).

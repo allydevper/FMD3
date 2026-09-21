@@ -55,6 +55,7 @@ export const es = {
     about: "Sobre",
     options: "Opciones",
     optionsPending: "Opciones — hay módulos por actualizar",
+    aboutPending: "Sobre — hay una actualización de la app",
     theme: "Tema",
     log: "Log",
     main: "Principal",
@@ -158,6 +159,9 @@ export const es = {
     insert: "Insertar:",
     badgeMine: "Mi versión",
     badgeNew: "Nuevo",
+    badgeUpdate: "Actualiza",
+    badgeFail: "Error",
+    badgeDelete: "Eliminar",
     theme: {
       label: "Tema",
       desc: "Apariencia clara, oscura o según el sistema",
@@ -483,6 +487,7 @@ export const es = {
     retryFailed: "Reintentar fallidos",
     openFolder: "Abrir carpeta",
     splitGroup: "Dividir grupo",
+    splitCount: "{n} capítulos",
     groupsAria: "Grupos en cola",
     selectAll: "Seleccionar todo",
     selectGroup: "Seleccionar grupo",
@@ -929,6 +934,14 @@ Cliente Tauri + React + módulos Lua de Free Manga Downloader 2
 Changelog:
 ([!] Importante, [+] Añadido, [-] Eliminado, [*] Cambio/corrección)
 
+1.0.0 (21.09.2026)
+[!] Primera release pública
+[*] Un capítulo incompleto ya no se marca como descargado
+[*] Cancelar un ítem de la cola no se pisa con done/retry
+[*] Salir desde la bandeja pide confirmación y aplica vacuum / limpiar completados
+[*] Carpeta de descargas por defecto: %USERPROFILE%\\Downloads\\FMD3
+[+] Recordatorio si pospones una actualización de la app
+
 0.1.0 (02.08.2026)
 [!] El proyecto pasa a llamarse FMD3 (antes «FMD Host» / fmd-mvp)
 [!] Los datos se guardan en %AppData%/FMD3 — una instalación anterior no se migra sola
@@ -1049,6 +1062,7 @@ https://github.com/dazedcat19/FMD2`,
     update: "Actualizar",
     later: "Más tarde",
     postponed: "Actualización v{v} pospuesta",
+    postponedToast: "Actualización v{v} pospuesta. Puedes instalarla desde Sobre.",
     downloading: "Descargando v{v}…",
     pct: "Descarga {pct}%",
     installing: "Descarga terminada; instalando…",

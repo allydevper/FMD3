@@ -79,7 +79,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<TrayIcon, String> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "quit" => app.exit(0),
+            "quit" => request_app_exit(app),
             "show" => restore_main_window(app),
             _ => {}
         })
@@ -130,6 +130,36 @@ pub fn mark_exit_confirmed() {
 
 pub fn clear_exit_prompt() {
     EXIT_PROMPT_OPEN.store(false, Ordering::SeqCst);
+}
+
+fn apply_exit_cleanup(app: &AppHandle) {
+    if crate::settings_keys::bool_setting(crate::settings_keys::VACUUM_ON_EXIT, false) {
+        let state = app.state::<QueueState>();
+        let _ = crate::db::db_vacuum_app(&state.db, &state.favorites);
+    }
+    if crate::settings_keys::bool_setting(crate::settings_keys::CLEAR_DONE_ON_EXIT, false) {
+        let state = app.state::<QueueState>();
+        let _ = crate::db::queue_clear_finished(&state.db);
+    }
+}
+
+/// Same path as the window close button: confirm (if enabled), then vacuum / clear done.
+fn request_app_exit(app: &AppHandle) {
+    let confirm = crate::settings_keys::bool_setting(crate::settings_keys::CONFIRM_EXIT, true);
+    if confirm && !EXIT_CONFIRMED.load(Ordering::SeqCst) {
+        restore_main_window(app);
+        if EXIT_PROMPT_OPEN
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.emit("ask-exit-confirm", ());
+            }
+        }
+        return;
+    }
+    apply_exit_cleanup(app);
+    app.exit(0);
 }
 
 /// Exposed for smoke binaries / tests.
@@ -337,17 +367,7 @@ pub fn run() {
                     }
                     return;
                 }
-                if crate::settings_keys::bool_setting(crate::settings_keys::VACUUM_ON_EXIT, false) {
-                    let state = window.app_handle().state::<QueueState>();
-                    let _ = crate::db::db_vacuum_app(&state.db, &state.favorites);
-                }
-                if crate::settings_keys::bool_setting(
-                    crate::settings_keys::CLEAR_DONE_ON_EXIT,
-                    false,
-                ) {
-                    let state = window.app_handle().state::<QueueState>();
-                    let _ = crate::db::queue_clear_finished(&state.db);
-                }
+                apply_exit_cleanup(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![

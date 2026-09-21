@@ -430,15 +430,11 @@ fn process_item(
         return Ok(());
     }
 
-    if !result.errors.is_empty() && result.files.is_empty() {
+    if !result.errors.is_empty() {
         return Err(result.errors.join("; "));
     }
 
-    let mut err = if result.errors.is_empty() {
-        String::new()
-    } else {
-        result.errors.join("; ")
-    };
+    let mut err = String::new();
 
     let pack_fmt = {
         let frozen = item.pack_format.trim();
@@ -567,11 +563,6 @@ fn process_item(
             );
         }
 
-        if !err.is_empty() {
-            err.push_str("; ");
-        }
-        err.push_str(&format!("packed {}", archive.display()));
-
         if !outcome.skipped.is_empty() {
             // Unos pocos nombres bastan para orientar; la razón de cada uno ya
             // está en el log.
@@ -592,11 +583,13 @@ fn process_item(
             } else {
                 names.join(", ")
             };
-            err.push_str(&format!(
-                "; AVISO: faltan {} página(s) ({listed}); se conserva la carpeta de imágenes",
+            return Err(format!(
+                "faltan {} página(s) ({listed}); se conserva la carpeta de imágenes",
                 outcome.skipped.len()
             ));
         }
+
+        err = format!("packed {}", archive.display());
     }
 
     if cancel.load(Ordering::SeqCst) {
@@ -608,7 +601,15 @@ fn process_item(
         return Ok(());
     }
 
-    db::queue_set_status(&app.state::<QueueState>().db, item.id, "done", &err)?;
+    let marked = db::queue_set_status(
+        &app.state::<QueueState>().db,
+        item.id,
+        "done",
+        &err,
+    )?;
+    if !marked {
+        return Ok(());
+    }
     let _ = db::downloaded_chapters_mark(
         &app.state::<QueueState>().downloaded,
         &item.module_id,

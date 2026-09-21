@@ -127,6 +127,7 @@ type AppContextValue = {
   modulesJob: ModulesUpdateProgressEvent | null;
   /** Version of a postponed app update, if any. */
   appUpdatePending: string | null;
+  setAppUpdatePending: (v: string | null) => void;
   /** Options tab to open next; OptionsView consumes and clears it. */
   pendingOptionsTab: PendingOptionsTab | null;
   /** Navigate to Options and land on a specific tab. */
@@ -196,6 +197,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     layoutFromWidth(typeof window !== "undefined" ? window.innerWidth : 1280),
   );
   const favIntervalRef = useRef<number | null>(null);
+  const favIntervalBusyRef = useRef(false);
   const modulesUpdateBusyRef = useRef(false);
   const runAutoModulesCheckRef = useRef<(silent: boolean) => Promise<void>>(async () => {});
   /** Set by a silent check that found changes; cleared once they are applied. */
@@ -290,7 +292,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       favDownloadAfterRef.current = downloadAfter;
       if (intervalMin <= 0) return;
       favIntervalRef.current = window.setInterval(() => {
+        if (favIntervalBusyRef.current) return;
         void (async () => {
+          favIntervalBusyRef.current = true;
           setFavAutoCheckSource("intervalo");
           setFavAutoChecking(true);
           try {
@@ -300,6 +304,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             log(t("ctx.favPeriodErr", { err: String(e) }), "err");
           } finally {
             setFavAutoChecking(false);
+            favIntervalBusyRef.current = false;
           }
           // FMD2: same AutoCheckLatestVersion also refreshes Lua modules on fav timer.
           const checkUpdate = parseBool(await api.settingsGet(SK.CHECK_UPDATE_START), true);
@@ -335,18 +340,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [theme, applyResolvedDark]);
 
   useEffect(() => {
+    let cancelled = false;
     let un: (() => void) | undefined;
     void api
       .onLuaLog((msg) => {
         setLogLines((prev) => [...prev.slice(-400), { text: msg, kind: "" }]);
       })
       .then((u) => {
-        un = u;
+        if (cancelled) u();
+        else un = u;
       });
-    return () => un?.();
+    return () => {
+      cancelled = true;
+      un?.();
+    };
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     let un: (() => void) | undefined;
     void api
       .onCfWebviewState((s) => {
@@ -358,9 +369,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!s.active) cfNavSwitchedRef.current = false;
       })
       .then((u) => {
-        un = u;
+        if (cancelled) u();
+        else un = u;
       });
-    return () => un?.();
+    return () => {
+      cancelled = true;
+      un?.();
+    };
   }, []);
 
   const currentModule = useMemo(
@@ -803,7 +818,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           try {
             const r = await runAppUpdateCheck(log);
             installingApp = r.installing;
-            if (r.deferred) setAppUpdatePending(r.version ?? null);
+            if (r.deferred) {
+              setAppUpdatePending(r.version ?? null);
+              appToast({
+                message: t("updates.postponedToast", { v: r.version ?? "" }),
+                action: {
+                  label: t("nav.about"),
+                  onClick: () => setActiveNav("about"),
+                },
+              });
+            }
           } catch {
             // runAppUpdateCheck already logged
           }
@@ -883,6 +907,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setModulesPending,
     modulesJob,
     appUpdatePending,
+    setAppUpdatePending,
     pendingOptionsTab,
     openOptionsTab,
     clearPendingOptionsTab,

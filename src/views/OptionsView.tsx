@@ -416,13 +416,13 @@ function repoEntryToRow(e: LuaRepoEntry): ModRow {
     badge = t("options.badgeNew");
     updated = true;
   } else if (flag === "update") {
-    badge = "Update";
+    badge = t("options.badgeUpdate");
     updated = true;
   } else if (flag === "failed") {
-    badge = "Fail";
+    badge = t("options.badgeFail");
     updated = true;
   } else if (flag === "delete") {
-    badge = "Delete";
+    badge = t("options.badgeDelete");
     updated = true;
   }
   return {
@@ -1682,9 +1682,9 @@ export function OptionsView() {
       }
     }
     const parts: string[] = [];
-    if (nw) parts.push(`${nw} nuevos`);
-    if (up) parts.push(`${up} actualizados`);
-    if (del) parts.push(`${del} eliminados`);
+    if (nw) parts.push(t("modules.new", { n: nw }));
+    if (up) parts.push(t("modules.updated", { n: up }));
+    if (del) parts.push(t("modules.deleted", { n: del }));
     return { total: nw + up + del, summary: parts.join(", ") };
   }, [repoEntries]);
 

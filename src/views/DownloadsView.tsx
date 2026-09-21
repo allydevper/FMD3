@@ -457,12 +457,16 @@ export function DownloadsView() {
   const [packFmt, setPackFmt] = useState("none");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const lastProgressLogRef = useRef<{ itemId: number; message: string } | null>(null);
+  const refreshSeqRef = useRef(0);
 
   async function refreshQueue() {
+    const seq = ++refreshSeqRef.current;
     try {
       const list = await api.queueList();
+      if (seq !== refreshSeqRef.current) return;
       setItems(list);
     } catch (e) {
+      if (seq !== refreshSeqRef.current) return;
       log(String(e), "err");
     }
   }
@@ -2337,24 +2341,26 @@ export function DownloadsView() {
           >
             <header className="info-split-head">
               <h2 id="dl-split-title" className="info-modal-title">
-                Dividir grupo
+                {t("downloads.splitGroup")}
               </h2>
               <p className="info-split-sub">
-                {splitPrompt.group.items.length} capítulos
-                {splitPrompt.group.title ? ` de ${splitPrompt.group.title}` : ""}
+                {t("downloads.splitCount", { n: splitPrompt.group.items.length })}
+                {splitPrompt.group.title
+                  ? t("explore.splitOf", { title: splitPrompt.group.title })
+                  : ""}
               </p>
             </header>
             <div className="info-modal-body info-split-body">
               <div className="info-split-row">
                 <label className="info-split-label" htmlFor="dl-split-count">
-                  Número de tareas
+                  {t("explore.splitTasks")}
                 </label>
                 <div className="info-split-stepper st-num-wrap">
                   <div className="st-stepper">
                     <button
                       type="button"
                       className="st-stepper-btn"
-                      aria-label="Menos"
+                      aria-label={t("common.less")}
                       disabled={splitBusy || splitPrompt.count <= 2}
                       onClick={() =>
                         setSplitPrompt((prev) =>

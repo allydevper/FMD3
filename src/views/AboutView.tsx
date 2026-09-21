@@ -23,7 +23,7 @@ function AboutLink({ url, children }: { url: string; children: string }) {
 
 export function AboutView() {
   useLanguage();
-  const { modules, log, activeNav } = useApp();
+  const { modules, log, activeNav, setAppUpdatePending } = useApp();
   const [tab, setTab] = useState<AboutTab>("fmd");
   const [version, setVersion] = useState("…");
   const [checking, setChecking] = useState(false);
@@ -31,7 +31,7 @@ export function AboutView() {
   useEffect(() => {
     void getVersion()
       .then(setVersion)
-      .catch(() => setVersion("0.1.0"));
+      .catch(() => setVersion("—"));
   }, []);
 
   const modulesCount = modules.length;
@@ -67,7 +67,9 @@ export function AboutView() {
                 setChecking(true);
                 void (async () => {
                   try {
-                    await runAppUpdateCheck(log, { notifyResult: true });
+                    const r = await runAppUpdateCheck(log, { notifyResult: true });
+                    if (r.deferred) setAppUpdatePending(r.version ?? null);
+                    else setAppUpdatePending(null);
                   } catch {
                     // already logged
                   } finally {

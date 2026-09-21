@@ -366,7 +366,7 @@ pub fn settings_set(state: State<QueueState>, key: String, value: String) -> Res
     db::settings_set(&state.db, &key, &value)
 }
 
-/// Default "Guardar en" path = `downloads/` beside the running executable.
+/// Default "Guardar en" path = `%USERPROFILE%\Downloads\FMD3`.
 #[tauri::command]
 pub fn default_save_dir() -> Result<String, String> {
     Ok(db::default_download_dir().to_string_lossy().into_owned())
@@ -1578,22 +1578,15 @@ pub fn shell_open_external(path: String, args: Option<String>) -> Result<(), Str
     if path.is_empty() {
         return Err("ruta vacía".into());
     }
+    if args.as_ref().is_some_and(|s| !s.trim().is_empty()) {
+        return Err("args no permitidos".into());
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut cmd = if let Some(a) = args.as_ref().filter(|s| !s.trim().is_empty()) {
-            let mut c = std::process::Command::new(path);
-            for part in a.split_whitespace() {
-                c.arg(part);
-            }
-            c
-        } else {
-            // Open path with the default associated application.
-            let mut c = std::process::Command::new("cmd");
-            c.args(["/C", "start", "", path]);
-            c
-        };
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", path]);
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.spawn()
             .map_err(|e| format!("no se pudo abrir '{path}': {e}"))?;
@@ -1601,18 +1594,9 @@ pub fn shell_open_external(path: String, args: Option<String>) -> Result<(), Str
     }
     #[cfg(not(windows))]
     {
-        let mut cmd = if let Some(a) = args.as_ref().filter(|s| !s.trim().is_empty()) {
-            let mut c = std::process::Command::new(path);
-            for part in a.split_whitespace() {
-                c.arg(part);
-            }
-            c
-        } else {
-            let mut c = std::process::Command::new("xdg-open");
-            c.arg(path);
-            c
-        };
-        cmd.spawn()
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
             .map_err(|e| format!("no se pudo abrir '{path}': {e}"))?;
         Ok(())
     }
@@ -1791,7 +1775,7 @@ pub async fn catalog_download_fmd2db(url: String) -> Result<String, String> {
                     .ok()
                     .flatten()
                     .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| "FMD3/0.1".into()),
+                    .unwrap_or_else(|| "FMD3/1.0".into()),
             )
             .timeout(std::time::Duration::from_secs(
                 crate::settings_keys::http_timeout_secs().max(1),

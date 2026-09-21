@@ -16,19 +16,24 @@ pub fn exe_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Portable default for "Guardar en": `downloads/` beside the executable.
+/// Default "Guardar en".
 ///
-/// The subfolder matters — the exe directory itself is also the install
-/// directory, so downloading straight into it leaves every manga folder loose
-/// among the app's own files.
+/// - **Release / portable:** `downloads/` next to the `.exe` (each zip folder is
+///   self-contained; two versions do not share chapters).
+/// - **Debug:** `%USERPROFILE%\Downloads\FMD3` so `tauri dev` does not dump
+///   manga into `target/debug`.
 ///
-/// Creates the folder on the way out. The download path would create it anyway,
-/// but the settings UI shows this string before anything is downloaded, and a
-/// "Guardar en" pointing at a folder that does not exist yet is confusing — the
-/// file picker cannot even open there. A failure here is not fatal: the path is
-/// still returned, and `create_dir_all` on the chapter directory retries later.
+/// A saved `default_output_dir` still wins. Creates the folder on the way out
+/// so the settings picker can open there.
 pub fn default_download_dir() -> PathBuf {
-    let dir = exe_dir().join("downloads");
+    let dir = if cfg!(debug_assertions) {
+        dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("FMD3")
+    } else {
+        exe_dir().join("downloads")
+    };
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("no se pudo crear {}: {e}", dir.display());
     }
@@ -203,9 +208,19 @@ const QUEUE_SELECT: &str = "SELECT id, manga_title, root_url, COALESCE(manga_url
         COALESCE(chapter_display,'')
  FROM queue_items";
 
+/// Profile root (`fmd3.db`, `userdata/`, `data/`, `cover-cache/`).
+///
+/// - **Release / portable:** beside the `.exe` so each unzipped version is
+///   isolated (no shared `%AppData%\FMD3`).
+/// - **Debug:** `%AppData%\FMD3` so `tauri dev` keeps a stable profile outside
+///   `target/`.
 pub fn db_path() -> PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("FMD3")
+    if cfg!(debug_assertions) {
+        let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+        base.join("FMD3")
+    } else {
+        exe_dir()
+    }
 }
 
 pub fn userdata_path() -> PathBuf {
@@ -1221,12 +1236,17 @@ pub fn queue_take_next_pending(db: &Db) -> Result<Option<QueueItem>, String> {
         return Ok(None);
     };
     let ts = now();
-    conn.execute(
-        "UPDATE queue_items SET status='running', error='', updated_at=?1 WHERE id=?2",
-        params![ts, id],
-    )
-    .map_err(|e| e.to_string())?;
+    let n = conn
+        .execute(
+            "UPDATE queue_items SET status='running', error='', updated_at=?1
+             WHERE id=?2 AND status='pending'",
+            params![ts, id],
+        )
+        .map_err(|e| e.to_string())?;
     drop(conn);
+    if n == 0 {
+        return Ok(None);
+    }
     queue_get(db, id).map(Some)
 }
 
@@ -1240,14 +1260,17 @@ pub fn queue_get(db: &Db, id: i64) -> Result<QueueItem, String> {
     .map_err(|e| e.to_string())
 }
 
-pub fn queue_set_status(db: &Db, id: i64, status: &str, error: &str) -> Result<(), String> {
+/// Set status only if the row is still `running`. Returns whether a row changed.
+pub fn queue_set_status(db: &Db, id: i64, status: &str, error: &str) -> Result<bool, String> {
     let conn = db.lock();
-    conn.execute(
-        "UPDATE queue_items SET status=?1, error=?2, updated_at=?3 WHERE id=?4",
-        params![status, error, now(), id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    let n = conn
+        .execute(
+            "UPDATE queue_items SET status=?1, error=?2, updated_at=?3
+             WHERE id=?4 AND status='running'",
+            params![status, error, now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
 }
 
 /// Mark cancelled only if still `running`. Avoids clobbering a concurrent
@@ -1264,21 +1287,29 @@ pub fn queue_mark_cancelled_if_running(db: &Db, id: i64, error: &str) -> Result<
     Ok(n > 0)
 }
 
-/// Increment retry_count and set status back to pending.
-pub fn queue_inc_retry(db: &Db, id: i64, error: &str) -> Result<(), String> {
+/// Increment retry_count and set status back to pending, only if still `running`.
+pub fn queue_inc_retry(db: &Db, id: i64, error: &str) -> Result<bool, String> {
     let conn = db.lock();
-    conn.execute(
-        "UPDATE queue_items SET status='pending', error=?1, retry_count=retry_count+1, updated_at=?2
-         WHERE id=?3",
-        params![error, now(), id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    let n = conn
+        .execute(
+            "UPDATE queue_items SET status='pending', error=?1, retry_count=retry_count+1, updated_at=?2
+             WHERE id=?3 AND status='running'",
+            params![error, now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
 }
 
 /// On failure: if retry_count < max_retries, increment and set pending; else failed.
-pub fn queue_fail_or_retry(db: &Db, id: i64, error: &str, max_retries: usize) -> Result<(), String> {
-    let item = queue_get(db, id)?;
+/// No-ops (Ok(false)) when the row is no longer `running` (cancelled / removed).
+pub fn queue_fail_or_retry(db: &Db, id: i64, error: &str, max_retries: usize) -> Result<bool, String> {
+    let item = match queue_get(db, id) {
+        Ok(i) => i,
+        Err(_) => return Ok(false),
+    };
+    if item.status != "running" {
+        return Ok(false);
+    }
     if (item.retry_count as usize) < max_retries {
         queue_inc_retry(db, id, error)
     } else {
@@ -2442,6 +2473,50 @@ mod tests {
         let second = batch_of(&db, ids[3]);
         assert_eq!(second, batch_of(&db, ids[4]));
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn fail_or_retry_does_not_clobber_cancelled() {
+        let db = test_main_db();
+        let ids = add_n(&db, 1, "");
+        set_status(&db, ids[0], "running");
+        queue_cancel(&db, ids[0]).unwrap();
+        assert_eq!(queue_get(&db, ids[0]).unwrap().status, "cancelled");
+        assert!(!queue_fail_or_retry(&db, ids[0], "boom", 3).unwrap());
+        assert_eq!(queue_get(&db, ids[0]).unwrap().status, "cancelled");
+        assert_eq!(queue_get(&db, ids[0]).unwrap().retry_count, 0);
+    }
+
+    #[test]
+    fn set_status_done_only_if_running() {
+        let db = test_main_db();
+        let ids = add_n(&db, 1, "");
+        set_status(&db, ids[0], "cancelled");
+        assert!(!queue_set_status(&db, ids[0], "done", "").unwrap());
+        assert_eq!(queue_get(&db, ids[0]).unwrap().status, "cancelled");
+
+        set_status(&db, ids[0], "running");
+        assert!(queue_set_status(&db, ids[0], "done", "").unwrap());
+        assert_eq!(queue_get(&db, ids[0]).unwrap().status, "done");
+    }
+
+    #[test]
+    fn take_does_not_revive_cancelled() {
+        let db = test_main_db();
+        let ids = add_n(&db, 1, "");
+        queue_cancel(&db, ids[0]).unwrap();
+        assert!(queue_take_next_pending(&db).unwrap().is_none());
+        assert_eq!(queue_get(&db, ids[0]).unwrap().status, "cancelled");
+    }
+
+    #[test]
+    fn take_pending_becomes_running() {
+        let db = test_main_db();
+        let ids = add_n(&db, 1, "");
+        let taken = queue_take_next_pending(&db).unwrap().expect("pending");
+        assert_eq!(taken.id, ids[0]);
+        assert_eq!(taken.status, "running");
+        assert!(queue_take_next_pending(&db).unwrap().is_none());
     }
 }
 

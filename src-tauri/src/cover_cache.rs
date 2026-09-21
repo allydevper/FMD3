@@ -145,7 +145,7 @@ fn build_client() -> Result<reqwest::blocking::Client, String> {
     let ua = db::settings_get(&db, HTTP_USER_AGENT)?
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FMD3/0.1".into()
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FMD3/1.0".into()
         });
     let proxy = db::settings_get(&db, HTTP_PROXY)?.unwrap_or_default();
     let timeout = crate::settings_keys::http_timeout_secs().max(1);

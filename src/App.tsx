@@ -97,6 +97,7 @@ function Shell() {
     showMangaInfo,
     modulesPending,
     openOptionsTab,
+    appUpdatePending,
   } = useApp();
 
   useEffect(() => {
@@ -148,19 +149,23 @@ function Shell() {
       </svg>
       <div className="shell-body">
         <nav className="nav-rail" aria-label={t("nav.main")}>
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.map((item) => {
+            const pendingAbout = item.id === "about" && !!appUpdatePending;
+            return (
             <button
               key={item.id}
               type="button"
               className={`nav-item${activeNav === item.id ? " active" : ""}`}
               data-nav={item.id}
-              title={t(item.labelKey)}
+              title={pendingAbout ? t("nav.aboutPending") : t(item.labelKey)}
               onClick={() => setActiveNav(item.id)}
             >
               <Icon name={item.icon} className="ico ico-lg" />
               <span>{t(item.labelKey)}</span>
+              {pendingAbout ? <span className="nav-dot" aria-hidden="true" /> : null}
             </button>
-          ))}
+            );
+          })}
           <div className="nav-spacer" />
           <button
             type="button"

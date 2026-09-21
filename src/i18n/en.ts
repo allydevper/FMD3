@@ -55,6 +55,7 @@ export const en = {
     about: "About",
     options: "Settings",
     optionsPending: "Settings — modules waiting to update",
+    aboutPending: "About — an app update is waiting",
     theme: "Theme",
     log: "Log",
     main: "Main",
@@ -158,6 +159,9 @@ export const en = {
     insert: "Insert:",
     badgeMine: "My version",
     badgeNew: "New",
+    badgeUpdate: "Update",
+    badgeFail: "Fail",
+    badgeDelete: "Delete",
     theme: {
       label: "Theme",
       desc: "Light, dark, or match the system",
@@ -483,6 +487,7 @@ export const en = {
     retryFailed: "Retry failed",
     openFolder: "Open folder",
     splitGroup: "Split group",
+    splitCount: "{n} chapters",
     groupsAria: "Queued groups",
     selectAll: "Select all",
     selectGroup: "Select group",
@@ -929,6 +934,14 @@ Tauri + React client with Free Manga Downloader 2 Lua modules
 Changelog:
 ([!] Important, [+] Added, [-] Removed, [*] Change/fix)
 
+1.0.0 (21.09.2026)
+[!] First public release
+[*] An incomplete chapter is no longer marked as downloaded
+[*] Cancelling a queue item is no longer overwritten by done/retry
+[*] Quit from the tray asks to confirm and runs vacuum / clear-finished
+[*] Default download folder: %USERPROFILE%\\Downloads\\FMD3
+[+] Reminder if you postpone an app update
+
 0.1.0 (02.08.2026)
 [!] The project is now called FMD3 (formerly “FMD Host” / fmd-mvp)
 [!] Data is stored in %AppData%/FMD3 — a previous install is not migrated automatically
@@ -1049,6 +1062,7 @@ https://github.com/dazedcat19/FMD2`,
     update: "Update",
     later: "Later",
     postponed: "Update v{v} postponed",
+    postponedToast: "Update v{v} postponed. You can install it from About.",
     downloading: "Downloading v{v}…",
     pct: "Download {pct}%",
     installing: "Download finished; installing…",

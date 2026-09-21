@@ -34,7 +34,7 @@ export function settingsSet(key: string, value: string) {
   return invoke("settings_set", { key, value });
 }
 
-/** `downloads/` junto al ejecutable — default de "Guardar en". */
+/** `%USERPROFILE%/Downloads/FMD3` — default de "Guardar en". */
 export function defaultSaveDir() {
   return invoke<string>("default_save_dir");
 }

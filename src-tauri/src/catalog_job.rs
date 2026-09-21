@@ -80,6 +80,14 @@ fn find_db_in_dir(dir: &Path) -> Result<PathBuf, String> {
     found.ok_or_else(|| "El archivo .7z no contiene un .db".into())
 }
 
+struct TempWorkDir(PathBuf);
+
+impl Drop for TempWorkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Download module list DB from FMD server, extract if .7z, import into local catalog.
 pub fn fetch_from_server(
     module_id: &str,
@@ -122,7 +130,7 @@ pub fn fetch_from_server(
                 .ok()
                 .flatten()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "FMD3/0.1".into()),
+                .unwrap_or_else(|| "FMD3/1.0".into()),
         )
         .timeout(std::time::Duration::from_secs(
             crate::settings_keys::http_timeout_secs().max(30),
@@ -167,6 +175,7 @@ pub fn fetch_from_server(
         .unwrap_or(0);
     let work = std::env::temp_dir().join(format!("fmd-catalog-{module_id}-{stamp}"));
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let _work_guard = TempWorkDir(work.clone());
 
     let lower = url.to_ascii_lowercase();
     let db_path = if lower.ends_with(".db") || lower.ends_with(".sqlite") || lower.ends_with(".sqlite3")
@@ -211,6 +220,5 @@ pub fn fetch_from_server(
         ),
     );
 
-    let _ = std::fs::remove_dir_all(&work);
     Ok(st)
 }
