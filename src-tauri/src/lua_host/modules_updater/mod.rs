@@ -9,6 +9,7 @@
 pub mod apply;
 pub mod archive;
 pub mod model;
+pub mod overlay;
 pub mod plan;
 pub mod progress;
 pub mod session;
@@ -28,6 +29,7 @@ use model::FLAG_NONE;
 use parking_lot::Mutex;
 use source::{Probe, RemoteEntry, Source};
 use state::{file_mtime_unix, load_cursor, load_state, save_cursor, save_state};
+use std::collections::HashSet;
 use std::fs;
 
 /// One updater run at a time: `check` and `apply` both mutate `lua.json`.
@@ -44,35 +46,142 @@ fn lock() -> Result<parking_lot::MutexGuard<'static, ()>, String> {
 /// When the probe says nothing moved we still diff, but against the remote ids
 /// already stored — that surfaces work left over from an interrupted apply
 /// without asking the source for a listing it already told us is unchanged.
+fn cached_remote(st: &RepoState) -> Vec<RemoteEntry> {
+    st.entries
+        .iter()
+        .map(|e| RemoteEntry {
+            path: e.name.clone(),
+            content_id: e.remote_id.clone(),
+            size: None,
+        })
+        .collect()
+}
+
+fn recount(plan: &mut SyncPlan) {
+    plan.new_count = plan.items.iter().filter(|i| i.kind == model::ChangeKind::New).count();
+    plan.update_count = plan
+        .items
+        .iter()
+        .filter(|i| i.kind == model::ChangeKind::Update)
+        .count();
+    plan.delete_count = plan
+        .items
+        .iter()
+        .filter(|i| i.kind == model::ChangeKind::Delete)
+        .count();
+}
+
+fn tag_overlay_lines(plan: &mut SyncPlan) {
+    for item in &plan.items {
+        if !item.from_overlay {
+            continue;
+        }
+        let suffix = format!(" {}", item.path);
+        for line in &mut plan.status_lines {
+            if line.ends_with(&suffix) && !line.starts_with("[OVERLAY]") {
+                *line = format!("[OVERLAY] {line}");
+            }
+        }
+    }
+}
+
 fn build_plan(source: &dyn Source, force: bool) -> Result<(SyncPlan, RepoState), String> {
     let source_id = source.id();
     let mut cursor = load_cursor(&source_id);
     let mut st = load_state();
+    let overlay = source::github::overlay_source();
+    let mut overlay_cursor = overlay.as_ref().map(|o| load_cursor(&o.id()));
+    let mut notes = Vec::new();
 
-    let probe = source.probe(&mut cursor)?;
-    let (revision, remote) = match probe {
-        Probe::Unchanged => {
-            let revision = cursor.revision.clone();
-            let remote: Vec<RemoteEntry> = st
-                .entries
-                .iter()
-                .map(|e| RemoteEntry {
-                    path: e.name.clone(),
-                    content_id: e.remote_id.clone(),
-                    size: None,
-                })
-                .collect();
-            (revision, remote)
-        }
-        Probe::Changed { revision } => {
-            let listing = source.list(&revision)?;
-            (revision, listing)
-        }
+    let overlay_probe = match overlay.as_ref() {
+        Some(o) => match o.probe(overlay_cursor.as_mut().expect("cursor")) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("modules_updater: [OVERLAY] {e}");
+                notes.push(format!(
+                    "Overlay no disponible ({e}); esta revisión usa solo FMD2 y no toca los archivos que ya venían del overlay."
+                ));
+                None
+            }
+        },
+        None => None,
     };
 
+    let probe = source.probe(&mut cursor)?;
+    let base_changed = matches!(probe, Probe::Changed { .. });
+    let overlay_changed = matches!(overlay_probe, Some(Probe::Changed { .. }));
+    let revision = match &probe {
+        Probe::Changed { revision } => revision.clone(),
+        Probe::Unchanged => cursor.revision.clone(),
+    };
+
+    let mut did_merge = false;
+    let mut wins = HashSet::new();
+    let mut overlay_revision = String::new();
+
+    let used_cache = !base_changed && !overlay_changed;
+    let remote = if used_cache {
+        cached_remote(&st)
+    } else if let (Some(o), Some(ov_probe)) = (overlay.as_ref(), overlay_probe.as_ref()) {
+        let listing = source.list(&revision)?;
+        overlay_revision = match ov_probe {
+            Probe::Changed { revision } => revision.clone(),
+            Probe::Unchanged => overlay_cursor
+                .as_ref()
+                .map(|c| c.revision.clone())
+                .unwrap_or_default(),
+        };
+        match o.list(&overlay_revision) {
+            Ok(ov_list) => {
+                let merged = overlay::merge(source, o, listing, ov_list, &mut notes);
+                wins = merged.wins;
+                did_merge = true;
+                merged.remote
+            }
+            Err(e) => {
+                eprintln!("modules_updater: [OVERLAY] {e}");
+                notes.push(format!(
+                    "No se pudo listar el overlay ({e}); se mantiene FMD2 y no se borran archivos del overlay."
+                ));
+                listing
+            }
+        }
+    } else {
+        source.list(&revision)?
+    };
+
+    let protect_overlay = overlay.is_some() && !did_merge && !used_cache;
+
     let mut plan = plan::build(&remote, &mut st, source, &revision, force);
+    if did_merge {
+        for item in &mut plan.items {
+            item.from_overlay = wins.contains(&item.path);
+        }
+        for entry in &mut st.entries {
+            entry.from_overlay = wins.contains(&entry.name);
+        }
+        plan.overlay_revision = overlay_revision;
+        tag_overlay_lines(&mut plan);
+    }
+    if protect_overlay {
+        plan.items.retain(|item| {
+            let marked = st
+                .entries
+                .iter()
+                .find(|e| e.name == item.path)
+                .is_some_and(|e| e.from_overlay);
+            !marked
+        });
+        recount(&mut plan);
+    }
+    plan.status_lines.extend(notes);
     plan::prefer_local_newer(&mut plan, &mut st, source, &revision);
     let _ = save_cursor(&source_id, &cursor);
+    if let (Some(o), Some(c)) = (overlay.as_ref(), overlay_cursor.as_ref()) {
+        if overlay_probe.is_some() {
+            let _ = save_cursor(&o.id(), c);
+        }
+    }
     Ok((plan, st))
 }
 
@@ -108,6 +217,9 @@ fn reset_cursor_on_new_app_version(source_id: &str) {
     }
     if seen.is_some() {
         let _ = save_cursor(source_id, &state::SourceCursor::default());
+        if let Some(overlay) = source::github::overlay_source() {
+            let _ = save_cursor(&overlay.id(), &state::SourceCursor::default());
+        }
     }
     let _ = crate::db::settings_set_direct(KEY, current);
 }
@@ -154,6 +266,8 @@ pub fn apply(
     progress::reset_cancel();
     let emitter = progress::Emitter::new(sink);
     let source = source::resolve()?;
+    let overlay = source::github::overlay_source();
+    let overlay_ref = overlay.as_ref().map(|s| s as &dyn Source);
 
     emitter.phase("probe", crate::i18n::t("Preparando actualización…", "Preparing update…"));
     let mut st = load_state();
@@ -165,7 +279,7 @@ pub fn apply(
         return Ok(ModulesUpdateReport::default());
     }
 
-    let outcome = apply::execute(source.as_ref(), &plan, &mut st, &emitter);
+    let outcome = apply::execute(source.as_ref(), overlay_ref, &plan, &mut st, &emitter);
 
     emitter.phase("registry", crate::i18n::t("Recargando módulos…", "Reloading modules…"));
     let refreshed = registry::refresh();
@@ -518,6 +632,7 @@ mod tests {
             source_id: "test".into(),
             source_label: "test".into(),
             revision: "r1".into(),
+            overlay_revision: String::new(),
             items: Vec::new(),
             status_lines: Vec::new(),
             new_count: 0,

@@ -87,6 +87,10 @@ El self-updater actual ([`RELEASE-UPDATER.md`](RELEASE-UPDATER.md)) está pensad
 para el setup NSIS. Con portable, la actualización típica es **descargar el zip
 nuevo** (otra carpeta, o sustituir solo `FMD3.exe` y conservar el perfil).
 
+Los módulos Lua no van dentro del zip. Al pulsar «Revisar actualización» el
+portable descarga FMD2 y, con el overlay activo (Ajustes → Módulos), también
+`allydevper/FMD3` rama `master`. El árbol queda en `userdata\lua` junto al exe.
+
 ## Checklist próxima versión
 
 - [ ] Versión alineada en los tres archivos

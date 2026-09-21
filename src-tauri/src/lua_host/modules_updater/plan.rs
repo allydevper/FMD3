@@ -114,6 +114,7 @@ pub fn build(
                 kind: ChangeKind::Delete,
                 expected_id: String::new(),
                 size: None,
+                from_overlay: false,
             });
             continue;
         };
@@ -154,6 +155,7 @@ pub fn build(
             kind,
             expected_id: r.content_id.clone(),
             size: r.size,
+            from_overlay: false,
         });
     }
 
@@ -179,6 +181,7 @@ pub fn build(
         source_id,
         source_label: source.label(),
         revision: revision.to_string(),
+        overlay_revision: String::new(),
         items,
         status_lines,
         new_count,
@@ -216,13 +219,32 @@ pub fn prefer_local_newer(
     if update_paths.is_empty() {
         return;
     }
-    let meta = match source.metadata(revision, &update_paths) {
+    let overlay_paths: Vec<String> = plan
+        .items
+        .iter()
+        .filter(|i| i.kind == ChangeKind::Update && i.from_overlay)
+        .map(|i| i.path.clone())
+        .collect();
+    let base_paths: Vec<String> = update_paths
+        .iter()
+        .filter(|p| !overlay_paths.iter().any(|o| o == *p))
+        .cloned()
+        .collect();
+    let mut meta = match source.metadata(revision, &base_paths) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("modules_updater: no se pudo comparar fechas ({e})");
             return;
         }
     };
+    if !overlay_paths.is_empty() {
+        if let Some(overlay) = super::source::github::overlay_source() {
+            match overlay.metadata(&plan.overlay_revision, &overlay_paths) {
+                Ok(extra) => meta.extend(extra),
+                Err(e) => eprintln!("modules_updater: fechas del overlay no disponibles ({e})"),
+            }
+        }
+    }
     if meta.is_empty() {
         return;
     }

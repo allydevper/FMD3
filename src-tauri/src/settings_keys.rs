@@ -57,6 +57,14 @@ pub const MODULES_THREADS: &str = "modules.updater.threads";
 pub const MODULES_FETCH_METADATA: &str = "modules.updater.fetch_metadata";
 /// Keep a local Lua file when its mtime is newer than the official last commit.
 pub const MODULES_PREFER_LOCAL_NEWER: &str = "modules.updater.prefer_local_newer";
+/// Second GitHub tree merged with FMD2. Same path, newer commit wins.
+pub const MODULES_OVERLAY_ENABLED: &str = "modules.overlay.enabled";
+pub const MODULES_OVERLAY_OWNER: &str = "modules.overlay.owner";
+pub const MODULES_OVERLAY_NAME: &str = "modules.overlay.name";
+pub const MODULES_OVERLAY_REF: &str = "modules.overlay.ref";
+pub const MODULES_OVERLAY_PATH: &str = "modules.overlay.path";
+/// How many differing files may ask GitHub for a commit date in one check.
+pub const MODULES_OVERLAY_DATE_CAP: &str = "modules.overlay.date_cap";
 /// Hard cap on per-file metadata requests; GitHub has no bulk endpoint for them.
 pub const MODULES_METADATA_MAX_FILES: &str = "modules.updater.metadata_max_files";
 pub const MODULES_BACKUP_GENERATIONS: &str = "modules.updater.backup_generations";
@@ -103,6 +111,13 @@ fn get_direct(key: &str) -> Option<String> {
 
 pub fn get_string_opt(key: &str) -> Option<String> {
     get_direct(key)
+}
+
+pub fn string_setting(key: &str, default: &str) -> String {
+    get_direct(key)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_string())
 }
 
 pub fn parse_bool(s: Option<&str>, default: bool) -> bool {

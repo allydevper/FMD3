@@ -64,6 +64,9 @@ pub struct LuaRepoEntry {
     /// Set when the user replaced this module with their own copy.
     #[serde(default)]
     pub pin: Option<ModulePin>,
+    /// Last merge picked the overlay repo for this path.
+    #[serde(default)]
+    pub from_overlay: bool,
 }
 
 pub fn default_flag() -> String {
@@ -84,6 +87,7 @@ impl LuaRepoEntry {
             attempts: 0,
             last_attempt: None,
             pin: None,
+            from_overlay: false,
         }
     }
 
@@ -176,6 +180,9 @@ pub struct PlanItem {
     /// Content id the source promises; empty for deletes.
     pub expected_id: String,
     pub size: Option<u64>,
+    /// Download this path from the overlay repo, not from FMD2.
+    #[serde(default)]
+    pub from_overlay: bool,
 }
 
 /// An actionable diff pinned to one immutable revision. Cached between
@@ -185,6 +192,8 @@ pub struct SyncPlan {
     pub source_id: String,
     pub source_label: String,
     pub revision: String,
+    /// Commit the overlay items must be fetched from. Empty when unused.
+    pub overlay_revision: String,
     pub items: Vec<PlanItem>,
     pub status_lines: Vec<String>,
     pub new_count: usize,

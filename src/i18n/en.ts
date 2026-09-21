@@ -390,7 +390,14 @@ export const en = {
     githubPlain: "GitHub FMD2",
     official: {
       label: "Official",
-      desc: "Every module comes from here. For one file you can keep your own copy with “Use my version” on its row.",
+      desc: "FMD2 stays the base. If the same file exists in your repository and is newer there, yours wins.",
+    },
+    overlay: {
+      label: "Also my GitHub",
+      desc: "Second source. When a file exists in both, the newer date wins. A newer copy already on disk still wins after that.",
+      owner: "Owner",
+      repo: "Repository",
+      branch: "Branch",
     },
     preferIfNewer: {
       label: "Keep my file if it is newer",

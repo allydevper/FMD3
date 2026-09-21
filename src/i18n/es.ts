@@ -390,7 +390,14 @@ export const es = {
     githubPlain: "GitHub FMD2",
     official: {
       label: "Oficial",
-      desc: "Todos los módulos vienen de aquí. Para uno concreto puedes usar tu propia versión con «Usar mi versión» en su fila de la lista.",
+      desc: "La base sigue siendo FMD2. Si el mismo archivo existe en tu repositorio y allí es más reciente, gana el tuyo.",
+    },
+    overlay: {
+      label: "También mi GitHub",
+      desc: "Segunda fuente. Si un archivo está en los dos, se queda el de fecha más reciente. Tu copia en disco, si es aún más nueva, sigue ganando.",
+      owner: "Usuario",
+      repo: "Repositorio",
+      branch: "Rama",
     },
     preferIfNewer: {
       label: "Si mi archivo es más reciente, conservarlo",

@@ -168,6 +168,64 @@ impl GithubSource {
         format!("GitHub {what}: HTTP {status}")
     }
 
+    pub fn commit_unix(&self, rel: &str) -> Option<i64> {
+        let mut url = format!(
+            "{}repos/{}/{}/commits?per_page=1&path=",
+            self.cfg.api_url, self.cfg.owner, self.cfg.name
+        );
+        if !self.cfg.path.is_empty() {
+            url.push_str(&self.cfg.path);
+            url.push('/');
+        }
+        url.push_str(rel);
+        let resp = self.client.get(&url).send().ok()?;
+        self.note_rate(resp.headers());
+        if !resp.status().is_success() {
+            return None;
+        }
+        let arr = resp.json::<Vec<serde_json::Value>>().ok()?;
+        arr.first()
+            .and_then(|first| first.pointer("/commit/committer/date"))
+            .and_then(|d| d.as_str())
+            .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+            .map(|d| d.timestamp())
+    }
+
+    /// Paths the overlay branch changed since it diverged from `upstream`
+    /// (`owner:branch`). One compare call, so a full fork does not need a date
+    /// request per file in the tree.
+    pub fn changed_against(&self, upstream: &str) -> Result<HashSet<String>, String> {
+        let url = format!(
+            "{}repos/{}/{}/compare/{}...{}",
+            self.cfg.api_url, self.cfg.owner, self.cfg.name, upstream, self.cfg.ref_name
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .map_err(|e| format!("GitHub compare: {e}"))?;
+        self.note_rate(resp.headers());
+        if !resp.status().is_success() {
+            return Err(self.api_error("compare", resp.status()));
+        }
+        let v: serde_json::Value = resp.json().map_err(|e| format!("GitHub compare: {e}"))?;
+        let Some(files) = v.get("files").and_then(|f| f.as_array()) else {
+            return Err("GitHub compare: sin lista de archivos".into());
+        };
+        let mut out = HashSet::new();
+        for file in files {
+            let Some(name) = file.get("filename").and_then(|s| s.as_str()) else {
+                continue;
+            };
+            if let Some(rel) = strip_repo_prefix(name, &self.cfg.path) {
+                if !rel.is_empty() {
+                    out.insert(rel);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     fn raw_url(&self, revision: &str, rel: &str) -> String {
         let mut prefix = self.cfg.path.clone();
         if !prefix.is_empty() && !prefix.ends_with('/') {
@@ -426,6 +484,14 @@ impl Source for GithubSource {
         Ok(out)
     }
 
+    fn file_updated_at(&self, path: &str) -> Option<i64> {
+        self.commit_unix(path)
+    }
+
+    fn compare_base(&self) -> Option<String> {
+        Some(format!("{}:{}", self.cfg.owner, self.cfg.ref_name))
+    }
+
     fn max_parallel(&self) -> usize {
         8
     }
@@ -433,4 +499,39 @@ impl Source for GithubSource {
     fn rate_status(&self) -> (Option<i64>, Option<i64>) {
         *self.rate.lock()
     }
+}
+
+fn strip_repo_prefix(filename: &str, prefix: &str) -> Option<String> {
+    let name = filename.trim_start_matches('/');
+    let prefix = prefix.trim_matches('/');
+    if prefix.is_empty() {
+        return Some(name.to_string());
+    }
+    let rest = name.strip_prefix(prefix)?;
+    Some(rest.trim_start_matches('/').to_string())
+}
+
+/// Second GitHub tree. Defaults to allydevper/FMD3 branch `master`, path `lua`.
+/// Independent of `config.json`, which only redirects the FMD2 source.
+pub fn overlay_source() -> Option<GithubSource> {
+    if !settings_keys::bool_setting(settings_keys::MODULES_OVERLAY_ENABLED, true) {
+        return None;
+    }
+    let owner = settings_keys::string_setting(settings_keys::MODULES_OVERLAY_OWNER, "allydevper");
+    let name = settings_keys::string_setting(settings_keys::MODULES_OVERLAY_NAME, "FMD3");
+    let ref_name = settings_keys::string_setting(settings_keys::MODULES_OVERLAY_REF, "master");
+    let path = settings_keys::string_setting(settings_keys::MODULES_OVERLAY_PATH, "lua");
+    if owner.is_empty() || name.is_empty() {
+        return None;
+    }
+    let mut cfg = GithubConfig::default();
+    cfg.owner = owner;
+    cfg.name = name;
+    cfg.ref_name = if ref_name.is_empty() {
+        "master".into()
+    } else {
+        ref_name
+    };
+    cfg.path = if path.is_empty() { "lua".into() } else { path };
+    Some(GithubSource::new(cfg))
 }

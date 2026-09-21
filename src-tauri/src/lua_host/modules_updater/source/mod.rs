@@ -107,6 +107,16 @@ pub trait Source: Send + Sync {
         4
     }
 
+    /// Last commit time of one file, when the source can answer without a bulk cap.
+    fn file_updated_at(&self, _path: &str) -> Option<i64> {
+        None
+    }
+
+    /// `owner:branch` used as the left side of a fork compare. GitHub only.
+    fn compare_base(&self) -> Option<String> {
+        None
+    }
+
     /// Remaining API budget observed on the last response, if the source has one.
     /// Reported instead of spent: no preflight request just to read a quota.
     fn rate_status(&self) -> (Option<i64>, Option<i64>) {

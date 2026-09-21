@@ -89,8 +89,24 @@ fn maybe_save(state: &Mutex<&mut RepoState>, since: &AtomicUsize) {
     }
 }
 
+fn fetch_source<'a>(
+    item: &PlanItem,
+    plan: &'a SyncPlan,
+    source: &'a dyn Source,
+    overlay: Option<&'a dyn Source>,
+) -> Result<(&'a dyn Source, &'a str), String> {
+    if item.from_overlay {
+        let overlay = overlay.ok_or_else(|| {
+            "el archivo viene del overlay, pero el overlay está desactivado".to_string()
+        })?;
+        return Ok((overlay, plan.overlay_revision.as_str()));
+    }
+    Ok((source, plan.revision.as_str()))
+}
+
 pub fn execute(
     source: &dyn Source,
+    overlay: Option<&dyn Source>,
     plan: &SyncPlan,
     state: &mut RepoState,
     emitter: &Emitter,
@@ -176,12 +192,14 @@ pub fn execute(
     let failed = AtomicUsize::new(0);
     let since_save = AtomicUsize::new(0);
     let shared = Mutex::new(state);
-    let mut pending: Vec<&PlanItem> = downloads.clone();
+    let overlay_items: Vec<&PlanItem> = downloads.iter().copied().filter(|i| i.from_overlay).collect();
+    let base_downloads: Vec<&PlanItem> = downloads.iter().copied().filter(|i| !i.from_overlay).collect();
+    let mut pending: Vec<&PlanItem> = Vec::new();
 
-    // Bulk first: for a large delta one archive replaces hundreds of requests.
+    // Bulk only covers FMD2. Overlay files are a small set and come from the other repo.
     let threshold = settings_keys::usize_setting(settings_keys::MODULES_BULK_THRESHOLD, 50);
     let use_bulk = match source.bulk_hint() {
-        BulkHint::Archive { min_files } => total >= min_files.max(threshold),
+        BulkHint::Archive { min_files } => base_downloads.len() >= min_files.max(threshold),
         BulkHint::None => false,
     };
 
@@ -198,7 +216,7 @@ pub fn execute(
             ),
             ..Default::default()
         });
-        let wanted: HashSet<String> = downloads.iter().map(|i| i.path.clone()).collect();
+        let wanted: HashSet<String> = base_downloads.iter().map(|i| i.path.clone()).collect();
         let mut on_bytes = |bytes_done: u64, bytes_total: u64| {
             emitter.send(ModulesUpdateProgress {
                 phase: "archive".into(),
@@ -217,7 +235,7 @@ pub fn execute(
                     crate::i18n::t("Escribiendo archivos del paquete…", "Writing pack files…"),
                 );
                 let mut leftovers = Vec::new();
-                for item in &downloads {
+                for item in &base_downloads {
                     if is_cancelled() {
                         out.cancelled = true;
                         break;
@@ -249,9 +267,6 @@ pub fn execute(
                     });
                 }
                 pending = leftovers;
-                if !pending.is_empty() {
-                    out.transport = "zip+raw".into();
-                }
             }
             Err(e) => {
                 if e == super::progress::MODULES_CANCELLED {
@@ -262,11 +277,20 @@ pub fn execute(
                     out.status_lines
                         .push(format!("Paquete no disponible ({e}); se descarga archivo a archivo"));
                     out.transport = "raw".into();
+                    pending = base_downloads.clone();
                 }
             }
         }
     } else {
         out.transport = "raw".into();
+        pending = base_downloads.clone();
+    }
+
+    if !out.cancelled {
+        pending.extend(overlay_items);
+        if out.transport == "zip" && !pending.is_empty() {
+            out.transport = "zip+raw".into();
+        }
     }
 
     /* ---------------- per-file downloads ---------------- */
@@ -287,8 +311,10 @@ pub fn execute(
                     }
                     let idx = next.fetch_add(1, Ordering::SeqCst);
                     let Some(item) = items.get(idx) else { break };
-                    let outcome = match source.fetch_one(&plan.revision, &item.path) {
-                        Ok(bytes) => match commit_bytes(&gen, item, source, &bytes) {
+                    let outcome = match fetch_source(item, plan, source, overlay)
+                        .and_then(|(src, rev)| src.fetch_one(rev, &item.path).map(|bytes| (src, bytes)))
+                    {
+                        Ok((src, bytes)) => match commit_bytes(&gen, item, src, &bytes) {
                             Ok(id) => ItemOutcome::Done(id),
                             Err(e) => {
                                 lines.lock().push(format!("{}: {e}", item.path));
@@ -329,12 +355,30 @@ pub fn execute(
 
     let state = shared.into_inner();
     if !out.cancelled && settings_keys::bool_setting(settings_keys::MODULES_FETCH_METADATA, true) {
-        let paths: Vec<String> = downloads.iter().map(|i| i.path.clone()).collect();
+        let base_paths: Vec<String> = downloads
+            .iter()
+            .filter(|i| !i.from_overlay)
+            .map(|i| i.path.clone())
+            .collect();
+        let overlay_paths: Vec<String> = downloads
+            .iter()
+            .filter(|i| i.from_overlay)
+            .map(|i| i.path.clone())
+            .collect();
         emitter.phase("metadata", crate::i18n::t("Consultando información de los cambios…", "Fetching change details…"));
-        match source.metadata(&plan.revision, &paths) {
+        match source.metadata(&plan.revision, &base_paths) {
             Ok(map) if !map.is_empty() => enrich(state, &map),
             Ok(_) => {}
             Err(e) => eprintln!("modules_updater: metadatos no disponibles: {e}"),
+        }
+        if let Some(overlay) = overlay {
+            if !overlay_paths.is_empty() {
+                match overlay.metadata(&plan.overlay_revision, &overlay_paths) {
+                    Ok(map) if !map.is_empty() => enrich(state, &map),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("modules_updater: metadatos del overlay no disponibles: {e}"),
+                }
+            }
         }
     }
 

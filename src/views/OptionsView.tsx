@@ -772,6 +772,10 @@ export function OptionsView() {
   const [modsWarn, setModsWarn] = useState(true);
   const [modsFetchMeta, setModsFetchMeta] = useState(true);
   const [modsPreferLocal, setModsPreferLocal] = useState(true);
+  const [modsOverlay, setModsOverlay] = useState(true);
+  const [modsOverlayOwner, setModsOverlayOwner] = useState("allydevper");
+  const [modsOverlayName, setModsOverlayName] = useState("FMD3");
+  const [modsOverlayRef, setModsOverlayRef] = useState("master");
   const [modsBackupGens, setModsBackupGens] = useState(3);
   const [modsBackupMb, setModsBackupMb] = useState(64);
   const [modsBackupBytes, setModsBackupBytes] = useState(0);
@@ -980,6 +984,10 @@ export function OptionsView() {
     };
     setModsFetchMeta(parseB(await get(SK.MODULES_FETCH_METADATA), true));
     setModsPreferLocal(parseB(await get(SK.MODULES_PREFER_LOCAL_NEWER), true));
+    setModsOverlay(parseB(await get(SK.MODULES_OVERLAY_ENABLED), true));
+    setModsOverlayOwner((await get(SK.MODULES_OVERLAY_OWNER)) || "allydevper");
+    setModsOverlayName((await get(SK.MODULES_OVERLAY_NAME)) || "FMD3");
+    setModsOverlayRef((await get(SK.MODULES_OVERLAY_REF)) || "master");
     setModsBackupGens(parseN(await get(SK.MODULES_BACKUP_GENERATIONS), 3));
     setModsBackupMb(parseN(await get(SK.MODULES_BACKUP_MAX_MB), 64));
     const updateListNoInfo = parseB(await get(SK.UPDATE_LIST_NO_INFO), false);
@@ -1145,6 +1153,10 @@ export function OptionsView() {
     await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, boolStr(modsWarn));
     await api.settingsSet(SK.MODULES_FETCH_METADATA, boolStr(modsFetchMeta));
     await api.settingsSet(SK.MODULES_PREFER_LOCAL_NEWER, boolStr(modsPreferLocal));
+    await api.settingsSet(SK.MODULES_OVERLAY_ENABLED, boolStr(modsOverlay));
+    await api.settingsSet(SK.MODULES_OVERLAY_OWNER, modsOverlayOwner.trim() || "allydevper");
+    await api.settingsSet(SK.MODULES_OVERLAY_NAME, modsOverlayName.trim() || "FMD3");
+    await api.settingsSet(SK.MODULES_OVERLAY_REF, modsOverlayRef.trim() || "master");
     await api.settingsSet(SK.MODULES_BACKUP_GENERATIONS, String(modsBackupGens));
     await api.settingsSet(SK.MODULES_BACKUP_MAX_MB, String(modsBackupMb));
     await api.settingsSet(SK.UPDATE_LIST_NO_INFO, boolStr(s.updateListNoInfo));
@@ -1199,6 +1211,10 @@ export function OptionsView() {
     modsWarn,
     modsFetchMeta,
     modsPreferLocal,
+    modsOverlay,
+    modsOverlayOwner,
+    modsOverlayName,
+    modsOverlayRef,
     modsBackupGens,
     modsBackupMb,
   ]);
@@ -1744,6 +1760,10 @@ export function OptionsView() {
       // Persist the toggle first so the updater reads what is on screen.
       await api.settingsSet(SK.MODULES_UPDATER_SHOW_WARNING, modsWarn ? "1" : "0");
       await api.settingsSet(SK.MODULES_PREFER_LOCAL_NEWER, modsPreferLocal ? "1" : "0");
+      await api.settingsSet(SK.MODULES_OVERLAY_ENABLED, modsOverlay ? "1" : "0");
+      await api.settingsSet(SK.MODULES_OVERLAY_OWNER, modsOverlayOwner.trim() || "allydevper");
+      await api.settingsSet(SK.MODULES_OVERLAY_NAME, modsOverlayName.trim() || "FMD3");
+      await api.settingsSet(SK.MODULES_OVERLAY_REF, modsOverlayRef.trim() || "master");
       await runModulesGithubUpdate(log);
       setModulesPending(null);
       await refreshModules();
@@ -1757,6 +1777,10 @@ export function OptionsView() {
     modsChecking,
     modsWarn,
     modsPreferLocal,
+    modsOverlay,
+    modsOverlayOwner,
+    modsOverlayName,
+    modsOverlayRef,
     refreshModules,
     loadRepoEntries,
     setModulesPending,
@@ -3263,6 +3287,58 @@ export function OptionsView() {
                       >
                         <span className="st-static mono">GitHub · dazedcat19/FMD2</span>
                       </OptRow>
+                      <SwitchRow
+                        id="opt-mods-overlay"
+                        label={t("options.overlay.label")}
+                        desc={t("options.overlay.desc")}
+                        checked={modsOverlay}
+                        onChange={(v) => {
+                          setModsOverlay(v);
+                          setDirty(true);
+                        }}
+                      />
+                      {modsOverlay ? (
+                        <div className="st-row">
+                          <div className="st-form-inline">
+                            <span className="st-form-key">{t("options.overlay.owner")}</span>
+                            <input
+                              className="st-field st-mono"
+                              type="text"
+                              value={modsOverlayOwner}
+                              autoComplete="off"
+                              spellCheck={false}
+                              onChange={(e) => {
+                                setModsOverlayOwner(e.target.value);
+                                setDirty(true);
+                              }}
+                            />
+                            <span className="st-form-key">{t("options.overlay.repo")}</span>
+                            <input
+                              className="st-field st-mono"
+                              type="text"
+                              value={modsOverlayName}
+                              autoComplete="off"
+                              spellCheck={false}
+                              onChange={(e) => {
+                                setModsOverlayName(e.target.value);
+                                setDirty(true);
+                              }}
+                            />
+                            <span className="st-form-key">{t("options.overlay.branch")}</span>
+                            <input
+                              className="st-field st-mono"
+                              type="text"
+                              value={modsOverlayRef}
+                              autoComplete="off"
+                              spellCheck={false}
+                              onChange={(e) => {
+                                setModsOverlayRef(e.target.value);
+                                setDirty(true);
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ) : null}
                       <SwitchRow
                         id="opt-mods-prefer-local"
                         label={t("options.preferIfNewer.label")}

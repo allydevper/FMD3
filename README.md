@@ -154,6 +154,19 @@ el perfil; copia **toda** la carpeta, no solo el `.db`.
    rutas absolutas de debug, cámbialas o reescribe el ajuste).
 5. **Lua.** En debug es el `lua/` del repo. En portable el primer arranque
    sincroniza a `userdata\lua`. No copies el `lua/` del repo salvo parches locales.
+
+La comprobación de módulos lee **dos** GitHub a la vez. La base es
+`dazedcat19/FMD2` (rama `master`, carpeta `lua`). El overlay, activo por
+defecto, es `allydevper/FMD3` rama `master`. El usuario no escribe la rama:
+ya va fija en la compilación. Si el mismo archivo está en los dos, gana el
+commit más reciente. Un `.lua` editado en disco y más nuevo que ambos se
+conserva si «Si mi archivo es más reciente, conservarlo» está activo.
+
+El overlay no sustituye a FMD2: un `config.json` junto al exe sigue
+redirigiendo solo la fuente base. GitHub sin token permite unas 60 llamadas
+de API por hora; comparar fechas pide una llamada extra por archivo distinto,
+con tope `modules.overlay.date_cap` (20). Los archivos que el overlay no ha
+tocado desde que divergió de FMD2 se quedan en FMD2 sin consultar fecha.
 6. TestCatalog y demás `Category=Test` no aparecen en release.
 
 ## Build
@@ -180,8 +193,10 @@ y `.\scripts\pack-portable.ps1`. Firma / NSIS / self-updater:
 ## Créditos y licencia
 
 Los módulos de `lua/` provienen de [FMD2](https://github.com/dazedcat19/FMD2)
-(dazedcat19, NhKPaNdA y colaboradores), y el modules-updater se sincroniza
-contra ese repositorio. Gracias también a los desarrolladores del FMD original:
+(dazedcat19, NhKPaNdA y colaboradores). El actualizador los sincroniza desde
+ese repositorio y, si el overlay está activo, también desde
+[allydevper/FMD3](https://github.com/allydevper/FMD3). Gracias también a los
+desarrolladores del FMD original:
 Akarin-K, Anastasiadinara, SDXC, kavin-90, kmvi y riderkick.
 
 Cliente FMD3 por [allydevper](https://github.com/allydevper).
