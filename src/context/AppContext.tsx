@@ -620,6 +620,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [setAppJob]);
 
+  // Chapter enqueue (Info → Downloads) uses the same bar. `job_id` ignores a
+  // late "done" from the previous title when several adds run back to back.
+  useEffect(() => {
+    let cancelled = false;
+    let un: (() => void) | undefined;
+    void api
+      .onQueueAddProgress((p) => {
+        const id = String(p.job_id);
+        setCatalogJob((prev) => {
+          if (p.done) {
+            if (prev?.mode === "enqueue" && prev.moduleId === id) {
+              catalogJobRef.current = null;
+              return null;
+            }
+            return prev;
+          }
+          const next: CatalogJobState = {
+            mode: "enqueue",
+            scope: "one",
+            moduleId: id,
+            moduleName: p.title,
+            index: p.index,
+            total: p.total,
+            page: 0,
+            pageTotal: 0,
+            bytesDone: 0,
+            bytesTotal: 0,
+            message: p.chapter,
+            phase: "enqueue",
+            cancelling: prev?.mode === "enqueue" && prev.moduleId === id && prev.cancelling,
+          };
+          catalogJobRef.current = next;
+          return next;
+        });
+      })
+      .then((u) => {
+        if (cancelled) u();
+        else un = u;
+      });
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, []);
+
   const isAppJobCancelRequested = useCallback(
     () => catalogCancelRequestedRef.current,
     [],
@@ -637,9 +682,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       catalogJobRef.current = next;
       return next;
     });
-    // Favorites checks are frontend-loop only; skip Rust catalog cancel.
+    // Favorites checks and chapter enqueue are frontend/flag only; skip Rust catalog cancel.
     if (mode === "favorites") return;
     try {
+      if (mode === "enqueue") {
+        await api.queueAddCancel();
+        return;
+      }
       // Same bar, different job: the modules sync has its own cancel flag.
       await (mode === "modules" ? api.modulesUpdateCancel() : api.catalogJobCancel());
     } catch {

@@ -1177,9 +1177,10 @@ pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
 }
 
 pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, String> {
-    let conn = db.lock();
+    let mut conn = db.lock();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     let ts = now();
-    let mut max_pos: i64 = conn
+    let mut max_pos: i64 = tx
         .query_row(
             "SELECT COALESCE(MAX(position), 0) FROM queue_items",
             [],
@@ -1189,7 +1190,7 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
     let mut ids = Vec::new();
     for item in items {
         // Skip exact duplicate pending/running
-        let exists: Option<i64> = conn
+        let exists: Option<i64> = tx
             .query_row(
                 "SELECT id FROM queue_items
                  WHERE chapter_link = ?1 AND status IN ('pending','running','review')
@@ -1206,7 +1207,7 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
         let output_dir = crate::paths::path_for_storage(&item.output_dir);
         let manga_path = crate::paths::path_for_storage(&item.manga_path);
         let chapter_path = crate::paths::path_for_storage(&item.chapter_path);
-        conn.execute(
+        tx.execute(
             "INSERT INTO queue_items(
                 manga_title, root_url, manga_url, module_id, chapter_index, chapter_name, chapter_link,
                 output_dir, manga_path, chapter_path, chapter_display, batch_id, pack_format, status, error, created_at, updated_at, retry_count, position
@@ -1230,8 +1231,9 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
             ],
         )
         .map_err(|e| e.to_string())?;
-        ids.push(conn.last_insert_rowid());
+        ids.push(tx.last_insert_rowid());
     }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(ids)
 }
 

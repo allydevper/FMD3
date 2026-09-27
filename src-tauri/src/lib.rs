@@ -414,6 +414,7 @@ pub fn run() {
             commands::favorites_export_db,
             commands::queue_list,
             commands::queue_add,
+            commands::queue_add_cancel,
             commands::queue_reorder,
             commands::queue_split_group,
             commands::queue_start,

@@ -2,7 +2,7 @@ use crate::catalog::{
     self, CatalogAdvFilter, CatalogEntry, CatalogStats, HiddenEntry, MangaCacheRow,
     MangaCacheUpsert,
 };
-use crate::db::{self, Favorite, NewQueueItem, QueueItem};
+use crate::db::{self, Db, Favorite, NewQueueItem, QueueItem};
 use crate::lua_host::{
     get_info, modules_backup_clear, modules_backup_size, modules_generations, modules_history,
     modules_list, modules_match_url, modules_needs_first_sync, modules_pin_file,
@@ -17,6 +17,7 @@ use crate::lua_host::{
 use crate::queue::{self, QueueState};
 use crate::rename_patterns::RenameOpts;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
@@ -350,6 +351,9 @@ pub struct QueueAddRequest {
     /// Split-download batch; empty = normal enqueue.
     #[serde(default)]
     pub batch_id: String,
+    /// When true, emit `queue-add-progress` so the bottom bar can follow the add.
+    #[serde(default)]
+    pub progress: bool,
 }
 
 fn default_true() -> bool {
@@ -568,6 +572,9 @@ fn enqueue_chapters(
         .chain(active.into_iter())
         .collect();
 
+    let naming = crate::lua_host::EnqueueNaming::load(&info.module_id, manga_url_for_queue);
+    let pack = crate::settings_keys::pack_format();
+    let base = std::path::Path::new(&output);
     let items: Vec<NewQueueItem> = chapters
         .iter()
         .filter(|c| {
@@ -575,16 +582,8 @@ fn enqueue_chapters(
             !key.is_empty() && !skip.contains(&key)
         })
         .map(|c| {
-            let base = std::path::Path::new(&output);
             let (manga_path, chapter_path, chapter_display) =
-                crate::lua_host::resolve_queue_item_paths(
-                    base,
-                    &info.title,
-                    c.index as usize,
-                    &c.name,
-                    &info.module_id,
-                    manga_url_for_queue,
-                );
+                naming.resolve(base, &info.title, c.index as usize, &c.name);
             NewQueueItem {
                 manga_title: info.title.clone(),
                 root_url: info.root_url.clone(),
@@ -598,7 +597,7 @@ fn enqueue_chapters(
                 chapter_path: chapter_path.display().to_string(),
                 chapter_display,
                 batch_id: String::new(),
-                pack_format: crate::settings_keys::pack_format(),
+                pack_format: pack.clone(),
             }
         })
         .collect();
@@ -842,17 +841,213 @@ pub async fn favorites_download_all(
     })
 }
 
+#[derive(Debug, Serialize)]
+pub struct QueueAddResult {
+    pub inserted: usize,
+    pub cancelled: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct QueueAddProgress {
+    job_id: u64,
+    index: usize,
+    total: usize,
+    title: String,
+    chapter: String,
+    done: bool,
+    cancelled: bool,
+}
+
+const QUEUE_ADD_BATCH: usize = 40;
+static QUEUE_ADD_CANCEL: AtomicBool = AtomicBool::new(false);
+static QUEUE_ADD_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[tauri::command]
+pub fn queue_add_cancel() -> Result<(), String> {
+    QUEUE_ADD_CANCEL.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+fn emit_queue_add_progress(app: &AppHandle, progress: &QueueAddProgress) {
+    let _ = app.emit("queue-add-progress", progress);
+}
+
+fn queue_add_blocking(app: AppHandle, db: Db, req: QueueAddRequest) -> Result<QueueAddResult, String> {
+    let _ = db::settings_set(&db, "default_output_dir", &req.output_dir);
+    let batch_id = req.batch_id.trim().to_string();
+    let manga_url = crate::lua_host::maybe_fill_host(&req.root_url, &req.manga_url);
+    let naming = crate::lua_host::EnqueueNaming::load(&req.module_id, &manga_url);
+    let default_pack = crate::settings_keys::pack_format();
+    let sort = crate::settings_keys::sort_on_add();
+    let total = req.chapters.len();
+    let job_id = if req.progress {
+        QUEUE_ADD_SEQ.fetch_add(1, Ordering::SeqCst)
+    } else {
+        0
+    };
+    let title = req.manga_title.clone();
+    let base = std::path::PathBuf::from(req.output_dir.trim());
+
+    if req.progress {
+        let chapter = req.chapters.first().map(|c| c.name.clone()).unwrap_or_default();
+        emit_queue_add_progress(
+            &app,
+            &QueueAddProgress {
+                job_id,
+                index: 0,
+                total,
+                title: title.clone(),
+                chapter,
+                done: false,
+                cancelled: false,
+            },
+        );
+    }
+
+    let mut inserted = 0usize;
+    let mut processed = 0usize;
+    let mut cancelled = false;
+    let mut err: Option<String> = None;
+
+    for chunk in req.chapters.chunks(QUEUE_ADD_BATCH) {
+        if req.progress && QUEUE_ADD_CANCEL.load(Ordering::SeqCst) {
+            cancelled = true;
+            break;
+        }
+        let items: Vec<NewQueueItem> = chunk
+            .iter()
+            .map(|c| {
+                let frozen_manga = c
+                    .manga_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let frozen_chapter = c
+                    .chapter_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let (manga_path, chapter_path, chapter_display) = match (frozen_manga, frozen_chapter)
+                {
+                    // Rutas ya congeladas por el caller (re-encolado): el título no viaja
+                    // en el payload, así que se recalcula aquí — sigue siendo antes de
+                    // descargar, que es lo que importa.
+                    (Some(mp), Some(cp)) => (
+                        mp.to_string(),
+                        cp.to_string(),
+                        naming.opts().prepare_chapter_display(&c.name, &req.manga_title),
+                    ),
+                    _ => {
+                        let (m, ch, display) = naming.resolve(
+                            &base,
+                            &req.manga_title,
+                            c.index as usize,
+                            &c.name,
+                        );
+                        (
+                            frozen_manga
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| m.display().to_string()),
+                            frozen_chapter
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| ch.display().to_string()),
+                            display,
+                        )
+                    }
+                };
+                let frozen_pack = c
+                    .pack_format
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                NewQueueItem {
+                    manga_title: req.manga_title.clone(),
+                    root_url: req.root_url.clone(),
+                    manga_url: manga_url.clone(),
+                    module_id: req.module_id.clone(),
+                    chapter_index: c.index as i64,
+                    chapter_name: c.name.clone(),
+                    chapter_link: c.link.clone(),
+                    output_dir: req.output_dir.clone(),
+                    manga_path,
+                    chapter_path,
+                    chapter_display,
+                    batch_id: batch_id.clone(),
+                    pack_format: frozen_pack.unwrap_or_else(|| default_pack.clone()),
+                }
+            })
+            .collect();
+        match db::queue_add_many(&db, &items) {
+            Ok(ids) => {
+                inserted += ids.len();
+                processed += chunk.len();
+                if req.progress {
+                    let chapter = chunk.last().map(|c| c.name.clone()).unwrap_or_default();
+                    emit_queue_add_progress(
+                        &app,
+                        &QueueAddProgress {
+                            job_id,
+                            index: processed,
+                            total,
+                            title: title.clone(),
+                            chapter,
+                            done: false,
+                            cancelled: false,
+                        },
+                    );
+                }
+                if !sort {
+                    let _ = app.emit("queue-changed", ());
+                }
+            }
+            Err(e) => {
+                err = Some(e);
+                break;
+            }
+        }
+    }
+
+    if sort && (inserted > 0 || err.is_none()) {
+        if inserted > 0 {
+            let _ = db::queue_sort_by_title(&db);
+        }
+        let _ = app.emit("queue-changed", ());
+    }
+    if req.start && ((err.is_none() && !cancelled) || inserted > 0) {
+        queue::ensure_started(&app);
+    }
+    if req.progress {
+        emit_queue_add_progress(
+            &app,
+            &QueueAddProgress {
+                job_id,
+                index: processed,
+                total,
+                title,
+                chapter: String::new(),
+                done: true,
+                cancelled,
+            },
+        );
+    }
+    if let Some(e) = err {
+        return Err(e);
+    }
+    Ok(QueueAddResult { inserted, cancelled })
+}
+
 #[tauri::command]
 pub fn queue_list(state: State<QueueState>) -> Result<Vec<QueueItem>, String> {
     db::queue_list(&state.db)
 }
 
 #[tauri::command]
-pub fn queue_add(
+pub async fn queue_add(
     app: AppHandle,
-    state: State<QueueState>,
+    state: State<'_, QueueState>,
     req: QueueAddRequest,
-) -> Result<usize, String> {
+) -> Result<QueueAddResult, String> {
     if req.chapters.is_empty() {
         return Err("No hay capítulos".into());
     }
@@ -868,92 +1063,13 @@ pub fn queue_add(
             .into(),
         );
     }
-    let _ = db::settings_set(&state.db, "default_output_dir", &req.output_dir);
-    let batch_id = req.batch_id.trim().to_string();
-    /* Store paths relative to the .exe when under that folder so portable
-    renames keep working; absolute otherwise (other drive / custom folder). */
-    let manga_url = crate::lua_host::maybe_fill_host(&req.root_url, &req.manga_url);
-    let rename_opts = RenameOpts::from_settings();
-    let items: Vec<NewQueueItem> = req
-        .chapters
-        .iter()
-        .map(|c| {
-            let base = std::path::Path::new(req.output_dir.trim());
-            let frozen_manga = c
-                .manga_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let frozen_chapter = c
-                .chapter_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let (manga_path, chapter_path, chapter_display) = match (frozen_manga, frozen_chapter)
-            {
-                // Rutas ya congeladas por el caller (re-encolado): el título no viaja
-                // en el payload, así que se recalcula aquí — sigue siendo antes de
-                // descargar, que es lo que importa.
-                (Some(mp), Some(cp)) => (
-                    mp.to_string(),
-                    cp.to_string(),
-                    rename_opts.prepare_chapter_display(&c.name, &req.manga_title),
-                ),
-                _ => {
-                    let (m, ch, display) = crate::lua_host::resolve_queue_item_paths(
-                        base,
-                        &req.manga_title,
-                        c.index as usize,
-                        &c.name,
-                        &req.module_id,
-                        &manga_url,
-                    );
-                    (
-                        frozen_manga
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| m.display().to_string()),
-                        frozen_chapter
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| ch.display().to_string()),
-                        display,
-                    )
-                }
-            };
-            NewQueueItem {
-                manga_title: req.manga_title.clone(),
-                root_url: req.root_url.clone(),
-                manga_url: manga_url.clone(),
-                module_id: req.module_id.clone(),
-                chapter_index: c.index as i64,
-                chapter_name: c.name.clone(),
-                chapter_link: c.link.clone(),
-                output_dir: req.output_dir.clone(),
-                manga_path,
-                chapter_path,
-                chapter_display,
-                batch_id: batch_id.clone(),
-                pack_format: {
-                    let frozen = c
-                        .pack_format
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty());
-                    frozen
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(crate::settings_keys::pack_format)
-                },
-            }
-        })
-        .collect();
-    let ids = db::queue_add_many(&state.db, &items)?;
-    if crate::settings_keys::sort_on_add() {
-        let _ = db::queue_sort_by_title(&state.db);
+    if req.progress {
+        QUEUE_ADD_CANCEL.store(false, Ordering::SeqCst);
     }
-    let _ = app.emit("queue-changed", ());
-    if req.start {
-        queue::ensure_started(&app);
-    }
-    Ok(ids.len())
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || queue_add_blocking(app, db, req))
+        .await
+        .map_err(|e| format!("tarea cancelada: {e}"))?
 }
 
 #[tauri::command]
@@ -1470,12 +1586,12 @@ pub fn queue_open_manga_folder(
 
 /// Atajo: encola y arranca (misma ruta que la cola).
 #[tauri::command]
-pub fn download_chapters(
+pub async fn download_chapters(
     app: AppHandle,
-    state: State<QueueState>,
+    state: State<'_, QueueState>,
     req: QueueAddRequest,
 ) -> Result<usize, String> {
-    queue_add(app, state, req)
+    Ok(queue_add(app, state, req).await?.inserted)
 }
 
 /// Import favorites + downloaded-chapter marks from an FMD2 **or** FMD3 install.

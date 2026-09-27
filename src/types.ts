@@ -63,6 +63,23 @@ export type QueueAddRequest = {
   start?: boolean;
   /** Split batch id; empty/omit for normal enqueue. */
   batch_id?: string;
+  /** Emit progress for the bottom bar. Omit for undo and internal enqueues. */
+  progress?: boolean;
+};
+
+export type QueueAddResult = {
+  inserted: number;
+  cancelled: boolean;
+};
+
+export type QueueAddProgressEvent = {
+  job_id: number;
+  index: number;
+  total: number;
+  title: string;
+  chapter: string;
+  done: boolean;
+  cancelled: boolean;
 };
 
 export type ModuleMeta = {
@@ -338,7 +355,7 @@ export type CatalogFetchProgressEvent = {
   message: string;
 };
 
-export type CatalogJobMode = "update" | "fetch" | "favorites" | "modules";
+export type CatalogJobMode = "update" | "fetch" | "favorites" | "modules" | "enqueue";
 export type CatalogJobScope = "one" | "all";
 
 export type CatalogJobState = {

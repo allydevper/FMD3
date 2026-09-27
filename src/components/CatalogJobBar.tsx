@@ -38,6 +38,10 @@ function phaseHeadline(job: CatalogJobState): string {
     if (job.phase === "done") return t("jobs.favDone");
     return t("jobs.favChecking", { index: job.index, total: job.total, name: job.moduleName });
   }
+  if (job.mode === "enqueue") {
+    if (job.cancelling) return t("jobs.enqueueCancel");
+    return t("jobs.enqueueChapters", { index: job.index, total: job.total, name: job.moduleName });
+  }
   const site = `[${job.index}/${job.total}] ${job.moduleName}`;
   if (job.cancelling) return t("jobs.cancelName", { name: job.moduleName });
   if (job.mode === "fetch") return t("jobs.fetchList", { site });
@@ -64,6 +68,10 @@ function phaseShort(job: CatalogJobState): string {
     if (job.cancelling) return t("jobs.favCancelShort");
     if (job.phase === "done") return t("jobs.favDoneShort");
     return t("jobs.favShort", { index: job.index, total: job.total });
+  }
+  if (job.mode === "enqueue") {
+    if (job.cancelling) return t("jobs.enqueueCancelShort");
+    return t("jobs.enqueueShort", { index: job.index, total: job.total });
   }
   if (job.cancelling) return t("jobs.cancelName", { name: job.moduleName });
   if (job.mode === "fetch") return t("jobs.fetchShort", { name: job.moduleName });
@@ -138,7 +146,8 @@ export function CatalogJobBar() {
 
   const isFetch = catalogJob.mode === "fetch";
   const isFavorites = catalogJob.mode === "favorites";
-  const pct = isFavorites
+  const isEnqueue = catalogJob.mode === "enqueue";
+  const pct = isFavorites || isEnqueue
     ? catalogJob.total > 0
       ? Math.min(100, Math.round((catalogJob.index / catalogJob.total) * 100))
       : 0
@@ -163,7 +172,7 @@ export function CatalogJobBar() {
       : "");
 
   const title = phaseHeadline(catalogJob);
-  const meta = isFavorites
+  const meta = isFavorites || isEnqueue
     ? body
     : isFetch
       ? body

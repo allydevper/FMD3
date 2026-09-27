@@ -1633,6 +1633,82 @@ fn find_complete_image(base_no_ext: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Naming inputs shared by every chapter of one enqueue. Loaded once so a long
+/// list does not reopen SQLite per chapter.
+pub struct EnqueueNaming {
+    website: String,
+    authors: String,
+    artists: String,
+    opts: crate::rename_patterns::RenameOpts,
+    long_paths: bool,
+}
+
+impl EnqueueNaming {
+    pub fn load(module_id: &str, manga_url: &str) -> Self {
+        let website = if module_id.trim().is_empty() {
+            String::new()
+        } else {
+            crate::lua_host::find_by_id(module_id)
+                .map(|m| m.name)
+                .unwrap_or_default()
+        };
+        let (authors, artists) = if !module_id.trim().is_empty() && !manga_url.trim().is_empty() {
+            crate::catalog::manga_cache_get(module_id, manga_url)
+                .ok()
+                .flatten()
+                .map(|row| (row.authors, row.artists))
+                .unwrap_or_default()
+        } else {
+            (String::new(), String::new())
+        };
+        Self {
+            website,
+            authors,
+            artists,
+            opts: crate::rename_patterns::RenameOpts::from_settings(),
+            long_paths: crate::paths::long_paths_enabled(),
+        }
+    }
+
+    pub fn opts(&self) -> &crate::rename_patterns::RenameOpts {
+        &self.opts
+    }
+
+    pub fn resolve(
+        &self,
+        output_dir: &Path,
+        manga_title: &str,
+        chapter_index: usize,
+        chapter_name: &str,
+    ) -> (PathBuf, PathBuf, String) {
+        let manga = manga_output_dir_with(
+            output_dir,
+            manga_title,
+            &self.website,
+            &self.authors,
+            &self.artists,
+            &self.opts,
+            self.long_paths,
+        );
+        let (chapter, chapter_display) = chapter_output_dir_with_display_opts(
+            output_dir,
+            manga_title,
+            chapter_index,
+            chapter_name,
+            &self.website,
+            &self.authors,
+            &self.artists,
+            &self.opts,
+            self.long_paths,
+        );
+        (
+            manga_dir_from_chapter(manga, &chapter),
+            chapter,
+            chapter_display,
+        )
+    }
+}
+
 /// Manga-level output folder (base + optional manga pattern). No chapter segment.
 pub fn manga_output_dir(
     output_dir: &Path,
@@ -1641,14 +1717,34 @@ pub fn manga_output_dir(
     authors: &str,
     artists: &str,
 ) -> PathBuf {
-    use crate::rename_patterns::{chapter_tokens, RenameOpts};
-    let opts = RenameOpts::from_settings();
+    let opts = crate::rename_patterns::RenameOpts::from_settings();
+    manga_output_dir_with(
+        output_dir,
+        manga_title,
+        website,
+        authors,
+        artists,
+        &opts,
+        crate::paths::long_paths_enabled(),
+    )
+}
+
+fn manga_output_dir_with(
+    output_dir: &Path,
+    manga_title: &str,
+    website: &str,
+    authors: &str,
+    artists: &str,
+    opts: &crate::rename_patterns::RenameOpts,
+    long_paths: bool,
+) -> PathBuf {
+    use crate::rename_patterns::chapter_tokens;
     let tokens = chapter_tokens(manga_title, website, "", "", authors, artists);
     let mut path = output_dir.to_path_buf();
     if opts.manga_folder_on {
         path = path.join(opts.apply_pattern(opts.manga_pattern(), &tokens));
     }
-    crate::paths::fit_download_path(&path)
+    crate::paths::fit_download_path_with(&path, long_paths)
 }
 
 pub fn chapter_output_dir(
@@ -1683,18 +1779,53 @@ pub fn chapter_output_dir_with_display(
     authors: &str,
     artists: &str,
 ) -> (PathBuf, String) {
-    use crate::rename_patterns::{chapter_tokens, ensure_chapter_pattern_numbering, RenameOpts};
-    let opts = RenameOpts::from_settings();
+    let opts = crate::rename_patterns::RenameOpts::from_settings();
+    chapter_output_dir_with_display_opts(
+        output_dir,
+        manga_title,
+        chapter_index,
+        chapter_name,
+        website,
+        authors,
+        artists,
+        &opts,
+        crate::paths::long_paths_enabled(),
+    )
+}
+
+fn chapter_output_dir_with_display_opts(
+    output_dir: &Path,
+    manga_title: &str,
+    chapter_index: usize,
+    chapter_name: &str,
+    website: &str,
+    authors: &str,
+    artists: &str,
+    opts: &crate::rename_patterns::RenameOpts,
+    long_paths: bool,
+) -> (PathBuf, String) {
+    use crate::rename_patterns::{chapter_tokens, ensure_chapter_pattern_numbering};
     let idx = opts.format_chapter_index(chapter_index + 1);
     let chapter_display = opts.prepare_chapter_display(chapter_name, manga_title);
     let tokens = chapter_tokens(manga_title, website, &chapter_display, &idx, authors, artists);
-    let mut path = manga_output_dir(output_dir, manga_title, website, authors, artists);
+    let mut path = manga_output_dir_with(
+        output_dir,
+        manga_title,
+        website,
+        authors,
+        artists,
+        opts,
+        long_paths,
+    );
     if opts.chapter_folder_on {
         // FMD2: sin %CHAPTER% ni %NUMBERING% el patrón antepone el numbering.
         let pat = ensure_chapter_pattern_numbering(opts.chapter_pattern(), &idx);
         path = path.join(opts.apply_pattern(&pat, &tokens));
     }
-    (crate::paths::fit_download_path(&path), chapter_display)
+    (
+        crate::paths::fit_download_path_with(&path, long_paths),
+        chapter_display,
+    )
 }
 
 /// Resolve manga + chapter folders **and** the chapter display with the current
@@ -1707,33 +1838,12 @@ pub fn resolve_queue_item_paths(
     module_id: &str,
     manga_url: &str,
 ) -> (PathBuf, PathBuf, String) {
-    let website = if module_id.trim().is_empty() {
-        String::new()
-    } else {
-        crate::lua_host::find_by_id(module_id)
-            .map(|m| m.name)
-            .unwrap_or_default()
-    };
-    let (authors, artists) = if !module_id.trim().is_empty() && !manga_url.trim().is_empty() {
-        crate::catalog::manga_cache_get(module_id, manga_url)
-            .ok()
-            .flatten()
-            .map(|row| (row.authors, row.artists))
-            .unwrap_or_default()
-    } else {
-        (String::new(), String::new())
-    };
-    let manga = manga_output_dir(output_dir, manga_title, &website, &authors, &artists);
-    let (chapter, chapter_display) = chapter_output_dir_with_display(
+    EnqueueNaming::load(module_id, manga_url).resolve(
         output_dir,
         manga_title,
         chapter_index,
         chapter_name,
-        &website,
-        &authors,
-        &artists,
-    );
-    (manga_dir_from_chapter(manga, &chapter), chapter, chapter_display)
+    )
 }
 
 /// After fitting title+chapter, the on-disk manga folder is the chapter parent.

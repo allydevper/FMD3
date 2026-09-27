@@ -21,6 +21,8 @@ import type {
   LuaFileVersion,
   LuaRepoEntry,
   QueueAddRequest,
+  QueueAddResult,
+  QueueAddProgressEvent,
   QueueItem,
   QueueProgressEvent,
   UpdateListStats,
@@ -247,7 +249,11 @@ export function queueList() {
 }
 
 export function queueAdd(req: QueueAddRequest) {
-  return invoke<number>("queue_add", { req });
+  return invoke<QueueAddResult>("queue_add", { req });
+}
+
+export function queueAddCancel() {
+  return invoke("queue_add_cancel");
 }
 
 export function queueStart() {
@@ -518,6 +524,12 @@ export function onModulesUpdateProgress(
 
 export function onQueueChanged(handler: () => void): Promise<UnlistenFn> {
   return listen("queue-changed", handler);
+}
+
+export function onQueueAddProgress(
+  handler: (payload: QueueAddProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<QueueAddProgressEvent>("queue-add-progress", (e) => handler(e.payload));
 }
 
 export function onQueueProgress(

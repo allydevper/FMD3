@@ -485,6 +485,7 @@ export function InfoView() {
   } | null>(null);
   const [enqueueBusy, setEnqueueBusy] = useState(false);
   const [splitBusy, setSplitBusy] = useState(false);
+  const enqueueFlightRef = useRef(false);
   const loadCoversRef = useRef(true);
 
   const [sidebarRows, setSidebarRows] = useState<SidebarRows>(EMPTY_SIDEBAR_ROWS);
@@ -2464,68 +2465,95 @@ export function InfoView() {
   }
 
   /** FMD2 MD_DownloadAll: silent GetInfo → enqueue every chapter. */
-  async function downloadAllFromCatalog(entry: CatalogEntry): Promise<number> {
-    const { moduleId, mod } = catalogEntryModule(entry);
-    if (!mod || !moduleId) {
-      log(t("explore.noSource"), "err");
-      return 0;
-    }
-    const root = mod.root_url || "";
-    const url = maybeFillHost(root, entry.link);
-    if (!url) {
-      log(t("explore.emptyLinkDl"), "err");
-      return 0;
-    }
-    const title = entry.title || entry.link;
-    const dir = await ensureOutputDir();
-    if (!dir) {
-      log(t("explore.pickOutput"), "err");
-      return 0;
-    }
-    log(t("explore.gettingInfo", { title }));
+  async function downloadAllFromCatalog(
+    entry: CatalogEntry,
+    owned = true,
+  ): Promise<{ n: number; cancelled: boolean }> {
+    if (owned && enqueueBlocked()) return { n: 0, cancelled: false };
+    if (owned) enqueueFlightRef.current = true;
     try {
-      const info = await api.getMangaInfo(url, moduleId);
-      if (!info.chapters?.length) {
-        log(t("explore.noChaptersFor", { title: info.title || title, url }), "err");
-        return 0;
+      const { moduleId, mod } = catalogEntryModule(entry);
+      if (!mod || !moduleId) {
+        log(t("explore.noSource"), "err");
+        return { n: 0, cancelled: false };
       }
-      const n = await api.queueAdd({
-        manga_title: info.title || title,
-        root_url: info.root_url || root,
-        manga_url: url,
-        module_id: info.module_id || moduleId,
-        output_dir: dir,
-        chapters: info.chapters,
-        start: !taskStopped,
-        batch_id: `dl-${Date.now().toString(36)}`,
-      });
-      const msg = taskStopped
-        ? `Encolados ${n} de «${info.title || title}» (detenidos).`
-        : `Encolados ${n} de «${info.title || title}».`;
-      log(msg, "ok");
-      if (n > 0) {
-        const gotoDlRaw = await api.settingsGet("ui.goto_downloads_on_add");
-        const gotoDl = gotoDlRaw !== "0" && gotoDlRaw !== "false";
-        appToast({
-          message: msg,
-          kind: "ok",
-          // Ya vamos a Descargas: no hace falta el enlace "Ver descargas".
-          ...(gotoDl
-            ? {}
-            : {
-                action: {
-                  label: t("explore.viewDownloads"),
-                  onClick: () => setActiveNav("downloads"),
-                },
-              }),
+      const root = mod.root_url || "";
+      const url = maybeFillHost(root, entry.link);
+      if (!url) {
+        log(t("explore.emptyLinkDl"), "err");
+        return { n: 0, cancelled: false };
+      }
+      const title = entry.title || entry.link;
+      const dir = await ensureOutputDir();
+      if (!dir) {
+        log(t("explore.pickOutput"), "err");
+        return { n: 0, cancelled: false };
+      }
+      log(t("explore.gettingInfo", { title }));
+      try {
+        const info = await api.getMangaInfo(url, moduleId);
+        if (!info.chapters?.length) {
+          log(t("explore.noChaptersFor", { title: info.title || title, url }), "err");
+          return { n: 0, cancelled: false };
+        }
+        const gotoDl = await gotoDownloadsIfSet();
+        const added = await api.queueAdd({
+          manga_title: info.title || title,
+          root_url: info.root_url || root,
+          manga_url: url,
+          module_id: info.module_id || moduleId,
+          output_dir: dir,
+          chapters: info.chapters,
+          start: !taskStopped,
+          batch_id: `dl-${Date.now().toString(36)}`,
+          progress: true,
         });
-        if (gotoDl) setActiveNav("downloads");
+        const n = added.inserted;
+        const msg = added.cancelled
+          ? t("explore.queuedCancelled", { n })
+          : taskStopped
+            ? `Encolados ${n} de «${info.title || title}» (detenidos).`
+            : `Encolados ${n} de «${info.title || title}».`;
+        log(msg, added.cancelled ? "" : "ok");
+        if (n > 0 || added.cancelled) {
+          appToast({
+            message: msg,
+            kind: added.cancelled ? "" : "ok",
+            ...(gotoDl
+              ? {}
+              : {
+                  action: {
+                    label: t("explore.viewDownloads"),
+                    onClick: () => setActiveNav("downloads"),
+                  },
+                }),
+          });
+        }
+        return { n, cancelled: added.cancelled };
+      } catch (e) {
+        log(`${title}: ${String(e)}`, "err");
+        return { n: 0, cancelled: false };
       }
-      return n;
-    } catch (e) {
-      log(`${title}: ${String(e)}`, "err");
-      return 0;
+    } finally {
+      if (owned) enqueueFlightRef.current = false;
     }
+  }
+
+  function enqueueBlocked(): boolean {
+    if (enqueueFlightRef.current || (catalogJob && catalogJob.mode !== "enqueue")) {
+      const message = t("ctx.jobRunning");
+      log(message, "err");
+      appToast({ message, kind: "err" });
+      return true;
+    }
+    return false;
+  }
+
+  async function gotoDownloadsIfSet(): Promise<boolean> {
+    const gotoDlRaw = await api.settingsGet("ui.goto_downloads_on_add");
+    const gotoDl = gotoDlRaw !== "0" && gotoDlRaw !== "false";
+    if (gotoDl) setActiveNav("downloads");
+    return gotoDl;
   }
 
   async function downloadAllFromCatalogBulk(entries?: CatalogEntry[]) {
@@ -2537,16 +2565,24 @@ export function InfoView() {
       log(t("explore.noTitlesSelected"), "err");
       return;
     }
+    if (enqueueBlocked()) return;
+    enqueueFlightRef.current = true;
     let total = 0;
-    for (let i = 0; i < list.length; i++) {
-      const e = list[i]!;
-      if (list.length > 1) {
-        log(t("explore.downloadAllItem", { i: i + 1, total: list.length, title: e.title || e.link }));
+    try {
+      for (let i = 0; i < list.length; i++) {
+        const e = list[i]!;
+        if (list.length > 1) {
+          log(t("explore.downloadAllItem", { i: i + 1, total: list.length, title: e.title || e.link }));
+        }
+        const added = await downloadAllFromCatalog(e, false);
+        total += added.n;
+        if (added.cancelled) break;
       }
-      total += await downloadAllFromCatalog(e);
-    }
-    if (list.length > 1) {
-      log(t("explore.downloadAllLog", { ch: total, titles: list.length }), "ok");
+      if (list.length > 1) {
+        log(t("explore.downloadAllLog", { ch: total, titles: list.length }), "ok");
+      }
+    } finally {
+      enqueueFlightRef.current = false;
     }
   }
 
@@ -2601,15 +2637,18 @@ export function InfoView() {
       appToast({ message: t("explore.selectChapterMin"), kind: "err" });
       return;
     }
-    const dir = await ensureOutputDir();
-    if (!dir) {
-      log(t("explore.pickOutput"), "err");
-      appToast({ message: t("explore.pickOutput"), kind: "err" });
-      return;
-    }
+    if (enqueueBlocked()) return;
+    enqueueFlightRef.current = true;
     setEnqueueBusy(true);
     try {
-      const n = await api.queueAdd({
+      const dir = await ensureOutputDir();
+      if (!dir) {
+        log(t("explore.pickOutput"), "err");
+        appToast({ message: t("explore.pickOutput"), kind: "err" });
+        return;
+      }
+      const gotoDl = await gotoDownloadsIfSet();
+      const added = await api.queueAdd({
         manga_title: manga.title || "manga",
         root_url: manga.root_url,
         manga_url: mangaUrl,
@@ -2618,16 +2657,18 @@ export function InfoView() {
         chapters,
         start: !taskStopped,
         batch_id: `dl-${Date.now().toString(36)}`,
+        progress: true,
       });
-      const msg = taskStopped
-        ? `Encolados ${n} (detenidos).`
-        : t("explore.queuedChapters", { n });
-      log(msg, "ok");
-      const gotoDlRaw = await api.settingsGet("ui.goto_downloads_on_add");
-      const gotoDl = gotoDlRaw !== "0" && gotoDlRaw !== "false";
+      const n = added.inserted;
+      const msg = added.cancelled
+        ? t("explore.queuedCancelled", { n })
+        : taskStopped
+          ? `Encolados ${n} (detenidos).`
+          : t("explore.queuedChapters", { n });
+      log(msg, added.cancelled ? "" : "ok");
       appToast({
         message: msg,
-        kind: "ok",
+        kind: added.cancelled ? "" : "ok",
         ...(gotoDl
           ? {}
           : {
@@ -2637,12 +2678,12 @@ export function InfoView() {
               },
             }),
       });
-      if (gotoDl) setActiveNav("downloads");
     } catch (e) {
       const msg = String(e);
       log(msg, "err");
       appToast({ message: msg, kind: "err" });
     } finally {
+      enqueueFlightRef.current = false;
       setEnqueueBusy(false);
     }
   }
@@ -2678,31 +2719,35 @@ export function InfoView() {
       return;
     }
     n = Math.min(n, chapters.length);
-    const dir = await ensureOutputDir();
-    if (!dir) {
-      log(t("explore.pickOutput"), "err");
-      appToast({ message: t("explore.pickOutput"), kind: "err" });
-      return;
-    }
-    // FMD2: base = len div N, remainder get +1 (first rem batches).
-    const base = Math.floor(chapters.length / n);
-    const rem = chapters.length % n;
-    const batches: (typeof chapters)[] = [];
-    let offset = 0;
-    for (let i = 0; i < n; i++) {
-      const size = base + (i < rem ? 1 : 0);
-      batches.push(chapters.slice(offset, offset + size));
-      offset += size;
-    }
-    const stamp = Date.now().toString(36);
+    if (enqueueBlocked()) return;
+    enqueueFlightRef.current = true;
     setSplitBusy(true);
     try {
+      const dir = await ensureOutputDir();
+      if (!dir) {
+        log(t("explore.pickOutput"), "err");
+        appToast({ message: t("explore.pickOutput"), kind: "err" });
+        return;
+      }
+      // FMD2: base = len div N, remainder get +1 (first rem batches).
+      const base = Math.floor(chapters.length / n);
+      const rem = chapters.length % n;
+      const batches: (typeof chapters)[] = [];
+      let offset = 0;
+      for (let i = 0; i < n; i++) {
+        const size = base + (i < rem ? 1 : 0);
+        batches.push(chapters.slice(offset, offset + size));
+        offset += size;
+      }
+      const stamp = Date.now().toString(36);
+      const gotoDl = await gotoDownloadsIfSet();
       let total = 0;
+      let cancelled = false;
       for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
         if (!batch.length) continue;
         const batchId = `split-${stamp}-${i + 1}of${batches.length}`;
-        total += await api.queueAdd({
+        const added = await api.queueAdd({
           manga_title: manga.title || "manga",
           root_url: manga.root_url,
           manga_url: mangaUrl,
@@ -2711,17 +2756,23 @@ export function InfoView() {
           chapters: batch,
           start: !taskStopped,
           batch_id: batchId,
+          progress: true,
         });
+        total += added.inserted;
+        if (added.cancelled) {
+          cancelled = true;
+          break;
+        }
       }
-      const msg = taskStopped
-        ? `Dividido en ${batches.length} tareas (${total} caps, detenidos).`
-        : `Dividido en ${batches.length} tareas (${total} caps).`;
-      log(msg, "ok");
-      const gotoDlRaw = await api.settingsGet("ui.goto_downloads_on_add");
-      const gotoDl = gotoDlRaw !== "0" && gotoDlRaw !== "false";
+      const msg = cancelled
+        ? t("explore.queuedCancelled", { n: total })
+        : taskStopped
+          ? `Dividido en ${batches.length} tareas (${total} caps, detenidos).`
+          : `Dividido en ${batches.length} tareas (${total} caps).`;
+      log(msg, cancelled ? "" : "ok");
       appToast({
         message: msg,
-        kind: "ok",
+        kind: cancelled ? "" : "ok",
         ...(gotoDl
           ? {}
           : {
@@ -2731,13 +2782,13 @@ export function InfoView() {
               },
             }),
       });
-      setSplitPrompt(null);
-      if (gotoDl) setActiveNav("downloads");
+      if (!cancelled) setSplitPrompt(null);
     } catch (e) {
       const msg = String(e);
       log(msg, "err");
       appToast({ message: msg, kind: "err" });
     } finally {
+      enqueueFlightRef.current = false;
       setSplitBusy(false);
     }
   }

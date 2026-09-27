@@ -460,6 +460,10 @@ export function DownloadsView() {
     x: number;
     y: number;
     ids: number[];
+    /** Fila bajo el cursor: abrir carpeta, añadir más y dividir no siguen al resto de la selección. */
+    anchorId: number | null;
+    /** Clic en el panel de capítulos: la carpeta es la del capítulo, no la de la obra. */
+    preferChapter: boolean;
   } | null>(null);
   const [removeConfirm, setRemoveConfirm] = useState<{
     items: QueueItem[];
@@ -894,10 +898,10 @@ export function DownloadsView() {
         try {
           let inserted = 0;
           for (const req of snapshots) {
-            inserted += await api.queueAdd({
+            inserted += (await api.queueAdd({
               ...req,
               start: false,
-            });
+            })).inserted;
           }
           if (shouldStart) {
             await api.queueStart();
@@ -941,7 +945,12 @@ export function DownloadsView() {
     }
   }
 
-  function openCtx(ev: ReactMouseEvent, ids: number[]) {
+  function openCtx(
+    ev: ReactMouseEvent,
+    ids: number[],
+    anchorId: number | null,
+    preferChapter: boolean,
+  ) {
     ev.preventDefault();
     ev.stopPropagation();
     const pad = 8;
@@ -949,7 +958,13 @@ export function DownloadsView() {
     const menuH = 340;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
-    setDlCtxMenu({ x: Math.max(pad, x), y: Math.max(pad, y), ids });
+    setDlCtxMenu({
+      x: Math.max(pad, x),
+      y: Math.max(pad, y),
+      ids,
+      anchorId,
+      preferChapter,
+    });
   }
 
   async function handleResumeAll() {
@@ -1093,7 +1108,11 @@ export function DownloadsView() {
   const ctxCanApprove = ctxItems.some((i) => i.status === "review");
   const ctxCanDelete = ctxItems.some((i) => i.status !== "running");
   const ctxCanRedownload = ctxItems.some((i) => i.status === "done");
-  const ctxOpenTarget = ctxItems[0];
+  const ctxOpenTarget = dlCtxMenu
+    ? (dlCtxMenu.anchorId != null
+        ? items.find((x) => x.id === dlCtxMenu.anchorId)
+        : undefined) ?? ctxItems[0]
+    : undefined;
   const ctxAddMoreGroup = ctxOpenTarget
     ? allGroups.find((g) => g.key === mangaGroupKey(ctxOpenTarget)) || null
     : null;
@@ -1101,8 +1120,7 @@ export function DownloadsView() {
     ctxAddMoreGroup &&
     (ctxAddMoreGroup.mangaUrl || ctxAddMoreGroup.rootUrl || "").trim()
   );
-  const ctxGroupKeys = new Set(ctxItems.map((i) => mangaGroupKey(i)));
-  const ctxCanSplit = ctxGroupKeys.size === 1 && (ctxAddMoreGroup?.items.length ?? 0) >= 2;
+  const ctxCanSplit = (ctxAddMoreGroup?.items.length ?? 0) >= 2;
 
   const selChCount = hasSel
     ? selChapterIds.length
@@ -1430,7 +1448,7 @@ export function DownloadsView() {
               aria-label={t("downloads.groupsAria")}
               onKeyDown={selG.handleKeyDown}
               onContextMenu={(ev) => {
-                openCtx(ev, []);
+                openCtx(ev, [], null, false);
               }}
             >
               <div className="dl-grid dl-head" role="presentation">
@@ -1506,8 +1524,15 @@ export function DownloadsView() {
                         setPanelMin(false);
                       }}
                       onContextMenu={(ev) => {
-                        if (!selG.isSelected(g.key)) selG.selectOnly(g.key);
-                        openCtx(ev, g.items.map((i) => i.id));
+                        const selected = selG.selectedRef.current;
+                        const keys = selected.has(g.key) ? [...selected] : [g.key];
+                        if (!selected.has(g.key)) selG.selectOnly(g.key);
+                        openCtx(
+                          ev,
+                          chapterIdsOfGroups(keys),
+                          g.items[0]?.id ?? null,
+                          false,
+                        );
                       }}
                     >
                       <button
@@ -1851,7 +1876,7 @@ export function DownloadsView() {
                     aria-label={t("downloads.chaptersAria")}
                     onKeyDown={selC.handleKeyDown}
                     onContextMenu={(ev) => {
-                      openCtx(ev, []);
+                      openCtx(ev, [], null, false);
                     }}
                   >
                     {focusGroup.items.map((c) => {
@@ -1897,8 +1922,10 @@ export function DownloadsView() {
                             void handleOpenContent(c.id);
                           }}
                           onContextMenu={(ev) => {
-                            if (!selC.isSelected(c.id)) selC.selectOnly(c.id);
-                            openCtx(ev, [c.id]);
+                            const selected = selC.selectedRef.current;
+                            const ids = selected.has(c.id) ? [...selected] : [c.id];
+                            if (!selected.has(c.id)) selC.selectOnly(c.id);
+                            openCtx(ev, ids, c.id, true);
                           }}
                         >
                           <button
@@ -2271,10 +2298,10 @@ export function DownloadsView() {
               disabled={!ctxOpenTarget?.output_dir}
               onClick={() => {
                 const it = ctxOpenTarget;
+                const preferChapter = dlCtxMenu.preferChapter;
                 setDlCtxMenu(null);
                 if (!it) return;
-                // Fila de capítulo (panel) → carpeta del cap; grupo (lista) → carpeta de la obra
-                void handleOpenFolder(it.id, ctxItems.length === 1);
+                void handleOpenFolder(it.id, preferChapter);
               }}
             >
               <Icon ico={ICO.folderOpen} className="ico ico-sm" />

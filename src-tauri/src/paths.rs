@@ -86,7 +86,7 @@ pub fn path_from_storage_string(stored: &str) -> String {
     p.to_string_lossy().into_owned()
 }
 
-fn long_paths_enabled() -> bool {
+pub fn long_paths_enabled() -> bool {
     #[cfg(windows)]
     {
         crate::settings_keys::bool_setting(crate::settings_keys::LONG_PATHS, false)
