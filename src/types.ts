@@ -59,7 +59,7 @@ export type QueueAddRequest = {
   module_id: string;
   output_dir: string;
   chapters: ChapterInfo[];
-  /** If false, enqueue without starting the worker (tarea detenida). Default true. */
+  /** If false, enqueue as stopped (cancelled) without starting the worker. Default true. */
   start?: boolean;
   /** Split batch id; empty/omit for normal enqueue. */
   batch_id?: string;

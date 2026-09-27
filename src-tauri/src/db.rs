@@ -1194,6 +1194,21 @@ pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
 }
 
 pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, String> {
+    queue_add_many_with_status(db, items, "pending")
+}
+
+/// Insert queue rows. `status` is `pending` (the worker may take them) or
+/// `cancelled` (tarea detenida: stays stopped until the user resumes).
+pub fn queue_add_many_with_status(
+    db: &Db,
+    items: &[NewQueueItem],
+    status: &str,
+) -> Result<Vec<i64>, String> {
+    let status = if status == "cancelled" {
+        "cancelled"
+    } else {
+        "pending"
+    };
     let mut conn = db.lock();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let ts = now();
@@ -1228,7 +1243,7 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
             "INSERT INTO queue_items(
                 manga_title, root_url, manga_url, module_id, chapter_index, chapter_name, chapter_link,
                 output_dir, manga_path, chapter_path, chapter_display, batch_id, pack_format, status, error, created_at, updated_at, retry_count, position
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'pending','',?14,?14,0,?15)",
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'',?15,?15,0,?16)",
             params![
                 item.manga_title,
                 item.root_url,
@@ -1243,6 +1258,7 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
                 item.chapter_display,
                 item.batch_id,
                 item.pack_format,
+                status,
                 ts,
                 max_pos
             ],
@@ -2614,6 +2630,25 @@ mod tests {
         let second = batch_of(&db, ids[3]);
         assert_eq!(second, batch_of(&db, ids[4]));
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn stopped_rows_stay_put_when_another_download_starts() {
+        let db = test_main_db();
+        let stopped = queue_add_many_with_status(
+            &db,
+            &[new_item(r"C:\dl\a\1", "/c/stopped")],
+            "cancelled",
+        )
+        .unwrap();
+        assert_eq!(queue_get(&db, stopped[0]).unwrap().status, "cancelled");
+        assert!(queue_take_next_pending(&db).unwrap().is_none());
+
+        let live = queue_add_many(&db, &[new_item(r"C:\dl\b\1", "/c/live")]).unwrap();
+        let next = queue_take_next_pending(&db).unwrap().unwrap();
+        assert_eq!(next.id, live[0]);
+        assert_eq!(next.status, "running");
+        assert_eq!(queue_get(&db, stopped[0]).unwrap().status, "cancelled");
     }
 
     #[test]

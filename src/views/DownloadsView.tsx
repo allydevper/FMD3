@@ -574,9 +574,10 @@ function snapshotItemsForUndo(removed: QueueItem[]): {
       pack_format: (it.pack_format || "").trim() || undefined,
     }));
     expectedChapters += chapters.length;
-    if (arr.some((it) => it.status === "pending" || it.status === "running")) {
-      shouldStart = true;
-    }
+    const groupActive = arr.some(
+      (it) => it.status === "pending" || it.status === "running",
+    );
+    if (groupActive) shouldStart = true;
     reqs.push({
       manga_title: first.manga_title,
       root_url: first.root_url,
@@ -584,7 +585,7 @@ function snapshotItemsForUndo(removed: QueueItem[]): {
       module_id: first.module_id,
       output_dir: first.output_dir,
       chapters,
-      start: false,
+      start: groupActive,
       batch_id: (first.batch_id || "").trim() || undefined,
     });
   }
@@ -1075,10 +1076,7 @@ export function DownloadsView() {
         try {
           let inserted = 0;
           for (const req of snapshots) {
-            inserted += (await api.queueAdd({
-              ...req,
-              start: false,
-            })).inserted;
+            inserted += (await api.queueAdd(req)).inserted;
           }
           if (shouldStart) {
             await api.queueStart();

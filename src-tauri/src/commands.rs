@@ -345,7 +345,8 @@ pub struct QueueAddRequest {
     pub module_id: String,
     pub output_dir: String,
     pub chapters: Vec<DownloadChapterInput>,
-    /// If false, enqueue as pending without starting the worker ("tarea detenida").
+    /// If false, enqueue as cancelled ("tarea detenida") and do not start the worker.
+    /// A later download must not pick these up; the user resumes them explicitly.
     #[serde(default = "default_true")]
     pub start: bool,
     /// Split-download batch; empty = normal enqueue.
@@ -978,7 +979,8 @@ fn queue_add_blocking(app: AppHandle, db: Db, req: QueueAddRequest) -> Result<Qu
                 }
             })
             .collect();
-        match db::queue_add_many(&db, &items) {
+        let status = if req.start { "pending" } else { "cancelled" };
+        match db::queue_add_many_with_status(&db, &items, status) {
             Ok(ids) => {
                 inserted += ids.len();
                 processed += chunk.len();
