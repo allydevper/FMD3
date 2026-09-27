@@ -751,6 +751,9 @@ pub fn settings_set_direct(key: &str, value: &str) -> Result<(), String> {
     if key == crate::settings_keys::APP_LANGUAGE {
         crate::i18n::refresh();
     }
+    if key == crate::settings_keys::LONG_PATHS {
+        crate::paths::invalidate_long_paths_cache();
+    }
     Ok(())
 }
 
@@ -766,6 +769,9 @@ pub fn settings_set(db: &Db, key: &str, value: &str) -> Result<(), String> {
     drop(conn);
     if key == crate::settings_keys::APP_LANGUAGE {
         crate::i18n::refresh();
+    }
+    if key == crate::settings_keys::LONG_PATHS {
+        crate::paths::invalidate_long_paths_cache();
     }
     Ok(())
 }
@@ -1147,6 +1153,17 @@ pub fn queue_group_has_failed(db: &Db, item: &QueueItem) -> Result<bool, String>
         .map_err(|e| e.to_string())?
     };
     Ok(count > 0)
+}
+
+/// Capítulos en cola o bajando. Una consulta, sin cargar las filas.
+pub fn queue_count_active(db: &Db) -> Result<i64, String> {
+    let conn = db.lock();
+    conn.query_row(
+        "SELECT COUNT(*) FROM queue_items WHERE status IN ('pending', 'running')",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {

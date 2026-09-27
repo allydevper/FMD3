@@ -1,10 +1,12 @@
 import {
+  memo,
   useEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  type MutableRefObject,
 } from "react";
 import { Icon } from "../components/Icon";
 import { appConfirm } from "../components/AppConfirm";
@@ -18,7 +20,7 @@ import {
   useListSelection,
 } from "../hooks/useListSelection";
 import { confirmIfEnabled, settingBool, settingNumber } from "../utils/settings";
-import { t, tPlural, useLanguage } from "../i18n";
+import { t, tPlural, useLanguage, type AppLanguage } from "../i18n";
 import { catalogLinkKey, mangaPathKey } from "../utils/url";
 import type {
   ChapterInfo,
@@ -200,12 +202,17 @@ type MangaGroup = {
 function orderedQueueItems(items: QueueItem[], order: number[]): QueueItem[] {
   const map = new Map(items.map((i) => [i.id, i]));
   const out: QueueItem[] = [];
+  const seen = new Set<number>();
   for (const id of order) {
     const it = map.get(id);
-    if (it) out.push(it);
+    if (!it || seen.has(id)) continue;
+    out.push(it);
+    seen.add(id);
   }
   for (const it of items) {
-    if (!out.includes(it)) out.push(it);
+    if (seen.has(it.id)) continue;
+    out.push(it);
+    seen.add(it.id);
   }
   return out;
 }
@@ -331,6 +338,17 @@ function aggregateGroup(
   };
 }
 
+/** Firma del progreso en vivo de un grupo. Vacía si ninguno de sus capítulos está bajando. */
+function groupProgressKey(g: MangaGroup, liveProgress: Map<number, LiveProgress>): string {
+  let key = "";
+  for (const it of g.items) {
+    const p = liveProgress.get(it.id);
+    if (!p) continue;
+    key += `${it.id}:${p.page_current}/${p.page_total}:${p.phase}:${p.bytes_per_sec}|`;
+  }
+  return key;
+}
+
 function groupMatchesCat(g: MangaGroup, cat: string): boolean {
   if (cat === "all") return true;
   if (cat === "hist") return g.items.some((i) => i.status === "done");
@@ -393,6 +411,143 @@ function filterAndSortGroups(
   return groups;
 }
 
+const EMPTY_LIVE = new Map<number, LiveProgress>();
+
+type GroupRowActions = {
+  focusList: () => void;
+  rowClick: (key: string, ev: ReactMouseEvent) => void;
+  rowDoubleClick: (key: string) => void;
+  checkbox: (key: string) => void;
+  contextMenu: (g: MangaGroup, ev: ReactMouseEvent) => void;
+  toggleRun: (g: MangaGroup, running: boolean) => void;
+  remove: (g: MangaGroup) => void;
+};
+
+const DownloadGroupRow = memo(function DownloadGroupRow({
+  group: g,
+  liveProgress,
+  selected,
+  focused,
+  cursor,
+  actions,
+}: {
+  group: MangaGroup;
+  liveProgress: Map<number, LiveProgress>;
+  progressKey: string;
+  selected: boolean;
+  focused: boolean;
+  cursor: boolean;
+  lang: AppLanguage;
+  actions: MutableRefObject<GroupRowActions>;
+}) {
+  const a = aggregateGroup(g, liveProgress);
+  const running = a.active > 0;
+  return (
+    <div
+      className={`dl-grid dl-row${selected ? " sel" : ""}${focused ? " focus" : ""}${
+        cursor ? " cursor" : ""
+      }`}
+      role="option"
+      aria-selected={selected}
+      data-selkey={g.key}
+      onMouseDown={(ev) => {
+        /* Shift+clic no debe pintar seleccion de texto; el foco
+           tiene que quedarse en la lista para seguir con teclado. */
+        if (ev.shiftKey) {
+          ev.preventDefault();
+          actions.current.focusList();
+        }
+      }}
+      onClick={(ev) => actions.current.rowClick(g.key, ev)}
+      onDoubleClick={() => actions.current.rowDoubleClick(g.key)}
+      onContextMenu={(ev) => actions.current.contextMenu(g, ev)}
+    >
+      <button
+        type="button"
+        className={`sites-cb${selected ? " on" : ""}`}
+        style={{ ["--ico" as string]: ICO.check }}
+        aria-label={t("downloads.selectGroup")}
+        tabIndex={-1}
+        onClick={(e) => {
+          e.stopPropagation();
+          actions.current.checkbox(g.key);
+        }}
+      >
+        <span className="sites-cb-mk" />
+      </button>
+      <div className="dl-cell-title" title={t("downloads.dblClickChapters")}>
+        <div className="dl-cell-title-text">
+          <span className="ell dl-manga">{g.title}</span>
+          <span className="ell dl-chapter">{a.summary}</span>
+        </div>
+        <span className="dl-cell-tags">
+          <span className="mono dl-tag">{g.items.length} cap.</span>
+          {g.taskLabel ? <span className="mono dl-tag">{g.taskLabel}</span> : null}
+        </span>
+      </div>
+      <span className="dl-badge" style={{ color: a.st.color, background: a.st.bg }}>
+        {a.stLabel}
+      </span>
+      <div className="dl-prog">
+        <div className="dl-seg">
+          <i style={{ width: `${a.wDone.toFixed(1)}%`, background: "var(--ok)" }} />
+          <i style={{ width: `${a.wActive.toFixed(1)}%`, background: a.st.bar }} />
+        </div>
+        <div className="dl-prog-meta">
+          <span className="mono">{Math.round(a.pct)}%</span>
+          <span className="mono">
+            {a.done}/{g.items.length} cap
+          </span>
+        </div>
+      </div>
+      <span
+        className="mono dl-ratio"
+        style={{ color: a.speed ? "var(--text)" : "var(--muted)" }}
+      >
+        {formatBytesPerSec(a.speed) || "—"}
+      </span>
+      <div className="dl-site-added" title={g.outputDir}>
+        <span className="ell dl-site">{g.site}</span>
+        <span className="ell mono dl-added">{dlFmtAdded(g.oldest)}</span>
+      </div>
+      <div className="dl-act">
+        <button
+          type="button"
+          className="dl-ibtn"
+          title={running ? t("downloads.stopGroup") : t("downloads.resumeGroup")}
+          style={{ borderColor: "transparent", width: "24px", height: "24px" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            actions.current.toggleRun(g, running);
+          }}
+        >
+          <Icon ico={running ? ICO.pause : ICO.play} className="ico ico-sm" />
+        </button>
+        <button
+          type="button"
+          className="dl-ibtn"
+          title={t("downloads.removeGroup")}
+          style={{ borderColor: "transparent", width: "24px", height: "24px" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            actions.current.remove(g);
+          }}
+        >
+          <Icon ico={ICO.trash} className="ico ico-sm" />
+        </button>
+      </div>
+    </div>
+  );
+}, (prev, next) =>
+  prev.group === next.group &&
+  prev.progressKey === next.progressKey &&
+  prev.selected === next.selected &&
+  prev.focused === next.focused &&
+  prev.cursor === next.cursor &&
+  prev.lang === next.lang &&
+  prev.actions === next.actions,
+);
+
 function snapshotItemsForUndo(removed: QueueItem[]): {
   reqs: QueueAddRequest[];
   shouldStart: boolean;
@@ -437,7 +592,7 @@ function snapshotItemsForUndo(removed: QueueItem[]): {
 }
 
 export function DownloadsView() {
-  useLanguage();
+  const lang = useLanguage();
   const { activeNav, modules, log, setActiveNav, setPendingMangaOpen, cfWebviewActive } =
     useApp();
   const [cfCollapsed, setCfCollapsed] = useState(false);
@@ -477,6 +632,9 @@ export function DownloadsView() {
   const [splitBusy, setSplitBusy] = useState(false);
   const [contentFmt, setContentFmt] = useState<Record<number, string>>({});
   const [packFmt, setPackFmt] = useState("none");
+  /** Ids legacy ya sondeados en disco. No se repite al cambiar de grupo. */
+  const probedFmtRef = useRef(new Set<number>());
+  const rowActionsRef = useRef<GroupRowActions>(null!);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const lastProgressLogRef = useRef<{ itemId: number; message: string } | null>(null);
   const refreshSeqRef = useRef(0);
@@ -515,7 +673,8 @@ export function DownloadsView() {
     const ids = new Set(items.map((i) => i.id));
     setOrder((prev) => {
       const kept = prev.filter((id) => ids.has(id));
-      const missing = items.filter((it) => !kept.includes(it.id)).map((it) => it.id);
+      const keptSet = new Set(kept);
+      const missing = items.filter((it) => !keptSet.has(it.id)).map((it) => it.id);
       return kept.concat(missing);
     });
   }, [items]);
@@ -567,8 +726,17 @@ export function DownloadsView() {
     let unChanged: (() => void) | undefined;
     let unProgress: (() => void) | undefined;
     let cancelled = false;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    // Varios `queue-changed` seguidos (encolar de a 40) son una sola lectura.
+    const scheduleRefresh = () => {
+      if (refreshTimer != null) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        void refreshQueue();
+      }, 150);
+    };
     void api.onQueueChanged(() => {
-      void refreshQueue();
+      scheduleRefresh();
     }).then((u) => {
       if (cancelled) {
         u();
@@ -626,6 +794,7 @@ export function DownloadsView() {
       });
     return () => {
       cancelled = true;
+      if (refreshTimer != null) clearTimeout(refreshTimer);
       unChanged?.();
       unProgress?.();
       unChanged = undefined;
@@ -653,6 +822,10 @@ export function DownloadsView() {
     [items, order, modules],
   );
 
+  const liveForSort =
+    sortKey === "pct" || sortKey === "status" || sortKey === "speed"
+      ? liveProgress
+      : EMPTY_LIVE;
   const groups = useMemo(
     () =>
       filterAndSortGroups(
@@ -663,9 +836,9 @@ export function DownloadsView() {
         sortKey,
         sortDir,
         modules,
-        liveProgress,
+        liveForSort,
       ),
-    [items, order, query, cat, sortKey, sortDir, modules, liveProgress],
+    [items, order, query, cat, sortKey, sortDir, modules, liveForSort],
   );
 
   const groupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
@@ -707,29 +880,33 @@ export function DownloadsView() {
     onCursorChange: (key) => scrollSelKeyIntoView(dlPanelScrollRef.current, key),
   });
 
-  const focusFmtKey = focusGroup
-    ? focusGroup.items.map((i) => `${i.id}:${i.status}`).join("|")
-    : "";
-
+  // Solo filas viejas, sin formato congelado y ya terminadas. El resto usa pack_format.
   useEffect(() => {
-    if (!focusGroup) {
-      setContentFmt({});
-      return;
-    }
-    const ids = focusGroup.items.map((i) => i.id);
+    const ids = items
+      .filter(
+        (it) =>
+          it.status === "done" &&
+          !(it.pack_format || "").trim() &&
+          !probedFmtRef.current.has(it.id),
+      )
+      .map((it) => it.id);
+    if (!ids.length) return;
     let cancelled = false;
     void api.queueItemsContentFormat(ids).then((rows) => {
       if (cancelled) return;
-      const next: Record<number, string> = {};
-      for (const row of rows) next[row.id] = row.format;
-      setContentFmt(next);
-    });
+      for (const id of ids) probedFmtRef.current.add(id);
+      setContentFmt((prev) => {
+        const next = { ...prev };
+        const got = new Set(rows.map((row) => row.id));
+        for (const row of rows) next[row.id] = row.format;
+        for (const id of ids) if (!got.has(id)) next[id] = "";
+        return next;
+      });
+    }).catch(() => {});
     return () => {
       cancelled = true;
     };
-    // focusFmtKey tracks status changes so we re-probe when chapters finish.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusKey, focusFmtKey]);
+  }, [items]);
 
   function chapterFormatLabel(c: QueueItem): string | null {
     const detected = dlContentFormatLabel(contentFmt[c.id]);
@@ -1145,6 +1322,36 @@ export function DownloadsView() {
     );
   const concurrencyLabel = t("downloads.parallel", { cur: Math.min(activeN || 0, parallelTasks), max: parallelTasks });
 
+  rowActionsRef.current = {
+    focusList: () => dlScrollRef.current?.focus({ preventScroll: true }),
+    rowClick: (key, ev) => {
+      selG.handleRowClick(key, ev);
+      /* El panel solo sigue al clic simple, y solo si ya
+         estaba abierto: Ctrl/Shift son para seleccionar. */
+      const plain = !ev.ctrlKey && !ev.metaKey && !ev.shiftKey;
+      if (plain && focusKey && !panelMin) setFocusKey(key);
+    },
+    rowDoubleClick: (key) => {
+      setFocusKey(key);
+      setPanelMin(false);
+    },
+    checkbox: (key) => selG.handleCheckboxClick(key),
+    contextMenu: (g, ev) => {
+      const selected = selG.selectedRef.current;
+      const keys = selected.has(g.key) ? [...selected] : [g.key];
+      if (!selected.has(g.key)) selG.selectOnly(g.key);
+      openCtx(ev, chapterIdsOfGroups(keys), g.items[0]?.id ?? null, false);
+    },
+    toggleRun: (g, running) => {
+      if (running) void pauseIds(g.items.map((i) => i.id));
+      else {
+        const ids = g.items.filter((i) => i.status !== "done").map((i) => i.id);
+        void resumeIds(ids);
+      }
+    },
+    remove: (g) => askRemoveItems(g.items, t("downloads.removedNamed", { title: g.title })),
+  };
+
   return (
     <section id="view-downloads" className="view" hidden={activeNav !== "downloads"}>
       <div className="dl-shell">
@@ -1490,168 +1697,19 @@ export function DownloadsView() {
               </div>
 
               {groups.length ? (
-                groups.map((g) => {
-                  const a = aggregateGroup(g, liveProgress);
-                  const on = selG.isSelected(g.key);
-                  const focused = focusKey === g.key;
-                  const running = a.active > 0;
-                  return (
-                    <div
-                      key={g.key}
-                      className={`dl-grid dl-row${on ? " sel" : ""}${
-                        focused ? " focus" : ""
-                      }${selG.isCursor(g.key) ? " cursor" : ""}`}
-                      role="option"
-                      aria-selected={on}
-                      data-selkey={g.key}
-                      onMouseDown={(ev) => {
-                        /* Shift+clic no debe pintar seleccion de texto; el foco
-                           tiene que quedarse en la lista para seguir con teclado. */
-                        if (ev.shiftKey) {
-                          ev.preventDefault();
-                          dlScrollRef.current?.focus({ preventScroll: true });
-                        }
-                      }}
-                      onClick={(ev) => {
-                        selG.handleRowClick(g.key, ev);
-                        /* El panel solo sigue al clic simple, y solo si ya
-                           estaba abierto: Ctrl/Shift son para seleccionar. */
-                        const plain = !ev.ctrlKey && !ev.metaKey && !ev.shiftKey;
-                        if (plain && focusKey && !panelMin) setFocusKey(g.key);
-                      }}
-                      onDoubleClick={() => {
-                        setFocusKey(g.key);
-                        setPanelMin(false);
-                      }}
-                      onContextMenu={(ev) => {
-                        const selected = selG.selectedRef.current;
-                        const keys = selected.has(g.key) ? [...selected] : [g.key];
-                        if (!selected.has(g.key)) selG.selectOnly(g.key);
-                        openCtx(
-                          ev,
-                          chapterIdsOfGroups(keys),
-                          g.items[0]?.id ?? null,
-                          false,
-                        );
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className={`sites-cb${on ? " on" : ""}`}
-                        style={{ ["--ico" as string]: ICO.check }}
-                        aria-label={t("downloads.selectGroup")}
-                        tabIndex={-1}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          selG.handleCheckboxClick(g.key);
-                        }}
-                      >
-                        <span className="sites-cb-mk" />
-                      </button>
-                      <div
-                        className="dl-cell-title"
-                        title={t("downloads.dblClickChapters")}
-                      >
-                        <div className="dl-cell-title-text">
-                          <span className="ell dl-manga">{g.title}</span>
-                          <span className="ell dl-chapter">{a.summary}</span>
-                        </div>
-                        <span className="dl-cell-tags">
-                          <span className="mono dl-tag">{g.items.length} cap.</span>
-                          {g.taskLabel ? (
-                            <span className="mono dl-tag">{g.taskLabel}</span>
-                          ) : null}
-                        </span>
-                      </div>
-                      <span
-                        className="dl-badge"
-                        style={{ color: a.st.color, background: a.st.bg }}
-                      >
-                        {a.stLabel}
-                      </span>
-                      <div className="dl-prog">
-                        <div className="dl-seg">
-                          <i
-                            style={{
-                              width: `${a.wDone.toFixed(1)}%`,
-                              background: "var(--ok)",
-                            }}
-                          />
-                          <i
-                            style={{
-                              width: `${a.wActive.toFixed(1)}%`,
-                              background: a.st.bar,
-                            }}
-                          />
-                        </div>
-                        <div className="dl-prog-meta">
-                          <span className="mono">{Math.round(a.pct)}%</span>
-                          <span className="mono">
-                            {a.done}/{g.items.length} cap
-                          </span>
-                        </div>
-                      </div>
-                      <span
-                        className="mono dl-ratio"
-                        style={{
-                          color: a.speed ? "var(--text)" : "var(--muted)",
-                        }}
-                      >
-                        {formatBytesPerSec(a.speed) || "—"}
-                      </span>
-                      <div className="dl-site-added" title={g.outputDir}>
-                        <span className="ell dl-site">{g.site}</span>
-                        <span className="ell mono dl-added">{dlFmtAdded(g.oldest)}</span>
-                      </div>
-                      <div className="dl-act">
-                        <button
-                          type="button"
-                          className="dl-ibtn"
-                          title={running ? t("downloads.stopGroup") : t("downloads.resumeGroup")}
-                          style={{
-                            borderColor: "transparent",
-                            width: "24px",
-                            height: "24px",
-                          }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (running) void pauseIds(g.items.map((i) => i.id));
-                            else {
-                              const ids = g.items
-                                .filter((i) => i.status !== "done")
-                                .map((i) => i.id);
-                              void resumeIds(ids);
-                            }
-                          }}
-                        >
-                          <Icon
-                            ico={running ? ICO.pause : ICO.play}
-                            className="ico ico-sm"
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          className="dl-ibtn"
-                          title={t("downloads.removeGroup")}
-                          style={{
-                            borderColor: "transparent",
-                            width: "24px",
-                            height: "24px",
-                          }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            askRemoveItems(
-                              g.items,
-                              t("downloads.removedNamed", { title: g.title }),
-                            );
-                          }}
-                        >
-                          <Icon ico={ICO.trash} className="ico ico-sm" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
+                groups.map((g) => (
+                  <DownloadGroupRow
+                    key={g.key}
+                    group={g}
+                    liveProgress={liveProgress}
+                    progressKey={groupProgressKey(g, liveProgress)}
+                    selected={selG.isSelected(g.key)}
+                    focused={focusKey === g.key}
+                    cursor={selG.isCursor(g.key)}
+                    lang={lang}
+                    actions={rowActionsRef}
+                  />
+                ))
               ) : (
                 <div className="dl-empty">
                   <Icon

@@ -95,14 +95,7 @@ fn emit_changed(app: &AppHandle) {
 }
 
 fn pending_count(db: &Db) -> i64 {
-    db::queue_list(db)
-        .map(|items| {
-            items
-                .iter()
-                .filter(|i| i.status == "pending" || i.status == "running")
-                .count() as i64
-        })
-        .unwrap_or(0)
+    db::queue_count_active(db).unwrap_or(0)
 }
 
 fn progress_event(

@@ -6,6 +6,15 @@
 //!   the `.exe` so renaming or moving the portable folder keeps working.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+/// 0 = aún no leído, 1 = apagado, 2 = encendido.
+/// `fs_path` se llama por cada archivo; sin esto cada `stat` abre `fmd3.db`.
+static LONG_PATHS_CACHE: AtomicU8 = AtomicU8::new(0);
+
+pub fn invalidate_long_paths_cache() {
+    LONG_PATHS_CACHE.store(0, Ordering::Relaxed);
+}
 
 /// FMD2 `MAX_PATHDIR` — leave room under Win32 `MAX_PATH` (260) for a filename.
 pub const MAX_PATHDIR: usize = 247;
@@ -89,7 +98,16 @@ pub fn path_from_storage_string(stored: &str) -> String {
 pub fn long_paths_enabled() -> bool {
     #[cfg(windows)]
     {
-        crate::settings_keys::bool_setting(crate::settings_keys::LONG_PATHS, false)
+        match LONG_PATHS_CACHE.load(Ordering::Relaxed) {
+            1 => false,
+            2 => true,
+            _ => {
+                let on =
+                    crate::settings_keys::bool_setting(crate::settings_keys::LONG_PATHS, false);
+                LONG_PATHS_CACHE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+                on
+            }
+        }
     }
     #[cfg(not(windows))]
     {
