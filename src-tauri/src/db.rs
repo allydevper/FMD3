@@ -123,6 +123,9 @@ pub struct QueueItem {
     pub retry_count: i64,
     #[serde(default)]
     pub position: i64,
+    /// 1 once the user has accepted the visual sample and the rest may download.
+    #[serde(default)]
+    pub preview_passed: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +196,7 @@ fn map_queue_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
         retry_count: r.get(17)?,
         position: r.get(18)?,
         chapter_display: r.get(19)?,
+        preview_passed: r.get(20)?,
     })
 }
 
@@ -209,7 +213,7 @@ const QUEUE_SELECT: &str = "SELECT id, manga_title, root_url, COALESCE(manga_url
         COALESCE(pack_format,''),
         status, error, created_at, updated_at,
         COALESCE(retry_count, 0), COALESCE(position, 0),
-        COALESCE(chapter_display,'')
+        COALESCE(chapter_display,''), COALESCE(preview_passed, 0)
  FROM queue_items";
 
 /// Profile root (`fmd3.db`, `userdata/`, `data/`, `cover-cache/`).
@@ -332,7 +336,8 @@ pub fn open_db() -> Result<Db, String> {
             updated_at TEXT NOT NULL,
             retry_count INTEGER NOT NULL DEFAULT 0,
             position INTEGER NOT NULL DEFAULT 0,
-            chapter_display TEXT NOT NULL DEFAULT ''
+            chapter_display TEXT NOT NULL DEFAULT '',
+            preview_passed INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_items(status);
         CREATE TABLE IF NOT EXISTS manga_cache (
@@ -397,6 +402,10 @@ pub fn open_db() -> Result<Db, String> {
     );
     let _ = conn.execute(
         "ALTER TABLE queue_items ADD COLUMN chapter_display TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE queue_items ADD COLUMN preview_passed INTEGER NOT NULL DEFAULT 0",
         [],
     );
     let _ = conn.execute("ALTER TABLE manga_cache ADD COLUMN title TEXT", []);
@@ -1089,7 +1098,7 @@ pub fn queue_count_pending_for_group(db: &Db, item: &QueueItem) -> Result<i64, S
             .query_row(
                 "SELECT COUNT(*) FROM queue_items
                  WHERE COALESCE(batch_id, '') = ?1
-                   AND status IN ('pending','running')",
+                   AND status IN ('pending','running','review')",
                 params![batch],
                 |r| r.get(0),
             )
@@ -1103,7 +1112,7 @@ pub fn queue_count_pending_for_group(db: &Db, item: &QueueItem) -> Result<i64, S
         "SELECT COUNT(*) FROM queue_items
          WHERE manga_url = ?1
            AND TRIM(COALESCE(batch_id, '')) = ''
-           AND status IN ('pending','running')",
+           AND status IN ('pending','running','review')",
         params![manga],
         |r| r.get(0),
     )
@@ -1148,9 +1157,10 @@ pub fn queue_list(db: &Db) -> Result<Vec<QueueItem>, String> {
              ORDER BY
                CASE status
                  WHEN 'running' THEN 0
-                 WHEN 'pending' THEN 1
-                 WHEN 'failed' THEN 2
-                 ELSE 3
+                 WHEN 'review' THEN 1
+                 WHEN 'pending' THEN 2
+                 WHEN 'failed' THEN 3
+                 ELSE 4
                END,
                position ASC,
                id ASC"
@@ -1182,7 +1192,7 @@ pub fn queue_add_many(db: &Db, items: &[NewQueueItem]) -> Result<Vec<i64>, Strin
         let exists: Option<i64> = conn
             .query_row(
                 "SELECT id FROM queue_items
-                 WHERE chapter_link = ?1 AND status IN ('pending','running')
+                 WHERE chapter_link = ?1 AND status IN ('pending','running','review')
                  LIMIT 1",
                 params![item.chapter_link],
                 |r| r.get(0),
@@ -1342,6 +1352,35 @@ pub fn queue_get(db: &Db, id: i64) -> Result<QueueItem, String> {
     .map_err(|e| e.to_string())
 }
 
+/// Park a running chapter after its visual sample. The worker does not pick `review`.
+pub fn queue_mark_review(db: &Db, id: i64, error: &str) -> Result<bool, String> {
+    let conn = db.lock();
+    let n = conn
+        .execute(
+            "UPDATE queue_items SET status='review', error=?1, updated_at=?2
+             WHERE id=?3 AND status='running'",
+            params![error, now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
+/// User accepted the sample: the next run downloads the remaining pages.
+pub fn queue_approve_preview(db: &Db, id: i64) -> Result<(), String> {
+    let conn = db.lock();
+    let n = conn
+        .execute(
+            "UPDATE queue_items SET preview_passed=1, status='pending', error='', updated_at=?1
+             WHERE id=?2 AND status='review'",
+            params![now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("solo se puede continuar un capítulo en revisión".into());
+    }
+    Ok(())
+}
+
 /// Set status only if the row is still `running`. Returns whether a row changed.
 pub fn queue_set_status(db: &Db, id: i64, status: &str, error: &str) -> Result<bool, String> {
     let conn = db.lock();
@@ -1415,7 +1454,7 @@ pub fn queue_cancel(db: &Db, id: i64) -> Result<(), String> {
     let conn = db.lock();
     conn.execute(
         "UPDATE queue_items SET status='cancelled', updated_at=?1
-         WHERE id=?2 AND status IN ('pending','running')",
+         WHERE id=?2 AND status IN ('pending','running','review')",
         params![now(), id],
     )
     .map_err(|e| e.to_string())?;
@@ -1748,7 +1787,7 @@ pub fn queue_active_chapter_links(
     let mut stmt = conn
         .prepare(
             "SELECT manga_url, chapter_link FROM queue_items
-             WHERE module_id=?1 AND status IN ('pending','running')",
+             WHERE module_id=?1 AND status IN ('pending','running','review')",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -1794,7 +1833,7 @@ pub fn queue_chapter_path_shared(db: &Db, item_id: i64, path: &str) -> Result<bo
         .query_row(
             "SELECT COUNT(*) FROM queue_items
              WHERE id != ?1
-               AND status IN ('pending','running','paused','failed','cancelled')
+               AND status IN ('pending','running','review','paused','failed','cancelled')
                AND lower(replace(trim(chapter_path), '/', '\\'))
                  = lower(replace(trim(?2), '/', '\\'))",
             params![item_id, path],
@@ -1860,7 +1899,8 @@ mod tests {
                 updated_at TEXT NOT NULL DEFAULT '',
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 position INTEGER NOT NULL DEFAULT 0,
-                chapter_display TEXT NOT NULL DEFAULT ''
+                chapter_display TEXT NOT NULL DEFAULT '',
+                preview_passed INTEGER NOT NULL DEFAULT 0
             );
             "#,
         )
@@ -2588,6 +2628,27 @@ mod tests {
         let ids = add_n(&db, 1, "");
         queue_cancel(&db, ids[0]).unwrap();
         assert!(queue_take_next_pending(&db).unwrap().is_none());
+        assert_eq!(queue_get(&db, ids[0]).unwrap().status, "cancelled");
+    }
+
+    #[test]
+    fn review_is_not_taken_until_approved() {
+        let db = test_main_db();
+        let ids = add_n(&db, 1, "");
+        set_status(&db, ids[0], "running");
+        assert!(queue_mark_review(&db, ids[0], "").unwrap());
+        assert_eq!(queue_get(&db, ids[0]).unwrap().status, "review");
+        assert_eq!(queue_get(&db, ids[0]).unwrap().preview_passed, 0);
+        assert!(queue_take_next_pending(&db).unwrap().is_none());
+
+        queue_approve_preview(&db, ids[0]).unwrap();
+        let item = queue_get(&db, ids[0]).unwrap();
+        assert_eq!(item.status, "pending");
+        assert_eq!(item.preview_passed, 1);
+
+        queue_cancel(&db, ids[0]).unwrap();
+        set_status(&db, ids[0], "review");
+        queue_cancel(&db, ids[0]).unwrap();
         assert_eq!(queue_get(&db, ids[0]).unwrap().status, "cancelled");
     }
 

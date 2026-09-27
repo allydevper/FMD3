@@ -183,6 +183,7 @@ pub fn download_chapter_for_test(
         Default::default(),
         None,
         None,
+        true,
     )
 }
 
@@ -417,6 +418,7 @@ pub fn run() {
             commands::queue_split_group,
             commands::queue_start,
             commands::queue_cancel,
+            commands::queue_approve_preview,
             commands::queue_retry,
             commands::queue_redownload,
             commands::queue_remove,

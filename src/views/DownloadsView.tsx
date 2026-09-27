@@ -120,6 +120,18 @@ function dlItemPct(
   liveProgress: Map<number, LiveProgress>,
 ): { pct: number; pages: string; label: string } {
   if (item.status === "done") return { pct: 100, pages: "", label: "100%" };
+  if (item.status === "review") {
+    const live = liveProgress.get(item.id);
+    if (live && live.page_total > 0) {
+      const pct = Math.min(99, Math.round((live.page_current / live.page_total) * 100));
+      return {
+        pct,
+        pages: `${live.page_current}/${live.page_total} ${t("units.pagesAbbr")}`,
+        label: t("dlStatus.review"),
+      };
+    }
+    return { pct: 0, pages: "", label: t("dlStatus.review") };
+  }
   const live = liveProgress.get(item.id);
   if (live?.phase === "processing") {
     // La descarga sí terminó, así que la barra se queda al 100% y no retrocede;
@@ -241,6 +253,7 @@ type GroupAgg = {
   queued: number;
   paused: number;
   failed: number;
+  review: number;
   /** Subconjunto de `active` que ya terminó de bajar y está empaquetando. */
   processing: number;
   pct: number;
@@ -260,6 +273,7 @@ function aggregateGroup(
   let queued = 0;
   let paused = 0;
   let failed = 0;
+  let review = 0;
   let processing = 0;
   let pctSum = 0;
   let speed = 0;
@@ -272,6 +286,7 @@ function aggregateGroup(
       if (liveProgress.get(it.id)?.phase === "processing") processing++;
       speed += liveProgress.get(it.id)?.bytes_per_sec ?? 0;
     } else if (it.status === "pending") queued++;
+    else if (it.status === "review") review++;
     else if (it.status === "cancelled") paused++;
     else if (it.status === "failed") failed++;
   }
@@ -281,6 +296,7 @@ function aggregateGroup(
   const wActive = Math.max(0, pct - wDone);
   let status = "done";
   if (active > 0) status = "running";
+  else if (review > 0) status = "review";
   else if (failed > 0) status = "failed";
   else if (paused > 0) status = "cancelled";
   else if (queued > 0) status = "pending";
@@ -291,6 +307,7 @@ function aggregateGroup(
     parts.push(downloading === 1 ? t("downloads.downloadingOne") : t("downloads.downloadingN", { n: downloading }));
   if (processing) parts.push(t("downloads.packingN", { n: processing }));
   if (queued) parts.push(t("downloads.queuedN", { n: queued }));
+  if (review) parts.push(t("downloads.reviewN", { n: review }));
   if (paused) parts.push(t("downloads.pausedN", { n: paused }));
   if (failed) parts.push(t("downloads.failedN", { n: failed }));
   const st = dlStatusMeta(status);
@@ -304,6 +321,7 @@ function aggregateGroup(
     queued,
     paused,
     failed,
+    review,
     processing,
     pct,
     wDone,
@@ -770,6 +788,16 @@ export function DownloadsView() {
     }
   }
 
+  async function approvePreview(ids: number[]) {
+    for (const id of ids) {
+      const it = items.find((x) => x.id === id);
+      if (it?.status === "review") {
+        await api.queueApprovePreview(id);
+      }
+    }
+    await refreshQueue();
+  }
+
   async function resumeIds(ids: number[]) {
     for (const id of ids) {
       const it = items.find((x) => x.id === id);
@@ -784,7 +812,7 @@ export function DownloadsView() {
   async function pauseIds(ids: number[]) {
     for (const id of ids) {
       const it = items.find((x) => x.id === id);
-      if (it && (it.status === "running" || it.status === "pending")) {
+      if (it && (it.status === "running" || it.status === "pending" || it.status === "review")) {
         await api.queueCancel(id);
       }
     }
@@ -1018,7 +1046,7 @@ export function DownloadsView() {
     (i) => i.status === "cancelled" || i.status === "failed",
   );
   const canStopAll = items.some(
-    (i) => i.status === "running" || i.status === "pending",
+    (i) => i.status === "running" || i.status === "pending" || i.status === "review",
   );
   const totalBps = items
     .filter((i) => i.status === "running")
@@ -1035,7 +1063,7 @@ export function DownloadsView() {
     (i) => i.status === "cancelled" || i.status === "failed",
   );
   const canStopSel = selItems.some(
-    (i) => i.status === "running" || i.status === "pending",
+    (i) => i.status === "running" || i.status === "pending" || i.status === "review",
   );
   const canDeleteSel = selItems.some((i) => i.status !== "running");
   const canRetrySel = selItems.some((i) => i.status === "failed");
@@ -1060,8 +1088,9 @@ export function DownloadsView() {
     (i) => i.status === "cancelled" || i.status === "failed",
   );
   const ctxCanStop = ctxItems.some(
-    (i) => i.status === "running" || i.status === "pending",
+    (i) => i.status === "running" || i.status === "pending" || i.status === "review",
   );
+  const ctxCanApprove = ctxItems.some((i) => i.status === "review");
   const ctxCanDelete = ctxItems.some((i) => i.status !== "running");
   const ctxCanRedownload = ctxItems.some((i) => i.status === "done");
   const ctxOpenTarget = ctxItems[0];
@@ -1829,8 +1858,9 @@ export function DownloadsView() {
                       const st = dlStatusMeta(c.status);
                       const prog = dlItemPct(c, liveProgress);
                       const on = selC.isSelected(c.id);
+                      const isReview = c.status === "review";
                       const canStop =
-                        c.status === "running" || c.status === "pending";
+                        c.status === "running" || c.status === "pending" || isReview;
                       const canResume =
                         c.status === "cancelled" || c.status === "failed";
                       const isProcessing =
@@ -1921,7 +1951,42 @@ export function DownloadsView() {
                             </div>
                           </div>
                           <div className="dl-cact">
-                            {canStop || canResume ? (
+                            {isReview ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="dl-ibtn"
+                                  title={t("downloads.previewContinue")}
+                                  style={{
+                                    width: "22px",
+                                    height: "22px",
+                                    borderColor: "transparent",
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void approvePreview([c.id]);
+                                  }}
+                                >
+                                  <Icon ico={ICO.play} className="ico ico-sm" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="dl-ibtn"
+                                  title={t("downloads.previewCancel")}
+                                  style={{
+                                    width: "22px",
+                                    height: "22px",
+                                    borderColor: "transparent",
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void pauseIds([c.id]);
+                                  }}
+                                >
+                                  <Icon ico={ICO.x} className="ico ico-sm" />
+                                </button>
+                              </>
+                            ) : canStop || canResume ? (
                               <button
                                 type="button"
                                 className="dl-ibtn"
@@ -2143,6 +2208,20 @@ export function DownloadsView() {
             style={{ left: dlCtxMenu.x, top: dlCtxMenu.y }}
             role="menu"
           >
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
+              disabled={!ctxCanApprove}
+              onClick={() => {
+                const ids = dlCtxMenu.ids;
+                setDlCtxMenu(null);
+                void approvePreview(ids);
+              }}
+            >
+              <Icon ico={ICO.play} className="ico ico-sm" />
+              <span>{t("downloads.previewContinue")}</span>
+            </button>
             <button
               type="button"
               role="menuitem"

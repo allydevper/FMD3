@@ -119,6 +119,7 @@ export const es = {
     cancelled: "Detenido",
     failed: "Falló",
     done: "Completado",
+    review: "Revisar",
   },
   dlHist: {
     hoy: "Hoy",
@@ -228,6 +229,10 @@ export const es = {
     oneChapter: {
       label: "Un capítulo a la vez por obra",
       desc: "No inicia otro capítulo del mismo manga mientras uno está en progreso; otras obras sí usan los slots libres",
+    },
+    previewReview: {
+      label: "Revisar una muestra antes de continuar",
+      desc: "Guarda las primeras 5 páginas y espera tu confirmación. Apagado, el capítulo se baja entero",
     },
     pageThreads: { label: "Páginas en paralelo", desc: "Imágenes bajando a la vez dentro de un capítulo" },
     taskRetries: { label: "Reintentos de tarea", desc: "Si la tarea falla, cuántas veces reintentar" },
@@ -553,6 +558,8 @@ export const es = {
     colSiteAdded: "Sitio · agregado",
     resume: "Reanudar",
     stop: "Detener",
+    previewContinue: "Se ven bien, bajar el resto",
+    previewCancel: "Cancelar",
     stopGroup: "Detener grupo",
     resumeGroup: "Reanudar grupo",
     showCf: "Mostrar navegador interno",
@@ -596,6 +603,7 @@ export const es = {
     downloadingN: "{n} descargando",
     packingN: "{n} empaquetando",
     queuedN: "{n} en cola",
+    reviewN: "{n} por revisar",
     pausedN: "{n} detenidos",
     failedN: "{n} con error",
     restoredPartial: "Restaurados {inserted}/{expected} (algunos ya estaban en cola)",

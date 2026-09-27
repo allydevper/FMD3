@@ -1014,6 +1014,14 @@ pub fn cf_webview_user_close(app: AppHandle) {
 }
 
 #[tauri::command]
+pub fn queue_approve_preview(app: AppHandle, state: State<QueueState>, id: i64) -> Result<(), String> {
+    db::queue_approve_preview(&state.db, id)?;
+    let _ = app.emit("queue-changed", ());
+    queue::start_worker(app);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn queue_retry(app: AppHandle, state: State<QueueState>, id: i64) -> Result<(), String> {
     db::queue_retry(&state.db, id)?;
     queue::start_worker(app);

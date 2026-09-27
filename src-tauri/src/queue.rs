@@ -408,6 +408,7 @@ fn process_item(
         },
         Some(&mut on_progress),
         Some(&cancel),
+        item.preview_passed != 0,
     ) {
         Err(e) if e == lua_host::DOWNLOAD_CANCELLED || cancel.load(Ordering::SeqCst) => {
             let _ = db::queue_mark_cancelled_if_running(
@@ -427,6 +428,44 @@ fn process_item(
             item.id,
             "",
         );
+        return Ok(());
+    }
+
+    if result.awaiting_review {
+        if result.files.is_empty() {
+            return Err(if result.errors.is_empty() {
+                "la muestra no produjo imágenes".into()
+            } else {
+                result.errors.join("; ")
+            });
+        }
+        let note = result.errors.join("; ");
+        let marked = db::queue_mark_review(&app.state::<QueueState>().db, item.id, &note)?;
+        if marked {
+            let _ = app.emit(
+                "queue-progress",
+                progress_event(
+                    &item,
+                    format!(
+                        "{} ({} {})",
+                        crate::i18n::t("Revisa las imágenes", "Review the images"),
+                        result.files.len(),
+                        crate::i18n::t("archivos", "files")
+                    ),
+                    pending_count(&app.state::<QueueState>().db),
+                    result.files.len() as u32,
+                    result.page_count as u32,
+                    "review",
+                ),
+            );
+            crate::log_file::append(&format!(
+                "REV {} - {} ({} {})",
+                item.manga_title,
+                item.chapter_name,
+                result.files.len(),
+                crate::i18n::t("archivos", "files")
+            ));
+        }
         return Ok(());
     }
 

@@ -11,6 +11,24 @@ pub struct DownloadResult {
     pub chapter_name: String,
     pub files: Vec<String>,
     pub errors: Vec<String>,
+    /// Pages the chapter advertised. `0` when the caller did not count them.
+    #[serde(default)]
+    pub page_count: usize,
+    /// Stopped after the visual sample. The rest of the chapter is still pending.
+    #[serde(default)]
+    pub awaiting_review: bool,
+}
+
+/// `Some(cap)` when a chapter longer than `configured` should pause after `cap` pages.
+///
+/// `passed` is the queue flag set once the user has looked at the sample.
+/// `configured == 0` turns the pause off.
+pub fn preview_page_limit(page_count: usize, passed: bool, configured: usize) -> Option<usize> {
+    if passed || configured == 0 || page_count <= configured {
+        None
+    } else {
+        Some(configured)
+    }
 }
 
 fn extension_from_url(url: &str) -> &str {
@@ -96,6 +114,8 @@ pub fn download_pages_with_progress(
             chapter_name: chapter_name.to_string(),
             files,
             errors,
+            page_count: pages.len(),
+            awaiting_review: false,
         };
     }
 
@@ -106,6 +126,8 @@ pub fn download_pages_with_progress(
             chapter_name: chapter_name.to_string(),
             files,
             errors,
+            page_count: pages.len(),
+            awaiting_review: false,
         };
     };
 
@@ -158,5 +180,21 @@ pub fn download_pages_with_progress(
         chapter_name: chapter_name.to_string(),
         files,
         errors,
+        page_count: pages.len(),
+        awaiting_review: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preview_page_limit;
+
+    #[test]
+    fn preview_limit_only_when_the_chapter_is_longer_than_the_sample() {
+        assert_eq!(preview_page_limit(20, false, 5), Some(5));
+        assert_eq!(preview_page_limit(5, false, 5), None);
+        assert_eq!(preview_page_limit(3, false, 5), None);
+        assert_eq!(preview_page_limit(20, true, 5), None);
+        assert_eq!(preview_page_limit(20, false, 0), None);
     }
 }

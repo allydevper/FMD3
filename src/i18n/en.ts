@@ -119,6 +119,7 @@ export const en = {
     cancelled: "Stopped",
     failed: "Failed",
     done: "Completed",
+    review: "Review",
   },
   dlHist: {
     hoy: "Today",
@@ -228,6 +229,10 @@ export const en = {
     oneChapter: {
       label: "One chapter at a time per series",
       desc: "Do not start another chapter of the same manga while one is running; other series still use free slots",
+    },
+    previewReview: {
+      label: "Review a sample before continuing",
+      desc: "Saves the first 5 pages and waits for confirmation. Off downloads the whole chapter",
     },
     pageThreads: { label: "Parallel pages", desc: "Images downloading at once inside a chapter" },
     taskRetries: { label: "Task retries", desc: "How many times to retry a failed task" },
@@ -553,6 +558,8 @@ export const en = {
     colSiteAdded: "Site · added",
     resume: "Resume",
     stop: "Stop",
+    previewContinue: "Looks good, download the rest",
+    previewCancel: "Cancel",
     stopGroup: "Stop group",
     resumeGroup: "Resume group",
     showCf: "Show internal browser",
@@ -596,6 +603,7 @@ export const en = {
     downloadingN: "{n} downloading",
     packingN: "{n} packing",
     queuedN: "{n} queued",
+    reviewN: "{n} to review",
     pausedN: "{n} stopped",
     failedN: "{n} failed",
     restoredPartial: "Restored {inserted}/{expected} (some were already queued)",

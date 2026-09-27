@@ -258,6 +258,11 @@ export function queueCancel(id: number) {
   return invoke("queue_cancel", { id });
 }
 
+/** Accept the visual sample and download the remaining pages. */
+export function queueApprovePreview(id: number) {
+  return invoke("queue_approve_preview", { id });
+}
+
 export function queueRetry(id: number) {
   return invoke("queue_retry", { id });
 }

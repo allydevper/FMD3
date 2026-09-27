@@ -28,6 +28,10 @@ pub const DOWNLOAD_CHAP_PAD: &str = "download.chap_pad";
 pub const DOWNLOAD_VOL_DIGITS: &str = "download.vol_digits";
 pub const DOWNLOAD_CHAP_DIGITS: &str = "download.chap_digits";
 pub const DOWNLOAD_TASK_RETRIES: &str = "download.task_retries";
+/// Pause after a few pages so the user can check them before the rest download.
+pub const DOWNLOAD_PREVIEW_ENABLED: &str = "download.preview_enabled";
+/// Pages saved before a chapter pauses for a visual check. `0` downloads the whole chapter.
+pub const DOWNLOAD_PREVIEW_PAGES: &str = "downloads.preview_pages";
 pub const DOWNLOAD_PARALLEL_TASKS: &str = "download.parallel_tasks";
 pub const DOWNLOAD_ONE_CHAPTER_PER_MANGA: &str = "download.one_chapter_per_manga";
 pub const DOWNLOAD_REMOVE_MANGA_FROM_CHAPTER: &str = "download.remove_manga_from_chapter";
@@ -161,6 +165,14 @@ pub fn parallel_tasks() -> usize {
 /// When true, at most one chapter of the same manga may be `running` at a time.
 pub fn one_chapter_per_manga() -> bool {
     bool_setting(DOWNLOAD_ONE_CHAPTER_PER_MANGA, false)
+}
+
+/// Sample size for the visual pause. `0` when the option is off.
+pub fn preview_pages() -> usize {
+    if !bool_setting(DOWNLOAD_PREVIEW_ENABLED, false) {
+        return 0;
+    }
+    usize_setting(DOWNLOAD_PREVIEW_PAGES, 5)
 }
 
 pub fn task_retries() -> usize {

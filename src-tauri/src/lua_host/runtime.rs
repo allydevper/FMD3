@@ -1915,7 +1915,8 @@ pub struct FrozenNaming<'a> {
 /// Full FMD2 chapter download pipeline in one Lua/HTTP session.
 ///
 /// Anything missing from `frozen` is resolved from `output_dir` + the current
-/// rename settings.
+/// rename settings. When preview review is on, `preview_passed` is false, and
+/// the chapter is longer than the sample, only that many pages are saved.
 pub fn download_chapter(
     chapter_url: &str,
     module_id: Option<&str>,
@@ -1927,6 +1928,7 @@ pub fn download_chapter(
     frozen: FrozenNaming<'_>,
     mut on_progress: Option<&mut dyn FnMut(usize, usize, u64)>,
     cancel: Option<&AtomicBool>,
+    preview_passed: bool,
 ) -> Result<crate::download::DownloadResult, String> {
     let cancelled = || cancel.is_some_and(|c| c.load(Ordering::SeqCst));
     let abort_if_cancelled = |http: &HttpClient| -> Result<(), String> {
@@ -2108,8 +2110,16 @@ pub fn download_chapter(
             chapter_name: chapter_name.to_string(),
             files,
             errors: vec![format!("No se pudo crear {}: {e}", chapter_dir.display())],
+            page_count,
+            awaiting_review: false,
         });
     }
+
+    let preview_limit = crate::download::preview_page_limit(
+        page_count,
+        preview_passed,
+        crate::settings_keys::preview_pages(),
+    );
 
     let use_container_url = !on_download.is_empty()
         && page_count == task.page_container_links.len()
@@ -2151,12 +2161,29 @@ pub fn download_chapter(
             pending.push((i, absolute_url(&root, &work_url)));
         }
 
+        let mut awaiting_review = false;
+        if let Some(cap) = preview_limit {
+            let held = files.len();
+            if held >= cap {
+                awaiting_review = !pending.is_empty();
+                pending.clear();
+            } else {
+                let slots = cap - held;
+                if pending.len() > slots {
+                    pending.truncate(slots);
+                    awaiting_review = true;
+                }
+            }
+        }
+
         if pending.is_empty() {
             return Ok(crate::download::DownloadResult {
                 chapter_index,
                 chapter_name: chapter_name.to_string(),
                 files,
                 errors,
+                page_count,
+                awaiting_review,
             });
         }
 
@@ -2282,12 +2309,20 @@ pub fn download_chapter(
             chapter_name: chapter_name.to_string(),
             files: files_m.into_inner(),
             errors: errors_m.into_inner(),
+            page_count,
+            awaiting_review,
         });
     }
 
     let mut bytes_so_far: u64 = 0;
+    let mut sample_held: usize = 0;
+    let mut awaiting_review = false;
     for i in 0..page_count {
         abort_if_cancelled(&http)?;
+        if preview_limit.is_some_and(|cap| sample_held >= cap) {
+            awaiting_review = true;
+            break;
+        }
 
         if let Some(cb) = on_progress.as_mut() {
             cb(i, page_count, bytes_so_far);
@@ -2299,6 +2334,7 @@ pub fn download_chapter(
             let base = chapter_dir.join(work_basename(&task.file_names, i, page_count, &name_ctx));
             if let Some(existing) = find_complete_image(&base) {
                 files.push(existing.display().to_string());
+                sample_held += 1;
             }
             continue;
         }
@@ -2316,6 +2352,7 @@ pub fn download_chapter(
             }
             files.push(existing.display().to_string());
             task.page_links.set(i, "D".into());
+            sample_held += 1;
             if !on_after.is_empty() {
                 let _ = globals.set("FILENAME", existing.display().to_string());
                 if let Ok(f) = globals.get::<mlua::Function>(on_after.as_str()) {
@@ -2336,6 +2373,7 @@ pub fn download_chapter(
             }
         }
 
+        sample_held += 1;
         http.reset_http();
         http.accept_image();
         http.set_header("Referer", &chapter_referer);
@@ -2455,6 +2493,8 @@ pub fn download_chapter(
         chapter_name: chapter_name.to_string(),
         files,
         errors,
+        page_count,
+        awaiting_review,
     })
 }
 

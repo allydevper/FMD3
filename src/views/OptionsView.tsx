@@ -143,6 +143,7 @@ type OptionsFormState = {
   threads: number;
   parallelTasks: number;
   oneChapterPerManga: boolean;
+  previewEnabled: boolean;
   taskRetries: number;
   httpTimeout: number;
   httpRetries: number;
@@ -210,6 +211,7 @@ const DEFAULT_SETTINGS: OptionsFormState = {
   threads: 1,
   parallelTasks: 1,
   oneChapterPerManga: false,
+  previewEnabled: false,
   taskRetries: 1,
   httpTimeout: 30,
   httpRetries: 5,
@@ -915,6 +917,7 @@ export function OptionsView() {
       Math.max(1, Number((await get(SK.PARALLEL_TASKS)) ?? "1") || 1),
     );
     const oneChapterPerManga = parseB(await get(SK.ONE_CHAPTER_PER_MANGA), false);
+    const previewEnabled = parseB(await get(SK.PREVIEW_ENABLED), false);
     const taskRetries = Number((await get(SK.TASK_RETRIES)) ?? "1") || 0;
     const httpTimeout = Number((await get(SK.TIMEOUT)) ?? "30") || 30;
     const httpRetriesRaw = Number((await get(SK.HTTP_RETRIES)) ?? "5");
@@ -1014,6 +1017,7 @@ export function OptionsView() {
       threads: maxThreads,
       parallelTasks,
       oneChapterPerManga,
+      previewEnabled,
       taskRetries,
       httpTimeout,
       httpRetries,
@@ -1102,6 +1106,7 @@ export function OptionsView() {
     await api.settingsSet(SK.FAV_THREADS, String(s.favThreads));
     await api.settingsSet(SK.PARALLEL_TASKS, String(s.parallelTasks));
     await api.settingsSet(SK.ONE_CHAPTER_PER_MANGA, boolStr(s.oneChapterPerManga));
+    await api.settingsSet(SK.PREVIEW_ENABLED, boolStr(s.previewEnabled));
     await api.settingsSet(SK.TASK_RETRIES, String(s.taskRetries));
     await api.settingsSet(SK.TIMEOUT, String(s.httpTimeout));
     await api.settingsSet(SK.HTTP_RETRIES, String(s.httpRetries));
@@ -2212,6 +2217,13 @@ export function OptionsView() {
                         desc={t("options.oneChapter.desc")}
                         checked={s.oneChapterPerManga}
                         onChange={(v) => update("oneChapterPerManga", v)}
+                      />
+                      <SwitchRow
+                        id="opt-preview-enabled"
+                        label={t("options.previewReview.label")}
+                        desc={t("options.previewReview.desc")}
+                        checked={s.previewEnabled}
+                        onChange={(v) => update("previewEnabled", v)}
                       />
                       <OptRow label={t("options.pageThreads.label")} desc={t("options.pageThreads.desc")}>
                         <div className="st-num-wrap">

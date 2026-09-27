@@ -202,6 +202,13 @@ export const DL_ST: Record<
     bg: "transparent",
     bar: "var(--muted)",
   },
+  review: {
+    id: "active",
+    label: "Revisar",
+    color: "var(--warn)",
+    bg: "var(--warn-bg)",
+    bar: "var(--warn)",
+  },
   cancelled: {
     id: "paused",
     label: "Detenido",
@@ -260,6 +267,7 @@ export const SK = {
   VOL_DIGITS: "download.vol_digits",
   CHAP_DIGITS: "download.chap_digits",
   TASK_RETRIES: "download.task_retries",
+  PREVIEW_ENABLED: "download.preview_enabled",
   PARALLEL_TASKS: "download.parallel_tasks",
   ONE_CHAPTER_PER_MANGA: "download.one_chapter_per_manga",
   OUTPUT_DIR: "default_output_dir",

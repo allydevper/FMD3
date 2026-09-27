@@ -44,6 +44,8 @@ export type QueueItem = {
   batch_id?: string;
   status: string;
   error: string;
+  /** 1 after the visual sample was accepted and the rest of the chapter may download. */
+  preview_passed?: number;
   created_at: string;
   updated_at: string;
   position?: number;
