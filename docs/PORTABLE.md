@@ -32,7 +32,7 @@ Si solo cambiaste Rust y el frontend `dist/` ya está al día:
 
 ```powershell
 cd src-tauri
-cargo build --release
+cargo build --release --features custom-protocol
 ```
 
 ## Empaquetar (script)
@@ -94,7 +94,7 @@ portable descarga FMD2 y, con el overlay activo (Ajustes → Módulos), también
 ## Checklist próxima versión
 
 - [ ] Versión alineada en los tres archivos
-- [ ] `npm run tauri:build` (o `cargo build --release` si `dist/` está listo)
+- [ ] `npm run tauri:build` (o `cargo build --release --features custom-protocol` si `dist/` está listo)
 - [ ] Cerrar FMD3
 - [ ] `.\scripts\pack-portable.ps1` (+ `-MigrateProfile` / `-MigrateDownloads` si quieres tu data)
 - [ ] Probar abriendo `FMD3-portable-…\FMD3.exe` (perfil aislado de AppData)

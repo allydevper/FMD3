@@ -121,6 +121,8 @@ type AppContextValue = {
   setPendingMangaOpen: (v: PendingMangaOpen | null) => void;
   /** Changes a silent module check found and left for the user to confirm. */
   modulesPending: ModulesCheckReport | null;
+  /** True while the first-launch module download is running. */
+  modulesSyncing: boolean;
   setModulesPending: (v: ModulesCheckReport | null) => void;
   /** Live progress of a running module sync; null when idle. Cancelling goes
    *  through `cancelCatalogJob`, which dispatches on the job mode. */
@@ -202,6 +204,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const runAutoModulesCheckRef = useRef<(silent: boolean) => Promise<void>>(async () => {});
   /** Set by a silent check that found changes; cleared once they are applied. */
   const [modulesPending, setModulesPending] = useState<ModulesCheckReport | null>(null);
+  const [modulesSyncing, setModulesSyncing] = useState(false);
   const [modulesJob, setModulesJob] = useState<ModulesUpdateProgressEvent | null>(null);
   /** Version the user postponed, so the reminder survives the session. */
   const [appUpdatePending, setAppUpdatePending] = useState<string | null>(null);
@@ -839,6 +842,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setLanguageState(lang);
         setCurrentLanguage(lang);
 
+        // Portable builds ship without the Lua tree. Download it before favorites
+        // and the app updater, or Explorar stays empty for the whole first boot.
+        let firstSync = false;
+        if (!cancelled && (await api.modulesNeedsFirstSync())) {
+          log(t("ctx.firstBoot"), "");
+          setModulesSyncing(true);
+          try {
+            await runAutoModulesCheckRef.current(false);
+          } finally {
+            setModulesSyncing(false);
+          }
+          firstSync = true;
+        }
+
         // Align defaults with OptionsView DEFAULT_STATE
         const checkOnStart = parseBool(await api.settingsGet(SK.FAV_CHECK_ON_START), true);
         const downloadAfter = parseBool(await api.settingsGet(SK.FAV_DOWNLOAD_AFTER), false);
@@ -882,17 +899,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           // If the app is about to be replaced there is no point syncing
           // modules — the process restarts and the check runs again anyway.
-          if (!cancelled && !installingApp) {
+          // A first sync already ran above, before this check.
+          if (!cancelled && !installingApp && !firstSync) {
             await runAutoModulesCheckRef.current(true);
           }
-        }
-
-        // The Lua tree no longer ships with the installer, so a fresh install
-        // starts with nothing to browse. Sync it out loud — an empty site list
-        // with no explanation reads as a broken app.
-        if (!cancelled && !installingApp && (await api.modulesNeedsFirstSync())) {
-          log(t("ctx.firstBoot"), "");
-          await runAutoModulesCheckRef.current(false);
         }
       } catch (e) {
         if (!cancelled) log(String(e), "err");
@@ -954,6 +964,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setPendingMangaOpen,
     modulesPending,
     setModulesPending,
+    modulesSyncing,
     modulesJob,
     appUpdatePending,
     setAppUpdatePending,

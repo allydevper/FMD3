@@ -1146,6 +1146,72 @@ pub fn queue_retry(app: AppHandle, state: State<QueueState>, id: i64) -> Result<
     Ok(())
 }
 
+fn pack_format_for_item(item: &QueueItem) -> String {
+    let frozen = item.pack_format.trim();
+    if frozen.is_empty() {
+        crate::settings_keys::pack_format()
+    } else {
+        frozen.to_string()
+    }
+}
+
+/// Pack whatever images are already in the chapter folder. Missing pages are
+/// simply absent, so the archive closes with what is on disk. No-op when the
+/// format is not an archive or the folder is already gone.
+fn pack_leftover_chapter(state: &QueueState, item: &QueueItem) -> Result<(), String> {
+    let fmt = pack_format_for_item(item);
+    if !matches!(fmt.as_str(), "cbz" | "zip" | "pdf" | "epub") {
+        return Ok(());
+    }
+    let (_manga, chapter_path) = resolve_item_open_paths(item)?;
+    if !crate::paths::fs_path(&chapter_path).is_dir() {
+        return Ok(());
+    }
+    let outcome = crate::pack::pack_chapter_dir(&chapter_path, &fmt, None, None)?;
+    if !crate::paths::fs_path(&outcome.archive).is_file() {
+        return Err(format!(
+            "pack failed: archive ausente ({})",
+            outcome.archive.display()
+        ));
+    }
+    if outcome.skipped.is_empty() && crate::settings_keys::pack_delete_folder() {
+        let key = if !item.chapter_path.trim().is_empty() {
+            item.chapter_path.trim().to_string()
+        } else {
+            chapter_path.to_string_lossy().into_owned()
+        };
+        if db::pack_may_delete_chapter_dir(&state.db, item.id, &key) {
+            let _ = std::fs::remove_dir_all(crate::paths::fs_path(&chapter_path));
+        }
+    }
+    Ok(())
+}
+
+/// Close a failed chapter as done without downloading again. Packs the images
+/// already in the folder (PDF/CBZ/…) before marking it. Also packs a chapter
+/// that was already forced to done and left as a folder. Does not start the
+/// worker or notify.
+#[tauri::command]
+pub fn queue_force_done(app: AppHandle, state: State<QueueState>, id: i64) -> Result<(), String> {
+    let item = db::queue_get(&state.db, id)?;
+    if item.status != "failed" && item.status != "done" {
+        return Ok(());
+    }
+    pack_leftover_chapter(&state, &item)?;
+    if item.status == "failed" {
+        if db::queue_force_done(&state.db, id)? {
+            let _ = db::downloaded_chapters_mark(
+                &state.downloaded,
+                &item.module_id,
+                &item.manga_url,
+                &item.chapter_link,
+            );
+        }
+    }
+    let _ = app.emit("queue-changed", ());
+    Ok(())
+}
+
 /// Re-queue a completed item so it can repair missing/corrupt pages.
 /// Existing complete files stay on disk; the downloader skips them.
 /// Keeps the frozen pack format; for legacy rows without one, freezes it from disk first.

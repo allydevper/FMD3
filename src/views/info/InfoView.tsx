@@ -175,6 +175,7 @@ export function InfoView() {
     pendingMangaOpen,
     setPendingMangaOpen,
     ensureModuleEnabled,
+    modulesSyncing,
   } = useApp();
 
   /* ---------------------------------------------------------------------
@@ -3094,8 +3095,9 @@ export function InfoView() {
   }
 
   function renderCatalogBody() {
-    /* Sin fuentes (solo cuando ya terminó el boot). */
-    if (sourcesBooted && !sourcesLoading && !enabledModules.length) {
+    const waitingForFirstSync = modulesSyncing && !enabledModules.length;
+    /* Sin fuentes (solo cuando ya terminó el boot y no hay una descarga en curso). */
+    if (sourcesBooted && !sourcesLoading && !enabledModules.length && !waitingForFirstSync) {
       return (
         <div className="catalog-results" id="catalog-list">
           <div className="catalog-empty">
@@ -3106,9 +3108,26 @@ export function InfoView() {
         </div>
       );
     }
-    /* Por defecto / cargando: nada. */
-    if (!sourcesBooted || sourcesLoading || catalogLoading || !catalogFetched) {
-      return <div className="catalog-results" id="catalog-list" />;
+    if (
+      !sourcesBooted ||
+      sourcesLoading ||
+      catalogLoading ||
+      !catalogFetched ||
+      waitingForFirstSync
+    ) {
+      const label = waitingForFirstSync
+        ? t("ctx.firstBoot")
+        : !sourcesBooted || sourcesLoading
+          ? t("explore.loadingSources")
+          : t("explore.loadingCatalog");
+      return (
+        <div className="catalog-results" id="catalog-list">
+          <div className="panel-loading">
+            <span className="spinner" />
+            {label}
+          </div>
+        </div>
+      );
     }
     if (catalogError) {
       return (

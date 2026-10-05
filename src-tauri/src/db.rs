@@ -1512,6 +1512,20 @@ pub fn queue_retry(db: &Db, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Mark a failed item done without downloading again. Pending, running and
+/// cancelled rows are left alone. Returns whether the row changed.
+pub fn queue_force_done(db: &Db, id: i64) -> Result<bool, String> {
+    let conn = db.lock();
+    let n = conn
+        .execute(
+            "UPDATE queue_items SET status='done', error='', updated_at=?1
+             WHERE id=?2 AND status='failed'",
+            params![now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
 /// Re-queue a completed item. Existing complete files are reused on resume.
 pub fn queue_redownload(db: &Db, id: i64) -> Result<(), String> {
     let conn = db.lock();
@@ -2674,6 +2688,28 @@ mod tests {
         set_status(&db, ids[0], "running");
         assert!(queue_set_status(&db, ids[0], "done", "").unwrap());
         assert_eq!(queue_get(&db, ids[0]).unwrap().status, "done");
+    }
+
+    #[test]
+    fn force_done_only_closes_failed() {
+        let db = test_main_db();
+        let ids = add_n(&db, 1, "");
+        set_status(&db, ids[0], "pending");
+        assert!(!queue_force_done(&db, ids[0]).unwrap());
+        assert_eq!(queue_get(&db, ids[0]).unwrap().status, "pending");
+
+        set_status(&db, ids[0], "failed");
+        db.lock()
+            .execute(
+                "UPDATE queue_items SET error='faltan páginas' WHERE id=?1",
+                params![ids[0]],
+            )
+            .unwrap();
+        assert!(queue_force_done(&db, ids[0]).unwrap());
+        let item = queue_get(&db, ids[0]).unwrap();
+        assert_eq!(item.status, "done");
+        assert!(item.error.is_empty());
+        assert!(!queue_force_done(&db, ids[0]).unwrap());
     }
 
     #[test]

@@ -273,6 +273,11 @@ export function queueRetry(id: number) {
   return invoke("queue_retry", { id });
 }
 
+/** Mark a failed chapter done without downloading it again. */
+export function queueForceDone(id: number) {
+  return invoke("queue_force_done", { id });
+}
+
 export function queueRedownload(id: number) {
   return invoke("queue_redownload", { id });
 }

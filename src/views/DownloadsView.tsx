@@ -844,6 +844,10 @@ export function DownloadsView() {
 
   const groupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
   const dlScrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = dlScrollRef.current;
+    if (el) el.scrollTop = 0;
+  }, [cat]);
   const selG = useListSelection<string>({
     keys: groupKeys,
     pageSize: DL_PAGE_STEP,
@@ -874,6 +878,10 @@ export function DownloadsView() {
     [focusGroup],
   );
   const dlPanelScrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = dlPanelScrollRef.current;
+    if (el) el.scrollTop = 0;
+  }, [focusKey]);
   const selC = useListSelection<number>({
     keys: focusItemKeys,
     prune: true,
@@ -1014,6 +1022,24 @@ export function DownloadsView() {
     await refreshQueue();
   }
 
+  async function forceDoneIds(ids: number[]) {
+    let n = 0;
+    for (const id of ids) {
+      const it = items.find((x) => x.id === id);
+      if (it?.status !== "failed" && it?.status !== "done") continue;
+      try {
+        await api.queueForceDone(id);
+        n += 1;
+      } catch (e) {
+        log(String(e), "err");
+      }
+    }
+    if (n) {
+      log(t("downloads.forceDoneOk", { n }), "ok");
+      await refreshQueue();
+    }
+  }
+
   async function redownloadDoneIds(ids: number[]) {
     let n = 0;
     for (const id of ids) {
@@ -1130,7 +1156,7 @@ export function DownloadsView() {
     ev.stopPropagation();
     const pad = 8;
     const menuW = 220;
-    const menuH = 340;
+    const menuH = 380;
     const x = Math.min(ev.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(ev.clientY, window.innerHeight - menuH - pad);
     setDlCtxMenu({
@@ -1276,6 +1302,9 @@ export function DownloadsView() {
     : [];
   const ctxCanResume = ctxItems.some(
     (i) => i.status === "cancelled" || i.status === "failed",
+  );
+  const ctxCanForceDone = ctxItems.some(
+    (i) => i.status === "failed" || i.status === "done",
   );
   const ctxCanStop = ctxItems.some(
     (i) => i.status === "running" || i.status === "pending" || i.status === "review",
@@ -2323,6 +2352,20 @@ export function DownloadsView() {
               type="button"
               role="menuitem"
               className="dl-ctx-item"
+              disabled={!ctxCanForceDone}
+              onClick={() => {
+                const ids = dlCtxMenu.ids;
+                setDlCtxMenu(null);
+                void forceDoneIds(ids);
+              }}
+            >
+              <Icon ico={ICO.check} className="ico ico-sm" />
+              <span>{t("downloads.forceDone")}</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="dl-ctx-item"
               disabled={!ctxCanRedownload}
               onClick={() => {
                 const ids = dlCtxMenu.ids;
@@ -2378,21 +2421,22 @@ export function DownloadsView() {
               <Icon ico={ICO.plus} className="ico ico-sm" />
               <span>{t("downloads.addMore")}</span>
             </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="dl-ctx-item"
-              disabled={!ctxCanSplit}
-              onClick={() => {
-                const g = ctxAddMoreGroup;
-                setDlCtxMenu(null);
-                if (!g) return;
-                handleSplitGroup(g);
-              }}
-            >
-              <Icon ico={ICO.split} className="ico ico-sm" />
-              <span>{t("downloads.splitGroup")}</span>
-            </button>
+            {!dlCtxMenu.preferChapter && ctxCanSplit ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="dl-ctx-item"
+                onClick={() => {
+                  const g = ctxAddMoreGroup;
+                  setDlCtxMenu(null);
+                  if (!g) return;
+                  handleSplitGroup(g);
+                }}
+              >
+                <Icon ico={ICO.split} className="ico ico-sm" />
+                <span>{t("downloads.splitGroup")}</span>
+              </button>
+            ) : null}
             <button
               type="button"
               role="menuitem"
